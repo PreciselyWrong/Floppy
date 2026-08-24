@@ -18,17 +18,17 @@
       <div class="flex items-center gap-4">
         <div class="flex items-center bg-[var(--color-surface-strong)] rounded-md p-1">
           <a class="p-2 hover:bg-[var(--color-surface-hover)] rounded-md transition-colors"
-             href="{% url 'calendar' %}?month={{ prev_month }}&year={{ prev_year }}&view={{ view_type }}">
+             href="{% url 'calendar' %}?month={{ prev_month }}&year={{ prev_year }}&view={{ view_type }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
             {% include "app/icons/chevron-left.svg" with classes="w-5 h-5" %}
           </a>
           <h2 class="px-4 text-lg font-semibold min-w-40 text-center">{{ month_name }} {{ year }}</h2>
           <a class="p-2 hover:bg-[var(--color-surface-hover)] rounded-md transition-colors"
-             href="{% url 'calendar' %}?month={{ next_month }}&year={{ next_year }}&view={{ view_type }}">
+             href="{% url 'calendar' %}?month={{ next_month }}&year={{ next_year }}&view={{ view_type }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
             {% include "app/icons/chevron-right.svg" with classes="w-5 h-5" %}
           </a>
         </div>
         <a class="hidden sm:flex w-10 h-10 bg-[var(--color-surface-strong)] hover:bg-[var(--color-surface-hover)] rounded-md transition-colors flex-col items-center justify-center leading-none"
-           href="{% url 'calendar' %}?month={{ today.month }}&year={{ today.year }}&view={{ view_type }}"
+           href="{% url 'calendar' %}?month={{ today.month }}&year={{ today.year }}&view={{ view_type }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}"
            aria-label="Go to Today">
           <span class="text-xl font-bold leading-none">{{ today|date:"j" }}</span>
           <span class="uppercase text-[var(--color-text-secondary)]/90 mt-0.5"
@@ -40,7 +40,7 @@
 
       <div class="flex items-center gap-2 flex-wrap justify-end">
         <a class="sm:hidden w-10 h-10 bg-[var(--color-surface-strong)] hover:bg-[var(--color-surface-hover)] rounded-md transition-colors flex flex-col items-center justify-center leading-none shrink-0"
-           href="{% url 'calendar' %}?month={{ today.month }}&year={{ today.year }}&view={{ view_type }}"
+           href="{% url 'calendar' %}?month={{ today.month }}&year={{ today.year }}&view={{ view_type }}{% if search_query %}&q={{ search_query|urlencode }}{% endif %}"
            aria-label="Go to Today">
           <span class="text-xl font-bold leading-none">{{ today|date:"j" }}</span>
           <span class="uppercase text-[var(--color-text-secondary)]/90 mt-0.5"
@@ -135,17 +135,43 @@
 
         <div class="bg-[var(--color-surface-strong)] rounded-md p-1 space-x-0.5 flex">
           <a class="p-2 rounded-md transition-colors cursor-pointer {% if view_type == 'grid' %}bg-indigo-600 text-white{% else %}hover:bg-[var(--color-surface-hover)]{% endif %}"
-             href="{% url 'calendar' %}?month={{ month }}&year={{ year }}&view=grid">
+             href="{% url 'calendar' %}?month={{ month }}&year={{ year }}&view=grid{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
             {% include "app/icons/grid.svg" with classes="w-4 h-4" %}
           </a>
           <a class="p-2 rounded-md transition-colors cursor-pointer {% if view_type == 'list' %}bg-indigo-600 text-white{% else %}hover:bg-[var(--color-surface-hover)]{% endif %}"
-             href="{% url 'calendar' %}?month={{ month }}&year={{ year }}&view=list">
+             href="{% url 'calendar' %}?month={{ month }}&year={{ year }}&view=list{% if search_query %}&q={{ search_query|urlencode }}{% endif %}">
             {% include "app/icons/list.svg" with classes="w-4 h-4" %}
           </a>
         </div>
 
       </div>
     </div>
+
+    <form method="get" class="mb-6 flex items-center gap-2">
+      <input type="hidden" name="month" value="{{ month }}">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="view" value="{{ view_type }}">
+      <label class="sr-only" for="calendar-search">Search releases by title</label>
+      <div class="relative min-w-0 flex-1">
+        {% include "app/icons/magnifying-glass.svg" with classes="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-muted)]" %}
+        <input id="calendar-search"
+               name="q"
+               type="search"
+               value="{{ search_query }}"
+               placeholder="Search releases by title"
+               class="h-10 w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-strong)] py-2 pl-10 pr-3 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-indigo-500 focus:outline-none">
+      </div>
+      <button type="submit"
+              class="h-10 rounded-md bg-indigo-600 px-4 text-sm font-medium text-white transition-colors hover:bg-indigo-700 cursor-pointer">
+        Search
+      </button>
+      {% if search_query %}
+        <a href="{% url 'calendar' %}?month={{ month }}&year={{ year }}&view={{ view_type }}"
+           class="h-10 rounded-md bg-[var(--color-surface-strong)] px-4 text-sm leading-10 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]">
+          Clear
+        </a>
+      {% endif %}
+    </form>
 
     {% if view_type == 'grid' %}
       <div x-html="filteredGridHtml"></div>
