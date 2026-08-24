@@ -814,6 +814,97 @@ class HomeScreenViewTests(TestCase):
             [entry.item.title for entry in entries], ["Home Action Comedy"]
         )
 
+    def test_home_stale_filter_keeps_only_inactive_in_progress_media(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        old_item = Item.objects.create(
+            title="Neglected Movie",
+            media_id="home-stale-old",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        recent_item = Item.objects.create(
+            title="Recently Progressed Movie",
+            media_id="home-stale-recent",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        old_movie = Movie.objects.create(
+            item=old_item, user=self.user, status=Status.IN_PROGRESS.value
+        )
+        recent_movie = Movie.objects.create(
+            item=recent_item, user=self.user, status=Status.IN_PROGRESS.value
+        )
+        Movie.objects.filter(pk=old_movie.pk).update(
+            progressed_at=timezone.now() - timedelta(days=22)
+        )
+        Movie.objects.filter(pk=recent_movie.pk).update(
+            progressed_at=timezone.now() - timedelta(days=2)
+        )
+        row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=MediaTypes.MOVIE.value,
+            position=0,
+            enabled=True,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "stale_days": "21",
+            },
+        )
+
+        entries = home_screen._library_query_entries(self.user, row)
+
+        self.assertEqual([entry.item.title for entry in entries], ["Neglected Movie"])
+        old_movie.refresh_from_db()
+        recent_movie.refresh_from_db()
+        self.assertEqual(old_movie.status, Status.IN_PROGRESS.value)
+        self.assertEqual(recent_movie.status, Status.IN_PROGRESS.value)
+
+    def test_home_stale_filter_includes_media_without_progress_date(self):
+        item = Item.objects.create(
+            title="Never Progressed Movie",
+            media_id="home-stale-undated",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        entry = home_screen.HomeRowEntry(
+            item=item,
+            media=SimpleNamespace(progressed_at=None),
+        )
+
+        entries = home_screen._apply_stale_filter([entry], "21")
+
+        self.assertEqual(
+            [entry.item.title for entry in entries],
+            ["Never Progressed Movie"],
+        )
+
+    def test_home_stale_filter_is_configurable_and_validated(self):
+        fields = home_screen.build_filter_field_data(
+            self.user,
+            MediaTypes.MOVIE.value,
+        )
+
+        stale_field = next(field for field in fields if field["key"] == "stale_days")
+        self.assertIn(
+            {"value": "21", "label": "No progress for 21 days"},
+            stale_field["options"],
+        )
+        self.assertEqual(
+            home_screen.validate_library_row_filters(
+                {"stale_days": "21"},
+                MediaTypes.MOVIE.value,
+            )["stale_days"],
+            "21",
+        )
+        with self.assertRaises(home_screen.HomeScreenValidationError):
+            home_screen.validate_library_row_filters(
+                {"stale_days": "61"},
+                MediaTypes.MOVIE.value,
+            )
+
     def test_home_screen_settings_do_not_expose_no_status_option(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
 

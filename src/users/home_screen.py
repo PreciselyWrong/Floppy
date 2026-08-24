@@ -127,7 +127,7 @@ HOME_ONLY_SORTS = {
 HOME_SCREEN_FILTER_KEYS = tuple(
     dict.fromkeys(
         key
-        for key in (*smart_rules.SMART_FILTER_KEYS, "progress", "subview")
+        for key in (*smart_rules.SMART_FILTER_KEYS, "progress", "subview", "stale_days")
         if key != "search"
     ),
 )
@@ -144,6 +144,7 @@ for _status_choice in Status:
 HOME_QUERY_DEFAULT_FILTERS = {
     "status": [Status.IN_PROGRESS.value],
     "progress": "all",
+    "stale_days": "",
     "rating": "all",
     "collection": "all",
     "genre": "",
@@ -303,6 +304,9 @@ SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
         "tag",
     },
 }
+for _media_type, _supported_filters in SUPPORTED_FILTERS_BY_MEDIA_TYPE.items():
+    if _media_type != MediaTypes.MUSIC.value:
+        _supported_filters.add("stale_days")
 
 
 class HomeScreenValidationError(ValidationError):
@@ -746,7 +750,7 @@ def build_filter_field_data(
     tags_fingerprint = hashlib.md5(  # noqa: S324 - cache key, not security
         "\x1f".join(precomputed_tags or ()).encode(),
     ).hexdigest()[:12]
-    cache_key = f"home_filter_fields_v1_{user.id}_{media_type}_{tags_fingerprint}"
+    cache_key = f"home_filter_fields_v2_{user.id}_{media_type}_{tags_fingerprint}"
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
@@ -791,6 +795,20 @@ def build_filter_field_data(
                 {"value": "not_caught_up", "label": "Not Caught Up"},
             ],
             "visible": media_type in HOME_PROGRESS_MEDIA_TYPES,
+        },
+        {
+            "key": "stale_days",
+            "label": "Last Progress",
+            "options": [
+                {"value": "", "label": "Any time"},
+                *[
+                    {
+                        "value": str(days),
+                        "label": f"No progress for {days} days",
+                    }
+                    for days in (7, 14, 21, 30, 45, 60)
+                ],
+            ],
         },
         {
             "key": "rating",
@@ -916,6 +934,10 @@ def build_filter_field_data(
 
 
 _SUMMARY_STATIC_FILTER_LABELS = {
+    "stale_days": {
+        str(days): f"No progress for {days} days"
+        for days in (7, 14, 21, 30, 45, 60)
+    },
     "progress": {
         "caught_up": "Caught Up",
         "not_caught_up": "Not Caught Up",
@@ -1202,6 +1224,7 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     raw_filters = dict(filters or {})
     # subview is a music-only dimension, not a smart-rule filter. handling separately
     raw_subview = raw_filters.pop("subview", None)
+    raw_stale_days = str(raw_filters.pop("stale_days", "") or "").strip()
     if "status" in raw_filters:
         raw_filters["status"] = _normalize_status_list(raw_filters.get("status"), [])
 
@@ -1229,6 +1252,8 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     }
     if media_type == MediaTypes.MUSIC.value:
         payload["subview"] = _canonical_music_subview(raw_subview)
+    elif raw_stale_days.isdigit() and 1 <= int(raw_stale_days) <= 60:
+        payload["stale_days"] = raw_stale_days
     return payload
 
 
@@ -1347,6 +1372,12 @@ def validate_library_row_filters(raw_filters: dict | None, media_type: str) -> d
         and media_type not in HOME_PROGRESS_MEDIA_TYPES
     ):
         msg = f"Filter 'progress' is not available for {media_type}."
+        raise HomeScreenValidationError(msg)
+    raw_stale_days = str(raw_filters.get("stale_days", "") or "").strip()
+    if raw_stale_days and (
+        not raw_stale_days.isdigit() or not 1 <= int(raw_stale_days) <= 60
+    ):
+        msg = f"Unsupported last-progress filter for {media_type}."
         raise HomeScreenValidationError(msg)
     raw_collection = (
         str(raw_filters.get("collection", normalized["collection"]) or "")
@@ -2000,6 +2031,23 @@ def _apply_progress_filter(
     return entries
 
 
+def _apply_stale_filter(
+    entries: list[HomeRowEntry], stale_days: str
+) -> list[HomeRowEntry]:
+    if not stale_days:
+        return entries
+    cutoff = timezone.now() - timedelta(days=int(stale_days))
+    return [
+        entry
+        for entry in entries
+        if entry.media is not None
+        and (
+            getattr(entry.media, "progressed_at", None) is None
+            or entry.media.progressed_at <= cutoff
+        )
+    ]
+
+
 def _sort_numeric(
     entries: list[HomeRowEntry], value_fn, direction: str
 ) -> list[HomeRowEntry]:
@@ -2243,7 +2291,11 @@ def _library_query_entries(
     status_filter = normalized_filters.get("status") or []
     rule_payload = {
         "media_types": [row.media_type],
-        **normalized_filters,
+        **{
+            key: value
+            for key, value in normalized_filters.items()
+            if key != "stale_days"
+        },
     }
     item_ids = smart_rules.collect_matching_item_ids(
         user,
@@ -2285,6 +2337,7 @@ def _library_query_entries(
     entries = _apply_progress_filter(
         entries, row.media_type, normalized_filters.get("progress", "all")
     )
+    entries = _apply_stale_filter(entries, normalized_filters.get("stale_days", ""))
     return sort_home_entries(entries, row.sort_by, row.direction)
 
 
@@ -2423,6 +2476,8 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
         query_pairs.append(("status", MediaStatusChoices.ALL.value))
     else:
         normalized = _normalized_filter_payload(row.filters or {}, row.media_type)
+        if normalized.get("stale_days"):
+            return ""
         status_values = [value for value in (normalized.get("status") or []) if value]
         if status_values:
             query_pairs.extend(("status", value) for value in status_values)
