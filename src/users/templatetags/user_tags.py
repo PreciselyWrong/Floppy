@@ -6,6 +6,7 @@ from django.utils import formats, timezone
 from django.utils.html import format_html
 
 from users.appearance import (
+    BASIC_THEME_KEYS,
     THEME_PRESETS,
     custom_theme_css,
     resolved_detail_layouts,
@@ -19,6 +20,12 @@ register = template.Library()
 def explicit_theme_classes():
     """Return the authoritative set of classes replaced by the theme toggle."""
     return " ".join(theme for theme in THEME_PRESETS if theme != "system")
+
+
+@register.filter
+def is_basic_theme(theme):
+    """Return whether the compact light/dark switcher may change this theme."""
+    return theme in BASIC_THEME_KEYS
 
 
 @register.filter

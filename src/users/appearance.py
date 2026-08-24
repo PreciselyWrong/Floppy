@@ -18,6 +18,7 @@ THEME_PRESETS = {
     "video_store": {"label": "Video store"},
     "custom": {"label": "Custom palette"},
 }
+BASIC_THEME_KEYS = frozenset(("system", "light", "dark"))
 
 CUSTOM_THEME_COLORS = {
     "page_bg": {"label": "Page", "default": "#10141f", "token": "page-bg"},

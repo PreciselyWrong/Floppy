@@ -122,5 +122,9 @@ page composition. It validates the complete payload before saving any part.
 Values passed to Django's `json_script` must remain Python dictionaries; the
 filter performs the single required serialization before Alpine parses them.
 
+The compact sun/moon switcher is rendered only for the basic `system`, `light`,
+and `dark` themes. Presets and custom palettes are changed only from Appearance;
+otherwise a single click would silently replace the user's selected design.
+
 `PATCH /api/v1/user/preferences/` follows the same rule and ignores any field
 the body omits. It does not currently accept `theme`.
