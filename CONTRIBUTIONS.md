@@ -7,7 +7,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | — | Pending | — | On custom — calcul, affichage, options, Ruff et templates validés |
-| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `ef31d49f` | — | Pending | — | On custom — arrondis et mouvements par thème; logo masquable ou personnalisable; tests ciblés et Ruff verts |
+| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `e8e2afc3` | — | Pending | — | On custom — thèmes avancés protégés du switcher; logo, mouvements et arrondis validés |
 | HOME-008 | Configurable Home history row | `feat/home-history-row` | — | — | Pending | — | Validated — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
 | HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | — | — | Pending | — | Validated — regroupement par série et saison, 28 tests History et Ruff validés |
 | HOME-006 | Cross-media `In progress` row | `feat/home-all-media-in-progress` | — | — | Pending | — | Validated — 47 tests Home, migration `users` et Ruff validés |
