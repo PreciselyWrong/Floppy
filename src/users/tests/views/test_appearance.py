@@ -1,11 +1,14 @@
 import json
+from io import BytesIO
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
+from PIL import Image
 
 from users.appearance import DETAIL_LAYOUT_FAMILIES, THEME_PRESETS
-from users.models import ThemeChoices
+from users.models import LogoStyleChoices, ThemeChoices
 from users.templatetags.user_tags import detail_section_attrs
 
 
@@ -37,6 +40,100 @@ class AppearanceViewTests(TestCase):
             DETAIL_LAYOUT_FAMILIES["music_album"]["zones"],
         )
         self.assertEqual(set(THEME_PRESETS), set(ThemeChoices.values))
+
+    def test_appearance_owns_every_logo_control(self):
+        response = self.client.get(reverse("appearance"))
+
+        self.assertContains(response, 'enctype="multipart/form-data"')
+        self.assertContains(response, 'name="logo_style"')
+        for label in ("Original color", "Monochrome", "Text", "Custom image", "Hidden"):
+            self.assertContains(response, label)
+        self.assertEqual(
+            set(LogoStyleChoices.values),
+            {"colorful", "monochrome", "text", "custom", "hidden"},
+        )
+
+        preferences = self.client.get(reverse("preferences"))
+        self.assertNotContains(preferences, 'name="logo_style"')
+
+    def test_appearance_persists_text_wordmark(self):
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "Nicolas Floppy",
+            },
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "text")
+        self.assertEqual(self.user.logo_text, "Nicolas Floppy")
+
+    def test_appearance_normalizes_custom_logo_upload(self):
+        source = BytesIO()
+        Image.new("RGBA", (900, 300), (255, 0, 120, 180)).save(source, "PNG")
+        upload = SimpleUploadedFile(
+            "brand.png",
+            source.getvalue(),
+            content_type="image/png",
+        )
+
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "custom",
+                "logo_upload": upload,
+            },
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "custom")
+        self.assertTrue(self.user.custom_logo_data.startswith("data:image/webp;base64,"))
+
+    def test_appearance_rejects_non_image_custom_logo(self):
+        upload = SimpleUploadedFile(
+            "brand.svg",
+            b"<svg onload=alert(1)></svg>",
+            content_type="image/svg+xml",
+        )
+
+        self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "custom",
+                "logo_upload": upload,
+            },
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "colorful")
+        self.assertEqual(self.user.custom_logo_data, "")
+
+    def test_appearance_rejects_unknown_logo_style_without_partial_save(self):
+        self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "glass",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "neon",
+            },
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "colorful")
+        self.assertEqual(self.user.theme, "system")
 
     def test_appearance_serializes_editor_data_once(self):
         response = self.client.get(reverse("appearance"))

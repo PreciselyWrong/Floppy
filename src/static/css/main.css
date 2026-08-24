@@ -875,6 +875,9 @@
   .min-h-0 {
     min-height: calc(var(--spacing) * 0);
   }
+  .min-h-24 {
+    min-height: calc(var(--spacing) * 24);
+  }
   .min-h-28 {
     min-height: calc(var(--spacing) * 28);
   }
@@ -3446,9 +3449,9 @@
       border-radius: 0.25rem;
     }
   }
-  .file\:rounded-md {
+  .file\:rounded-lg {
     &::file-selector-button {
-      border-radius: var(--radius-md);
+      border-radius: var(--radius-lg);
     }
   }
   .file\:border-0 {
@@ -3472,15 +3475,31 @@
       padding-inline: calc(var(--spacing) * 3);
     }
   }
+  .file\:px-4 {
+    &::file-selector-button {
+      padding-inline: calc(var(--spacing) * 4);
+    }
+  }
   .file\:py-2 {
     &::file-selector-button {
       padding-block: calc(var(--spacing) * 2);
+    }
+  }
+  .file\:py-2\.5 {
+    &::file-selector-button {
+      padding-block: calc(var(--spacing) * 2.5);
     }
   }
   .file\:text-sm {
     &::file-selector-button {
       font-size: var(--text-sm);
       line-height: var(--tw-leading, var(--text-sm--line-height));
+    }
+  }
+  .file\:font-medium {
+    &::file-selector-button {
+      --tw-font-weight: var(--font-weight-medium);
+      font-weight: var(--font-weight-medium);
     }
   }
   .file\:text-white {
@@ -4256,6 +4275,11 @@
       }
     }
   }
+  .focus\:border-\[var\(--color-accent\)\] {
+    &:focus {
+      border-color: var(--color-accent);
+    }
+  }
   .focus\:border-indigo-500 {
     &:focus {
       border-color: var(--color-indigo-500);
@@ -4293,6 +4317,14 @@
   .focus\:ring-\[var\(--color-accent\)\] {
     &:focus {
       --tw-ring-color: var(--color-accent);
+    }
+  }
+  .focus\:ring-\[var\(--color-accent\)\]\/30 {
+    &:focus {
+      --tw-ring-color: var(--color-accent);
+      @supports (color: color-mix(in lab, red, red)) {
+        --tw-ring-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+      }
     }
   }
   .focus\:ring-indigo-200 {
@@ -5389,6 +5421,11 @@
       grid-template-columns: repeat(6, minmax(0, 1fr));
     }
   }
+  .lg\:grid-cols-\[minmax\(0\,1fr\)_minmax\(18rem\,1fr\)\] {
+    @media (width >= 64rem) {
+      grid-template-columns: minmax(0,1fr) minmax(18rem,1fr);
+    }
+  }
   .lg\:flex-col {
     @media (width >= 64rem) {
       flex-direction: column;
@@ -5492,6 +5529,11 @@
   .xl\:grid-cols-4 {
     @media (width >= 80rem) {
       grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+  }
+  .xl\:grid-cols-5 {
+    @media (width >= 80rem) {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
     }
   }
   .\@max-\[210px\]\:flex-col {
@@ -5967,6 +6009,7 @@ main > .container, .preferences-page {
 }
 .brand-link {
   display: inline-flex;
+  flex-shrink: 0;
   min-width: 0;
   align-items: center;
   transform-origin: left center;
@@ -5975,11 +6018,19 @@ main > .container, .preferences-page {
 .brand-link:active {
   transform: translateY(1px) scale(0.97);
 }
-.brand-built-in-image, .brand-custom-image {
+.brand-built-in-image {
   display: block;
+  flex-shrink: 0;
+  width: 9.875rem;
+  height: 3rem;
+  object-fit: contain;
+}
+.brand-custom-image {
+  display: block;
+  flex-shrink: 0;
   width: auto;
-  height: 2.25rem;
-  max-width: 10rem;
+  height: 3rem;
+  max-width: 11rem;
   object-fit: contain;
 }
 .brand-link-large :is(.brand-built-in-image, .brand-custom-image) {
