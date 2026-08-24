@@ -6,22 +6,21 @@ neither failure is visible in the theme the author has open.
 
 ## How a theme is selected
 
-`user.theme` holds one of `light`, `dark` or `system`. `base.html` writes the
-value onto the root element:
+`user.theme` holds `system`, `light`, `dark`, `projector`, `video_store`, or
+`custom`. `base.html` writes every explicit choice onto the root element:
 
 ```html
-<html class="{% if user.theme == 'light' %}light{% elif user.theme == 'dark' %}dark{% endif %}">
+<html class="{% if user.theme != 'system' %}{{ user.theme }}{% endif %}">
 ```
 
 `system` writes no class, which lets the operating system preference decide.
 
-There are therefore six states, not two: three values of `user.theme` crossed
-with a light or dark operating system preference. Any change to colour must hold
-in all six.
+Only `system` follows the operating system preference. Presets and the custom
+palette are explicit states. Any token change must be checked in every state.
 
 ## Tokens
 
-`src/static/css/input.css` declares every `--color-*` token in four blocks:
+`src/static/css/input.css` declares the base tokens in four blocks:
 
 | Block | Applies to |
 | --- | --- |
@@ -29,6 +28,11 @@ in all six.
 | `@media (prefers-color-scheme: light) { :root:not(.dark) }` | `system` on a light host |
 | `html.light` | an explicit light choice |
 | `html.dark` | an explicit dark choice |
+
+Preset classes override the tokens they intentionally change and inherit the
+remaining dark defaults. `html.custom` also inherits the dark defaults;
+`base.html` adds only the six validated custom values as inline variables.
+`users.appearance` is the allowlist and validation boundary for those values.
 
 `html.dark` repeats the `:root` values. That repetition is redundant, since
 `:root` already carries the dark values and the light media query is guarded by
@@ -83,10 +87,14 @@ concatenated parts to avoid exactly that.
 
 ## Persisting a theme change
 
-The header toggle flips the root class immediately and posts `theme=<value>`
-alone to the preferences view. That view therefore reads every field with a
+The header toggle removes every explicit theme class, applies `light` or `dark`
+immediately, and posts `theme=<value>` alone to the preferences view. That view
+therefore reads every field with a
 presence check rather than a fallback: a field that defaulted when absent would
 be reset on every toggle. `users.tests.views.test_theme_toggle` pins this.
+
+Settings > Appearance owns preset selection, the custom palette, and detail
+page composition. It validates the complete payload before saving any part.
 
 `PATCH /api/v1/user/preferences/` follows the same rule and ignores any field
 the body omits. It does not currently accept `theme`.

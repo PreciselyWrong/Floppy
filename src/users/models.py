@@ -206,6 +206,9 @@ class ThemeChoices(models.TextChoices):
     SYSTEM = "system", "System default"
     DARK = "dark", "Dark"
     LIGHT = "light", "Light"
+    PROJECTOR = "projector", "Projector"
+    VIDEO_STORE = "video_store", "Video store"
+    CUSTOM = "custom", "Custom palette"
 
 
 class LogoStyleChoices(models.TextChoices):
@@ -1002,9 +1005,21 @@ class User(AbstractUser):
     )
 
     theme = models.CharField(
-        max_length=10,
+        max_length=20,
         default=ThemeChoices.SYSTEM,
         choices=ThemeChoices.choices,
+    )
+
+    custom_theme = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Validated custom application color palette",
+    )
+
+    detail_page_layouts = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Visible and ordered sections for each detail page family",
     )
 
     logo_style = models.CharField(
