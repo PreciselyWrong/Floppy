@@ -13,10 +13,9 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-title" content="Floppy">
-
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="mobile-web-app-title" content="Floppy">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Floppy">
 
     <title>
       {% block title %}
@@ -611,6 +610,41 @@
       <div class="w-full max-w-xl px-4 space-y-2 pointer-events-auto"></div>
     </div>
 
+    <aside data-pwa-install="true"
+           hidden
+           aria-labelledby="pwa-install-title"
+           class="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-sm rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-[var(--color-text)] shadow-2xl sm:left-auto sm:mx-0">
+      <div class="flex items-start gap-3">
+        <img src="{% static 'favicon/android-chrome-192x192.png' %}"
+             alt=""
+             width="48"
+             height="48"
+             class="h-12 w-12 shrink-0 rounded-xl">
+        <div class="min-w-0 flex-1">
+          <h2 id="pwa-install-title" class="font-semibold">Install Floppy</h2>
+          <p data-pwa-install-message class="mt-1 text-sm text-[var(--color-text-muted)]">
+            Add Floppy to this device for quick, app-like access.
+          </p>
+          <p data-pwa-ios-help="true"
+             hidden
+             class="mt-2 text-sm text-[var(--color-text-secondary)]">
+            Open Share, then choose Add to Home Screen.
+          </p>
+          <button type="button"
+                  data-pwa-install-action
+                  class="mt-3 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+            Install
+          </button>
+        </div>
+        <button type="button"
+                data-pwa-install-dismiss
+                aria-label="Dismiss install suggestion"
+                class="rounded-lg p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-hover-dim)] hover:text-[var(--color-text)]">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+    </aside>
+
     {% block js %}
     {% endblock js %}
 
@@ -796,5 +830,6 @@
     <script src="{% static 'js/episodeBulkTrackForm.js' %}{% get_static_file_mtime 'js/episodeBulkTrackForm.js' %}"></script>
     <script src="{% static 'js/searchShortcut.js' %}{% get_static_file_mtime 'js/searchShortcut.js' %}"></script>
     <script src="{% static 'js/searchAutocomplete.js' %}{% get_static_file_mtime 'js/searchAutocomplete.js' %}"></script>
+    <script src="{% static 'js/pwa-install.js' %}{% get_static_file_mtime 'js/pwa-install.js' %}"></script>
   </body>
 </html>
