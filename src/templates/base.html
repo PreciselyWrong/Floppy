@@ -630,7 +630,7 @@
           || (!html.classList.contains("dark") && systemPrefersLight);
         const next = currentlyLight ? "dark" : "light";
 
-        html.classList.remove("light", "dark", "projector", "video_store", "custom");
+        html.classList.remove("light", "dark", "glass", "projector", "video_store", "custom");
         html.classList.add(next);
 
         fetch("{% url 'preferences' %}", {

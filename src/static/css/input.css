@@ -34,6 +34,9 @@
   --color-genre-badge-border: rgba(167, 139, 250, 0.18);
   --color-genre-badge-text: #ede9fe;
   --color-genre-badge-hover-bg: rgba(139, 92, 246, 0.15);
+  --theme-radius: 12px;
+  --theme-blur: 0px;
+  --theme-surface-opacity: 100%;
   color-scheme: dark;
 }
 
@@ -135,6 +138,37 @@ html.dark {
   color-scheme: dark;
 }
 
+html.glass {
+  --color-page-bg: transparent;
+  --color-sidebar: #0c1020;
+  --color-surface: #171b31;
+  --color-surface-strong: #252b49;
+  --color-surface-hover: #303858;
+  --color-panel: #11162a;
+  --color-surface-alt: #202640;
+  --color-surface-muted: #292f4c;
+  --color-surface-dim: #0c1122;
+  --color-surface-border: #4c567a;
+  --color-border: #343c5e;
+  --color-hover-dim: #1c2340;
+  --color-text: #f8f9ff;
+  --color-text-secondary: #d7dcf2;
+  --color-text-muted: #aab3d1;
+  --color-accent: #8b7cff;
+  --color-link: #67e8f9;
+  --color-link-hover: #a5f3fc;
+  --theme-radius: 16px;
+  --theme-blur: 18px;
+  --theme-surface-opacity: 72%;
+  background-color: #070a14;
+  background-image:
+    radial-gradient(circle at 18% 12%, rgb(91 75 255 / 24%), transparent 34rem),
+    radial-gradient(circle at 84% 8%, rgb(34 211 238 / 18%), transparent 30rem),
+    linear-gradient(145deg, #070a14 0%, #0d1122 52%, #080b16 100%);
+  background-attachment: fixed;
+  color-scheme: dark;
+}
+
 html.projector {
   --color-page-bg: #15130f;
   --color-sidebar: #0d0c09;
@@ -178,7 +212,49 @@ html.video_store {
 }
 
 html.custom {
+  --theme-radius: 12px;
+  --theme-blur: 12px;
+  --theme-surface-opacity: 82%;
+  background-color: var(--color-page-bg);
   color-scheme: dark;
+}
+
+html:is(.glass, .custom) :where(
+  .rounded,
+  .rounded-sm,
+  .rounded-md,
+  .rounded-lg,
+  .rounded-xl,
+  .rounded-2xl,
+  .rounded-3xl
+) {
+  border-radius: var(--theme-radius);
+}
+
+html:is(.glass, .custom) [class*="bg-[var(--color-surface)]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--color-surface) var(--theme-surface-opacity),
+    transparent
+  );
+  backdrop-filter: blur(var(--theme-blur)) saturate(145%);
+  -webkit-backdrop-filter: blur(var(--theme-blur)) saturate(145%);
+}
+
+html:is(.glass, .custom) [class*="bg-[var(--color-panel)]"] {
+  background-color: color-mix(
+    in srgb,
+    var(--color-panel) var(--theme-surface-opacity),
+    transparent
+  );
+  backdrop-filter: blur(var(--theme-blur)) saturate(145%);
+  -webkit-backdrop-filter: blur(var(--theme-blur)) saturate(145%);
+}
+
+html.glass [class*="bg-[var(--color-sidebar)]"] {
+  background-color: rgb(12 16 32 / 76%);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
 }
 
 .theme-swatch {
@@ -192,6 +268,7 @@ html.custom {
 
 .theme-swatch-light { background: linear-gradient(135deg, #f8f9fa 0 65%, #4f46e5 65%); }
 .theme-swatch-dark { background: linear-gradient(135deg, #212529 0 65%, #4a9eff 65%); }
+.theme-swatch-glass { background: radial-gradient(circle at 30% 25%, #67e8f9, transparent 38%), linear-gradient(135deg, #0d1122 0 55%, #8b7cff 100%); }
 .theme-swatch-projector { background: linear-gradient(135deg, #15130f 0 65%, #f2a93b 65%); }
 .theme-swatch-video_store { background: linear-gradient(135deg, #10132b 0 50%, #ff4fa3 50% 75%, #58e1d4 75%); }
 .theme-swatch-custom { background: conic-gradient(#ff4fa3, #58e1d4, #f2a93b, #4f46e5, #ff4fa3); }

@@ -206,6 +206,7 @@ class ThemeChoices(models.TextChoices):
     SYSTEM = "system", "System default"
     DARK = "dark", "Dark"
     LIGHT = "light", "Light"
+    GLASS = "glass", "Glass cinema"
     PROJECTOR = "projector", "Projector"
     VIDEO_STORE = "video_store", "Video store"
     CUSTOM = "custom", "Custom palette"

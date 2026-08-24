@@ -19,6 +19,7 @@ class AppearanceViewTests(TestCase):
     def test_appearance_exposes_presets_and_distinct_detail_families(self):
         response = self.client.get(reverse("appearance"))
 
+        self.assertContains(response, "Glass cinema")
         self.assertContains(response, "Projector")
         self.assertContains(response, "Video store")
         self.assertContains(response, "Custom palette")
@@ -28,6 +29,14 @@ class AppearanceViewTests(TestCase):
             DETAIL_LAYOUT_FAMILIES["episode"]["zones"],
             DETAIL_LAYOUT_FAMILIES["music_album"]["zones"],
         )
+
+    def test_appearance_serializes_editor_data_once(self):
+        response = self.client.get(reverse("appearance"))
+
+        self.assertIsInstance(response.context["custom_theme_json"], dict)
+        self.assertIsInstance(response.context["detail_layout_families_json"], dict)
+        self.assertIsInstance(response.context["detail_layouts_json"], dict)
+        self.assertNotContains(response, "overflow-x-auto")
 
     def test_appearance_persists_custom_palette_and_ordered_sections(self):
         layouts = {
@@ -43,6 +52,9 @@ class AppearanceViewTests(TestCase):
             "text": "#f6f1df",
             "muted": "#adb7cc",
             "accent": "#ffb454",
+            "radius": 18,
+            "blur": 16,
+            "surface_opacity": 72,
         }
 
         response = self.client.post(
@@ -59,6 +71,20 @@ class AppearanceViewTests(TestCase):
         self.assertEqual(self.user.theme, "custom")
         self.assertEqual(self.user.custom_theme, palette)
         self.assertEqual(self.user.detail_page_layouts["media"], layouts["media"])
+
+    def test_appearance_rejects_invalid_custom_effect_values(self):
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "custom",
+                "custom_theme": json.dumps({"radius": "20px; color: red"}),
+                "detail_layouts": "{}",
+            },
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.theme, "system")
 
     def test_appearance_rejects_unknown_sections_without_partial_save(self):
         response = self.client.post(
@@ -82,12 +108,18 @@ class AppearanceViewTests(TestCase):
         self.user.custom_theme = {
             "page_bg": "#10141f",
             "accent": "red; background:url(https://example.test)",
+            "radius": 18,
+            "blur": 16,
+            "surface_opacity": 72,
         }
         self.user.save(update_fields=["theme", "custom_theme"])
 
         response = self.client.get(reverse("preferences"))
 
         self.assertContains(response, "--color-page-bg: #10141f")
+        self.assertContains(response, "--theme-radius: 18px")
+        self.assertContains(response, "--theme-blur: 16px")
+        self.assertContains(response, "--theme-surface-opacity: 72%")
         self.assertNotContains(response, "background:url")
 
     def test_detail_section_attributes_apply_visibility_and_order(self):
