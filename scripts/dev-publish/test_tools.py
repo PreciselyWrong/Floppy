@@ -41,6 +41,8 @@ class ProjectToolContractTests(unittest.TestCase):
             self.assertIn(token, script)
         self.assertIn("git push --set-upstream origin custom", script)
         self.assertIn("api.github.com/repos/PreciselyWrong/Floppy/actions/runs", script)
+        self.assertIn("git credential fill", script)
+        self.assertIn('Authorization = "Bearer $GitHubToken"', script)
         self.assertIn("ssh unraid-server", script)
         self.assertIn("pre-custom", script)
         self.assertIn("ghcr.io/dannyvfilms/floppy:latest", script)

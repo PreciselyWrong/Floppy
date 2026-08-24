@@ -64,10 +64,26 @@ try {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 
+    $credentialLines = "protocol=https`nhost=github.com`n`n" | git credential fill
+    if ($LASTEXITCODE -ne 0) { throw "Les identifiants GitHub sont indisponibles." }
+    $GitHubToken = $null
+    foreach ($line in $credentialLines) {
+        if ($line -match "^password=(.*)$") { $GitHubToken = $matches[1] }
+    }
+    $credentialLines = $null
+    if ([string]::IsNullOrWhiteSpace($GitHubToken)) {
+        throw "Le jeton GitHub est indisponible."
+    }
+    $GitHubHeaders = @{
+        Accept = "application/vnd.github+json"
+        Authorization = "Bearer $GitHubToken"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+
     $api = "https://api.github.com/repos/PreciselyWrong/Floppy/actions/runs?branch=custom&per_page=30"
     $run = $null
-    for ($attempt = 0; $attempt -lt 180; $attempt++) {
-        $response = Invoke-RestMethod -Uri $api -Headers @{ Accept = "application/vnd.github+json" }
+    for ($attempt = 0; $attempt -lt 90; $attempt++) {
+        $response = Invoke-RestMethod -Uri $api -Headers $GitHubHeaders
         $run = $response.workflow_runs |
             Where-Object { $_.head_sha -eq $CommitSha -and $_.name -eq "Custom Docker Image" } |
             Select-Object -First 1
@@ -75,8 +91,9 @@ try {
             Write-Output "GitHub Actions : $($run.status) $($run.html_url)"
             if ($run.status -eq "completed") { break }
         }
-        Start-Sleep -Seconds 15
+        Start-Sleep -Seconds 30
     }
+    $GitHubToken = $null
     if ($null -eq $run -or $run.status -ne "completed" -or $run.conclusion -ne "success") {
         throw "La construction GitHub n'a pas réussi pour $CommitSha."
     }
