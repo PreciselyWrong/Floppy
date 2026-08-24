@@ -75,6 +75,9 @@ def calendar(request):
 
     # Get events and organize by day
     releases = Event.objects.get_user_events(request.user, first_day, last_day)
+    search_query = request.GET.get("q", "").strip()
+    if search_query:
+        releases = releases.filter(item__title__icontains=search_query)
 
     podcast_media_ids = [
         release.item.media_id
@@ -149,6 +152,7 @@ def calendar(request):
         "available_media_types": available_media_types,
         "days_in_month": days_in_month,
         "selected_day": selected_day,
+        "search_query": search_query,
         "weekday_headers": weekday_headers,
     }
     return render(request, "events/calendar.html", context)

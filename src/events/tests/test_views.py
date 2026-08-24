@@ -271,6 +271,53 @@ class CalendarViewTests(TestCase):
 
     @patch("events.models.Event.objects.get_user_events")
     @patch.object(get_user_model(), "update_preference")
+    def test_calendar_search_filters_events_by_title(
+        self,
+        mock_update_preference,
+        mock_get_user_events,
+    ):
+        """Calendar search should keep only matching release titles."""
+        mock_update_preference.return_value = "list"
+        today = timezone.localdate()
+        matching_item = Item.objects.create(
+            media_id="matching-movie",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="The Grand Adventure",
+        )
+        other_item = Item.objects.create(
+            media_id="other-movie",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Quiet Evening",
+        )
+        matching_event = Event.objects.create(
+            item=matching_item,
+            datetime=timezone.make_aware(
+                timezone.datetime(today.year, today.month, 15, 12, 0),
+            ),
+        )
+        other_event = Event.objects.create(
+            item=other_item,
+            datetime=timezone.make_aware(
+                timezone.datetime(today.year, today.month, 16, 12, 0),
+            ),
+        )
+        mock_get_user_events.return_value = Event.objects.filter(
+            id__in=[matching_event.id, other_event.id],
+        )
+
+        response = self.client.get(
+            reverse("calendar"),
+            {"view": "list", "q": "grand"},
+        )
+
+        self.assertContains(response, "The Grand Adventure")
+        self.assertNotContains(response, "Quiet Evening")
+        self.assertEqual(response.context["search_query"], "grand")
+
+    @patch("events.models.Event.objects.get_user_events")
+    @patch.object(get_user_model(), "update_preference")
     def test_calendar_list_uses_podcast_show_image_when_item_image_missing(
         self,
         mock_update_preference,
