@@ -69,7 +69,7 @@
                                         hx-target="closest [data-home-row-wrapper]"
                                         hx-swap="outerHTML"
                                         data-home-row-sort-toggle="true"
-                                        aria-label="Toggle sort direction for {{ row.title }}"
+                                        aria-label="Toggle sort direction for {{ row.title|default:'Media' }}"
                                         class="home-row-heading-sort-form home-row-heading-sort-button inline-flex items-center ml-3.5 text-sm font-medium leading-none text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-sm">
                                     <span class="home-row-heading-sort-label">{{ row.summary_inline }}</span>
                                     {% if row.direction == 'asc' %}
@@ -97,13 +97,13 @@
                                             :aria-expanded="open.toString()"
                                             data-home-row-collapse-toggle="true"
                                             class="rounded-sm text-left hover:underline focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                        {{ row.title }}
+                                        {{ row.title|default:'Media' }}
                                     </button>
                                 {% elif row.url %}
                                     <a href="{{ row.url }}"
-                                       class="rounded-sm hover:underline focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ row.title }}</a>
+                                       class="rounded-sm hover:underline focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ row.title|default:'Media' }}</a>
                                 {% else %}
-                                    {{ row.title }}
+                                    {{ row.title|default:'Media' }}
                                 {% endif %}
                                 {% if row.view_all_url and row.view_all_text %}
                                     <a href="{{ row.view_all_url }}"
@@ -162,6 +162,10 @@
                 {% endif %}
                 <div id="media-grid-row-{{ row.row_id }}"
                      class="flex flex-nowrap gap-4 overflow-x-auto pb-3 pr-2 home-row-scrollbar-hidden{% if 'square' in row.grid_class|default:'' %} items-start{% endif %}"
+                     data-horizontal-scroll="true"
+                     tabindex="0"
+                     role="region"
+                     aria-label="Media carousel"
                      data-home-row="true"
                      data-loaded-count="{{ row.loaded_count }}"
                      data-loading="false"

@@ -453,8 +453,9 @@
                 {% else %}
                 <div class="space-y-6" id="episodes-batch">
                   {% for episode in media.episodes %}
+                    {% firstof episode.display_title episode.title episode.name episode.issue_number "episode" as episode_url_title %}
                     {% if media_type == MediaTypes.COMIC.value %}
-                      {% url 'media_details' source=episode.source media_type=episode.media_type media_id=episode.media_id title=episode.title|default:episode.issue_number|slug as ep_detail_url %}
+                      {% url 'media_details' source=episode.source media_type=episode.media_type media_id=episode.media_id title=episode_url_title|slug as ep_detail_url %}
                       {% include "app/components/issue_row.html" %}
                     {% else %}
                       {% if media_type == MediaTypes.SEASON.value and media.source and media.media_id and media.season_number %}{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% else %}{% url 'episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% endif %}{% elif media_type == MediaTypes.ANIME.value and episode.source and episode.media_id and episode.episode_number %}{% url 'anime_episode_details' source=episode.source media_id=episode.media_id title=media.title|slug season_number=episode.season_number|default:0 episode_number=episode.episode_number as ep_detail_url %}{% endif %}

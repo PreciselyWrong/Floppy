@@ -135,7 +135,11 @@
   {% if tracked_titles and 'tracked' not in person_hidden_sections %}
     <section class="mb-8">
       <h2 class="mb-4 text-xl font-bold">Tracked titles</h2>
-      <div class="flex gap-4 overflow-x-auto pb-2">
+      <div class="flex gap-4 overflow-x-auto pb-2 home-row-scrollbar-hidden"
+           data-horizontal-scroll="true"
+           tabindex="0"
+           role="region"
+           aria-label="Tracked titles carousel">
         {% for entry in tracked_titles|slice:":20" %}
           {% include "app/components/person_filmography_card.html" with entry=entry user=user source=source IMG_NONE=IMG_NONE show_watched_runtime_chip=True only %}
         {% endfor %}

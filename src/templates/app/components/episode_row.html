@@ -96,7 +96,7 @@
           {% if ep_detail_url %}<a href="{{ ep_detail_url }}" class="block min-w-0 hover:text-[var(--color-link)] transition-colors">{% endif %}
           <div>
             <h2 class="text-xl font-semibold mb-1 line-clamp-1 flex items-center gap-1.5">
-              {{ episode.display_title|default:episode.title }}
+              {% firstof episode.display_title episode.title episode.name "Episode" %}
               {% if episode.public_rating is not None %}
                 <span class="text-xs text-amber-300" title="Public rating">★ {{ episode.public_rating }}</span>
               {% endif %}
@@ -149,7 +149,7 @@
   <div class="flex-1 min-w-0">
     {% if ep_detail_url %}<a href="{{ ep_detail_url }}" class="group/ep-row block">{% endif %}
     <p class="text-sm font-medium truncate flex items-center gap-1.5 {% if ep_detail_url %}group-hover/ep-row:text-[var(--color-link)] transition-colors{% endif %}">
-      <span class="truncate">{{ episode.display_title|default:episode.title }}</span>
+      <span class="truncate">{% firstof episode.display_title episode.title episode.name "Episode" %}</span>
       {% if episode.public_rating is not None %}<span class="text-[10px] text-amber-300">★ {{ episode.public_rating }}</span>{% endif %}
       {% if episode.is_skipped %}<span class="text-[10px] text-amber-300">Skipped</span>{% endif %}
       {% if episode.collection_entry %}

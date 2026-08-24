@@ -25,6 +25,7 @@
 
 ## Done
 
+- Glissement direct au doigt, à la souris, au stylet et au clavier sur les listes horizontales.
 - Enrichissement des séries et saisons: reprise, sorties futures, ratings d'épisodes, tendance des notes personnelles et estimation sur 28 jours configurables.
 - Enrichissement des crédits et fiches personne: invités séparés, œuvres clés, âge, titres suivis et sections configurables.
 - Section Home `All media` déployée avec sa rangée `In progress` transversale.
