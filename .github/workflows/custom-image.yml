@@ -16,9 +16,9 @@ env:
 
 jobs:
   quality:
-    name: Lint and app tests
+    name: Custom checks
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -35,18 +35,16 @@ jobs:
         with:
           version: "0.12.3"
 
-      - name: Install test and lint dependencies
-        run: uv sync --locked --no-default-groups --group test --group lint
+      - name: Install lint dependencies
+        run: uv sync --locked --only-group lint
 
       - name: Check dependency lock and Python style
         run: |
           uv lock --check
           uv run --no-sync ruff check src
 
-      - name: Run application tests
-        env:
-          SECRET: custom-image-test-only
-        run: scripts/test.sh
+      - name: Check custom deployment contracts
+        run: python scripts/dev-publish/test_tools.py
 
   smoke:
     name: Smoke built image

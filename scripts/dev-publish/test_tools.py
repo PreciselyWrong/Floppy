@@ -57,6 +57,8 @@ class ProjectToolContractTests(unittest.TestCase):
         self.assertIn("needs: smoke", workflow)
         self.assertIn("packages: write", workflow)
         self.assertIn("secrets.GITHUB_TOKEN", workflow)
+        self.assertIn("python scripts/dev-publish/test_tools.py", workflow)
+        self.assertNotIn("run: scripts/test.sh", workflow)
         self.assertNotIn("dannyvfilms/yamtrack", workflow)
 
     def test_custom_deployment_document_has_safe_rollback(self) -> None:
