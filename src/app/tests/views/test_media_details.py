@@ -616,7 +616,7 @@ class MediaDetailsViewTests(TestCase):
             else volume_metadata
         )
 
-        volume_item = Item.objects.create(
+        Item.objects.create(
             media_id="500",
             source=Sources.COMICVINE.value,
             media_type=MediaTypes.COMIC.value,
