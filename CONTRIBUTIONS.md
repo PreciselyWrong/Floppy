@@ -10,7 +10,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 | UI-001 | Appearance and detail layouts | `feat/user-appearance` | `e8e2afc3` | `sha-2d692b39` | Pending | — | Deployed — thèmes avancés protégés du switcher; logo, mouvements et arrondis; préflight vert |
 | HOME-008 | Configurable Home history row | `feat/home-history-row` | — | — | Pending | — | Validated — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
 | HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | — | — | Pending | — | Validated — regroupement par série et saison, 28 tests History et Ruff validés |
-| HOME-006 | Cross-media `In progress` row | `feat/home-all-media-in-progress` | — | — | Pending | — | Validated — 47 tests Home, migration `users` et Ruff validés |
+| HOME-006 | Cross-media `In progress` row | `feat/home-all-media-ready` | `971877ff` | — | Pending | — | On custom — 54 tests Home, migration de fusion et Ruff validés |
 | HOME-005 | Collapsible Home rows | `feat/home-collapsible-rows` | `c1aebfb9` | `sha-a9e52961` | Works | — | Tested |
 | HOME-004 | `Up Next` row | `feat/home-up-next` | `2685526b` | `sha-a9e52961` | Pending | — | Validated — `SxxExx` conservé pour l’épisode connu; 45 tests Home validés |
 | HOME-003 | Stale Home row | `feat/home-stale-row` | `79267e47` | `sha-a9e52961` | Pending | — | Deployed |
