@@ -2,11 +2,10 @@
 
 ## Now
 
-- [ ] Déployer puis tester la section configurable `All media` avec une rangée `In progress` transversale.
+- [ ] Détecter les épisodes sautés sans inclure les spéciaux ni les sorties futures.
 
 ## Next
 
-- [ ] Détecter les épisodes sautés sans inclure les spéciaux ni les sorties futures.
 - [ ] Ajouter un aperçu d'avis publics textuels sur les fiches, puis un écran complet triable; commencer par TMDB et Hardcover.
 - [ ] Enrichir les cartes de distribution et d'équipe avec trois œuvres clés, en donnant la priorité aux titres réellement vus.
 - [ ] Séparer la distribution récurrente des invités sur les fiches d'épisodes.
@@ -28,6 +27,7 @@
 
 - Enrichissement des séries et saisons: reprise, sorties futures, ratings d'épisodes, tendance des notes personnelles et estimation sur 28 jours configurables.
 - Enrichissement des crédits et fiches personne: invités séparés, œuvres clés, âge, titres suivis et sections configurables.
+- Section Home `All media` déployée avec sa rangée `In progress` transversale.
 - Logo masquable ou personnalisable, avec mouvements et arrondis adaptés à chaque thème.
 - Moyenne publique pondérée configurable avec détail des sources et des votes.
 - Thèmes classiques et modernes distincts, avec mise en page configurable des fiches.
