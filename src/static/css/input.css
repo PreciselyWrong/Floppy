@@ -135,6 +135,67 @@ html.dark {
   color-scheme: dark;
 }
 
+html.projector {
+  --color-page-bg: #15130f;
+  --color-sidebar: #0d0c09;
+  --color-surface: #242018;
+  --color-surface-strong: #332d21;
+  --color-surface-hover: #463c29;
+  --color-panel: #1d1a14;
+  --color-surface-alt: #2d281e;
+  --color-surface-muted: #383124;
+  --color-surface-dim: #191711;
+  --color-surface-border: #5c4d32;
+  --color-border: #3b3325;
+  --color-hover-dim: #211d16;
+  --color-text: #fff4d6;
+  --color-text-secondary: #ead9ad;
+  --color-text-muted: #bba97e;
+  --color-accent: #f2a93b;
+  --color-link: #ffc866;
+  --color-link-hover: #ffe0a3;
+}
+
+html.video_store {
+  --color-page-bg: #10132b;
+  --color-sidebar: #090b1d;
+  --color-surface: #1a1f46;
+  --color-surface-strong: #282f63;
+  --color-surface-hover: #343d7d;
+  --color-panel: #151938;
+  --color-surface-alt: #232957;
+  --color-surface-muted: #292f63;
+  --color-surface-dim: #11152f;
+  --color-surface-border: #4652a0;
+  --color-border: #2e376f;
+  --color-hover-dim: #171b3b;
+  --color-text: #f9f7ff;
+  --color-text-secondary: #d8d9ff;
+  --color-text-muted: #aeb3df;
+  --color-accent: #ff4fa3;
+  --color-link: #58e1d4;
+  --color-link-hover: #9af4eb;
+}
+
+html.custom {
+  color-scheme: dark;
+}
+
+.theme-swatch {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border: 1px solid var(--color-surface-border);
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, #f8f9fa 0 50%, #212529 50%);
+}
+
+.theme-swatch-light { background: linear-gradient(135deg, #f8f9fa 0 65%, #4f46e5 65%); }
+.theme-swatch-dark { background: linear-gradient(135deg, #212529 0 65%, #4a9eff 65%); }
+.theme-swatch-projector { background: linear-gradient(135deg, #15130f 0 65%, #f2a93b 65%); }
+.theme-swatch-video_store { background: linear-gradient(135deg, #10132b 0 50%, #ff4fa3 50% 75%, #58e1d4 75%); }
+.theme-swatch-custom { background: conic-gradient(#ff4fa3, #58e1d4, #f2a93b, #4f46e5, #ff4fa3); }
+
 /* Theme toggle icon swap: mirrors the dark/light/system resolution used for
    the --color-* tokens above, so the button's icon matches the active theme
    without needing JS to compute it. */

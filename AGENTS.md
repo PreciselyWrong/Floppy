@@ -98,5 +98,5 @@ docker compose up -d
 
 ## État
 
-- Branche active : `feat/home-all-media-in-progress`; le worktree contient des changements Home/Apparence non commités à préserver.
-- Prochaine étape : committer sur demande, intégrer dans `custom`, déployer sur `unraid-server`, puis laisser Nicolas tester avant toute proposition de PR.
+- Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
+- Prochaine étape : déployer le candidat Theme sur `unraid-server`, laisser Nicolas le tester, puis enregistrer son verdict avant toute proposition de PR.

@@ -1,9 +1,11 @@
 {% load static %}
 {% load app_tags %}
+{% load user_tags %}
 
 <!DOCTYPE html>
 <html lang="en"
-      class="{% if user.is_authenticated and user.theme == 'light' %}light{% elif user.is_authenticated and user.theme == 'dark' %}dark{% endif %} bg-[var(--color-page-bg)]">
+      class="{% if user.is_authenticated and user.theme != 'system' %}{{ user.theme }}{% endif %} bg-[var(--color-page-bg)]"
+      style="{% custom_theme_style user %}">
   <head>
     {# Required meta tags #}
     <meta charset="UTF-8">
@@ -628,7 +630,7 @@
           || (!html.classList.contains("dark") && systemPrefersLight);
         const next = currentlyLight ? "dark" : "light";
 
-        html.classList.remove("light", "dark");
+        html.classList.remove("light", "dark", "projector", "video_store", "custom");
         html.classList.add(next);
 
         fetch("{% url 'preferences' %}", {
