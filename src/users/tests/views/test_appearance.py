@@ -38,6 +38,14 @@ class AppearanceViewTests(TestCase):
         )
         self.assertEqual(set(THEME_PRESETS), set(ThemeChoices.values))
 
+    def test_public_ratings_are_configurable_for_supported_detail_families(self):
+        for family_key in ("media", "series", "game", "comic", "podcast"):
+            hero_sections = DETAIL_LAYOUT_FAMILIES[family_key]["zones"]["hero"][
+                "sections"
+            ]
+
+            self.assertIn("ratings", {section["key"] for section in hero_sections})
+
     def test_appearance_serializes_editor_data_once(self):
         response = self.client.get(reverse("appearance"))
 

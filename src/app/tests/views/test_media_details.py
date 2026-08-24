@@ -2684,6 +2684,21 @@ class MediaDetailsViewTests(TestCase):
         self.assertContains(response, "350 votes")
         self.assertContains(response, "3 sources")
         self.assertContains(response, "57.1%")
+        self.assertContains(
+            response,
+            'data-detail-section="ratings" style="order: 0"',
+            html=False,
+        )
+
+        self.user.detail_page_layouts = {"media": {"hero": []}}
+        self.user.save(update_fields=["detail_page_layouts"])
+        hidden_response = self.client.get(response.request["PATH_INFO"])
+
+        self.assertContains(
+            hidden_response,
+            'data-detail-section="ratings" hidden',
+            html=False,
+        )
 
     @patch("app.providers.services.get_media_metadata")
     def test_media_details_hides_trakt_score_card_without_data(self, mock_get_metadata):

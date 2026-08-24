@@ -7,7 +7,6 @@
 ## Next
 
 - [ ] Détecter les épisodes sautés sans inclure les spéciaux ni les sorties futures.
-- [ ] Réunir les notes publiques déjà disponibles en une moyenne pondérée avec le détail des sources, votes, poids et liens.
 - [ ] Ajouter un aperçu d'avis publics textuels sur les fiches, puis un écran complet triable; commencer par TMDB et Hardcover.
 - [ ] Enrichir les cartes de distribution et d'équipe avec trois œuvres clés, en donnant la priorité aux titres réellement vus.
 - [ ] Séparer la distribution récurrente des invités sur les fiches d'épisodes.
@@ -27,6 +26,7 @@
 
 ## Done
 
+- Moyenne publique pondérée configurable avec détail des sources et des votes.
 - Thèmes classiques et modernes distincts, avec mise en page configurable des fiches.
 - Affichage de `SxxExx` pour le prochain épisode connu dans `Up Next`.
 - Regroupement des épisodes consécutifs dans l'historique.

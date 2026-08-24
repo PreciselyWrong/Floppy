@@ -66,10 +66,15 @@ def _zone(label, *sections):
     }
 
 
+def _ratings_hero():
+    return _zone("Header", ("ratings", "Ratings"))
+
+
 DETAIL_LAYOUT_FAMILIES = {
     "media": {
         "label": "Films, books and manga",
         "zones": {
+            "hero": _ratings_hero(),
             "sidebar": _zone(
                 "Information column",
                 ("history", "Your history"),
@@ -91,6 +96,7 @@ DETAIL_LAYOUT_FAMILIES = {
     "series": {
         "label": "Series and seasons",
         "zones": {
+            "hero": _ratings_hero(),
             "sidebar": _zone(
                 "Information column",
                 ("history", "Your history"),
@@ -113,6 +119,7 @@ DETAIL_LAYOUT_FAMILIES = {
     "game": {
         "label": "Games",
         "zones": {
+            "hero": _ratings_hero(),
             "sidebar": _zone(
                 "Information column",
                 ("history", "Your history"),
@@ -145,6 +152,7 @@ DETAIL_LAYOUT_FAMILIES = {
     "comic": {
         "label": "Comic volumes",
         "zones": {
+            "hero": _ratings_hero(),
             "sidebar": _zone(
                 "Information column",
                 ("history", "Your history"),
@@ -203,6 +211,7 @@ DETAIL_LAYOUT_FAMILIES = {
     "podcast": {
         "label": "Podcasts",
         "zones": {
+            "hero": _ratings_hero(),
             "sidebar": _zone(
                 "Information column",
                 ("details", "Details"),
