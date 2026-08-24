@@ -69,6 +69,7 @@ from app.tag_views import (
 from app.track_modal_views import _DummyPodcastWrapper
 from app.view_constants import DETAIL_SECONDARY_FRAGMENT, force_live_metadata_cache_key
 from lists.views_helpers import get_public_list_for_item
+from users.models import HomePinnedItem
 
 logger = logging.getLogger(__name__)
 
@@ -2021,6 +2022,23 @@ def media_details(
         "studio_detail_keys": studio_detail_keys,
         "user_medias": user_medias,
         "current_instance": current_instance,
+        "detail_item": detail_item,
+        "can_home_pin": bool(
+            request.user.is_authenticated
+            and detail_item
+            and current_instance
+            and media_type in {MediaTypes.TV.value, MediaTypes.ANIME.value}
+        ),
+        "is_home_pinned": bool(
+            request.user.is_authenticated
+            and detail_item
+            and current_instance
+            and media_type in {MediaTypes.TV.value, MediaTypes.ANIME.value}
+            and HomePinnedItem.objects.filter(
+                user=request.user,
+                item=detail_item,
+            ).exists()
+        ),
         "music_artist": music_artist,
         "music_album": music_album,
         "public_view": public_view,

@@ -60,6 +60,11 @@ urlpatterns = [
     path("settings/sidebar", views.sidebar, name="sidebar"),
     path("settings/home-screen", views.home_screen, name="home_screen"),
     path(
+        "home/pins/<int:item_id>/toggle",
+        views.toggle_home_pin,
+        name="toggle_home_pin",
+    ),
+    path(
         "settings/home-screen/lists",
         views.home_screen_list_search,
         name="home_screen_list_search",
