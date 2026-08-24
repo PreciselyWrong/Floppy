@@ -258,9 +258,11 @@ Oververbosity:low
 Floppy is a Django 5.2 app for self-hosted media tracking with Celery workers and Redis. Tailwind CSS output is committed under `src/static/css/`, and templates load `src/static/css/main.css` via `src/templates/base.html`.
 
 ## Branch Policy
-- `upstream` (formerly named `dev` in this fork) must be an exact mirror of `FuzzyGrim/Yamtrack:dev`. Never commit to it, target it with a PR, or add fork-only edits. Refresh it only by exact fast-forward/reset to the upstream remote.
-- `latest` is the fork integration branch for day-to-day work and semantic upstream ports. Do not merge or rebase `upstream` into `latest`.
-- `release` is for versioned release/container publication flow, not the primary integration branch.
+- The Git remote `origin` is `PreciselyWrong/Floppy`; `upstream` is `dannyvfilms/Floppy`.
+- `latest` must remain an exact mirror of `upstream/latest`. Never develop on it.
+- Create each upstream contribution as an independent `feat/*` or `fix/*` branch from the current `upstream/latest`, and target `dannyvfilms/Floppy:latest`.
+- `custom` contains `upstream/latest`, pending feature branches, and the minimum fork-only deployment tooling. It is the only branch deployed to the personal Unraid server and must never be the source of an upstream pull request.
+- When upstream changes, fast-forward `latest`, update each active feature branch deliberately, then merge the updated upstream and pending feature branches into `custom`.
 
 ## Upstream Resolution Workflow
 
@@ -308,6 +310,9 @@ Models/migrations and divergent UI normally require manual adaptation. Provider 
 
 
 ## Local Commands
+- Run the isolated Docker development stack: `.\dev.ps1 -NonInteractive`
+- Preview personal image publication and Unraid deployment: `.\publish.ps1 -Plan -NonInteractive`
+- Publish the tested `custom` commit and deploy it to Unraid: `.\publish.ps1 -NonInteractive -Confirm`
 - Install locked dev dependencies: `uv sync --locked`
 - Django/manage.py commands require `SECRET` in the environment or `.env`.
 - Run migrations: `uv run --no-sync python src/manage.py migrate`

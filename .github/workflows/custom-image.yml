@@ -1,0 +1,193 @@
+name: Custom Docker Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "custom"
+
+concurrency:
+  group: custom-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: PreciselyWrong/floppy
+
+jobs:
+  quality:
+    name: Lint and app tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+
+      - name: Install test and lint dependencies
+        run: uv sync --locked --no-default-groups --group test --group lint
+
+      - name: Check dependency lock and Python style
+        run: |
+          uv lock --check
+          uv run --no-sync ruff check src
+
+      - name: Run application tests
+        env:
+          SECRET: custom-image-test-only
+        run: scripts/test.sh
+
+  smoke:
+    name: Smoke built image
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SMOKE_APP: floppy-custom-smoke-app-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_IMAGE: floppy:custom-smoke
+      SMOKE_NETWORK: floppy-custom-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_REDIS: floppy-custom-smoke-redis-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_VOLUME: floppy-custom-smoke-db-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: ${{ env.SMOKE_IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          platforms: linux/amd64
+          build-args: |
+            VERSION=custom-smoke
+            COMMIT_SHA=${{ github.sha }}
+
+      - name: Run and restart test image
+        run: |
+          set -euo pipefail
+
+          wait_for_health() {
+            for _ in $(seq 1 60); do
+              state=$(docker inspect --format '{{.State.Status}}' "$SMOKE_APP")
+              health=$(docker inspect --format '{{.State.Health.Status}}' "$SMOKE_APP")
+              if [ "$health" = healthy ]; then return 0; fi
+              if [ "$state" = exited ] || [ "$state" = dead ]; then
+                docker logs "$SMOKE_APP" >&2
+                return 1
+              fi
+              sleep 5
+            done
+            docker logs "$SMOKE_APP" >&2
+            return 1
+          }
+
+          start_app() {
+            docker run --detach \
+              --name "$SMOKE_APP" \
+              --network "$SMOKE_NETWORK" \
+              --publish 127.0.0.1:8000:8000 \
+              --env TZ=UTC \
+              --env SECRET=custom-smoke-only \
+              --env REDIS_URL="redis://$SMOKE_REDIS:6379" \
+              --env ADMIN_ENABLED=False \
+              --env DEMO_ACCOUNT_ENABLED=False \
+              --env DEBUG=False \
+              --env FLOPPY_RESOURCE_TIER=minimal \
+              --volume "$SMOKE_VOLUME:/floppy/db" \
+              "$SMOKE_IMAGE"
+          }
+
+          docker network create "$SMOKE_NETWORK"
+          docker volume create "$SMOKE_VOLUME"
+          docker run --detach --name "$SMOKE_REDIS" --network "$SMOKE_NETWORK" redis:8-alpine
+
+          for _ in $(seq 1 30); do
+            if docker exec "$SMOKE_REDIS" redis-cli ping | grep -qx PONG; then break; fi
+            sleep 2
+          done
+
+          start_app
+          wait_for_health
+          curl -fsS --max-time 10 http://127.0.0.1:8000/health/ >/dev/null
+          docker exec "$SMOKE_APP" python manage.py migrate --check --noinput
+          test "$(docker exec "$SMOKE_APP" printenv COMMIT_SHA)" = "${{ github.sha }}"
+
+          docker rm --force "$SMOKE_APP"
+          start_app
+          wait_for_health
+          curl -fsS --max-time 10 http://127.0.0.1:8000/health/ >/dev/null
+
+      - name: Clean up smoke resources
+        if: always()
+        run: |
+          docker rm --force "$SMOKE_APP" "$SMOKE_REDIS" 2>/dev/null || true
+          docker network rm "$SMOKE_NETWORK" 2>/dev/null || true
+          docker volume rm "$SMOKE_VOLUME" 2>/dev/null || true
+
+  publish:
+    name: Publish custom image
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Log into GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=custom
+            type=sha,format=long,prefix=sha-
+
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=custom-${{ github.sha }}
+            COMMIT_SHA=${{ github.sha }}
