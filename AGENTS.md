@@ -101,4 +101,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Theme est déployé sur `unraid-server` avec l'image `sha-daddc621`; attendre le verdict de Nicolas et l'enregistrer avant toute proposition de PR.
+- La nouvelle collection de thèmes est intégrée dans `custom`; déploiement Unraid en attente.
