@@ -106,4 +106,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Le logo agrandi et ses réglages dans Appearance sont intégrés dans `custom`; les déployer sur `unraid-server`, puis attendre le verdict de Nicolas avant toute proposition de PR.
+- Le logo agrandi et ses réglages dans Appearance sont déployés sur `unraid-server` avec l'image `sha-abac1af8`; attendre le verdict de Nicolas avant toute proposition de PR.

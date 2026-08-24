@@ -7,7 +7,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — calcul, affichage, options et préflight vert |
-| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `5e75601d` | — | Pending | — | On custom — logo agrandi et réglages déplacés dans Appearance; 32 tests fusionnés et Ruff verts |
+| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `5e75601d` | `sha-abac1af8e0881a3751124ed460f63d3a185e3bf0` | Pending | — | Deployed — logo agrandi et réglages dans Appearance; 32 tests fusionnés, Ruff et préflight verts |
 | HOME-008 | Configurable Home history row | `feat/home-history-row` | — | — | Pending | — | Validated — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
 | HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | — | — | Pending | — | Validated — regroupement par série et saison, 28 tests History et Ruff validés |
 | HOME-006 | Cross-media `In progress` row | `feat/home-all-media-ready` | `971877ff` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — 82 tests ciblés, migration de fusion, Ruff et préflight vert |
