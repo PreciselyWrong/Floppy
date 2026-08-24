@@ -48,6 +48,7 @@
     --color-cyan-100: oklch(95.6% 0.045 203.388);
     --color-cyan-400: oklch(78.9% 0.154 211.53);
     --color-cyan-500: oklch(71.5% 0.143 215.221);
+    --color-sky-300: oklch(82.8% 0.111 230.318);
     --color-sky-400: oklch(74.6% 0.16 232.661);
     --color-sky-500: oklch(68.5% 0.169 237.323);
     --color-sky-600: oklch(58.8% 0.158 241.966);
@@ -469,6 +470,9 @@
   }
   .col-span-2 {
     grid-column: span 2 / span 2;
+  }
+  .col-span-full {
+    grid-column: 1 / -1;
   }
   .col-start-1 {
     grid-column-start: 1;
@@ -2516,6 +2520,12 @@
       background-color: color-mix(in oklab, var(--color-sky-500) 14%, transparent);
     }
   }
+  .bg-sky-500\/15 {
+    background-color: color-mix(in srgb, oklch(68.5% 0.169 237.323) 15%, transparent);
+    @supports (color: color-mix(in lab, red, red)) {
+      background-color: color-mix(in oklab, var(--color-sky-500) 15%, transparent);
+    }
+  }
   .bg-sky-500\/\[0\.07\] {
     background-color: color-mix(in srgb, oklch(68.5% 0.169 237.323) 7.000000000000001%, transparent);
     @supports (color: color-mix(in lab, red, red)) {
@@ -3159,6 +3169,9 @@
   }
   .text-rose-400 {
     color: var(--color-rose-400);
+  }
+  .text-sky-300 {
+    color: var(--color-sky-300);
   }
   .text-sky-400 {
     color: var(--color-sky-400);
