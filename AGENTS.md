@@ -105,4 +105,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Les options de mouvement et de logo sont intégrées dans `custom`; les déployer sur `unraid-server`, puis attendre le verdict de Nicolas avant toute proposition de PR.
+- Les options de mouvement, de logo et la protection du thème choisi sont déployées sur `unraid-server` avec l'image `sha-2d692b39`; attendre le verdict de Nicolas avant toute proposition de PR.
