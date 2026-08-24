@@ -35,10 +35,10 @@ from lists import smart_rules
 from lists.models import CustomList
 from users.models import (
     DirectionChoices,
+    HomePinnedItem,
     HomeScreenRow,
     HomeScreenRowTypeChoices,
     HomeSortChoices,
-    HomePinnedItem,
     ListDetailSortChoices,
     MediaSortChoices,
     MediaStatusChoices,
@@ -53,6 +53,7 @@ RECENTLY_UNRATED_EPISODE_DAYS = 30
 RECENTLY_UNRATED_LABEL = "Recently Played - Not Rated"
 # Cap on how many active-filter labels are shown in a row's settings summary.
 MAX_SUMMARY_FILTER_PARTS = 4
+MAX_STALE_DAYS = 60
 SQUARE_HOME_MEDIA_TYPES = {
     MediaTypes.MUSIC.value,
     MediaTypes.PODCAST.value,
@@ -1275,7 +1276,7 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     }
     if media_type == MediaTypes.MUSIC.value:
         payload["subview"] = _canonical_music_subview(raw_subview)
-    elif raw_stale_days.isdigit() and 1 <= int(raw_stale_days) <= 60:
+    elif raw_stale_days.isdigit() and 1 <= int(raw_stale_days) <= MAX_STALE_DAYS:
         payload["stale_days"] = raw_stale_days
     return payload
 
@@ -1410,7 +1411,8 @@ def validate_library_row_filters(raw_filters: dict | None, media_type: str) -> d
         raise HomeScreenValidationError(msg)
     raw_stale_days = str(raw_filters.get("stale_days", "") or "").strip()
     if raw_stale_days and (
-        not raw_stale_days.isdigit() or not 1 <= int(raw_stale_days) <= 60
+        not raw_stale_days.isdigit()
+        or not 1 <= int(raw_stale_days) <= MAX_STALE_DAYS
     ):
         msg = f"Unsupported last-progress filter for {media_type}."
         raise HomeScreenValidationError(msg)

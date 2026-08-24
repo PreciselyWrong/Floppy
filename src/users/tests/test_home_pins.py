@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from app.models import Item, MediaTypes, Sources, Status, TV
+from app.models import TV, Item, MediaTypes, Sources, Status
 from users.models import HomePinnedItem
 
 

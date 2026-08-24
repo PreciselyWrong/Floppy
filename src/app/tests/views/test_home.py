@@ -8,7 +8,6 @@ from django.urls import reverse
 from django.utils import timezone
 
 from app import live_playback
-from app.templatetags import app_tags
 from app.models import (
     TV,
     Anime,
@@ -24,15 +23,16 @@ from app.models import (
     Sources,
     Status,
 )
+from app.templatetags import app_tags
+from events.models import Event
 from users.models import (
     DateFormatChoices,
     DirectionChoices,
+    HomePinnedItem,
     HomeScreenRow,
     HomeScreenRowTypeChoices,
     HomeSortChoices,
-    HomePinnedItem,
 )
-from events.models import Event
 
 
 class HomeViewTests(TestCase):

@@ -2222,6 +2222,8 @@ class HomePinnedItem(models.Model):
     pinned_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        """Keep the most recently pinned titles first and prevent duplicates."""
+
         ordering = ["-pinned_at", "-id"]
         constraints = [
             models.UniqueConstraint(
@@ -2229,3 +2231,7 @@ class HomePinnedItem(models.Model):
                 name="unique_home_pinned_item_per_user",
             ),
         ]
+
+    def __str__(self):
+        """Return a compact label for admin and debug output."""
+        return f"{self.user_id}:{self.item_id}"
