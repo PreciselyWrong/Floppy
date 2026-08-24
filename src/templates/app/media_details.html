@@ -220,6 +220,9 @@
       {# Score chips #}
       {% if media.score_count is not None or trakt_score or imdb_score or mal_score or user_medias and current_instance and not public_view|default:False %}
         <div class="order-2 mt-0 mb-5 flex w-full items-center justify-start gap-2 sm:order-1 sm:mt-4 sm:flex-wrap">
+          {% if aggregate_rating %}
+            {% include "app/components/detail_aggregate_rating.html" %}
+          {% endif %}
           {% if media.score_count is not None %}
             <div class="relative"
                  x-data="{ graphOpen: false }"

@@ -1,5 +1,5 @@
 import contextlib
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.templatetags.static import static
 from django.utils.text import slugify
@@ -9,6 +9,8 @@ from app.models import MediaTypes, Sources
 from app.services import game_lengths as game_length_services
 from app.services import trakt_popularity as trakt_popularity_service
 from app.templatetags import app_tags
+
+_MAX_PUBLIC_RATING = Decimal(10)
 
 
 def _format_game_length_minutes(minutes):
@@ -685,6 +687,111 @@ def _build_mal_rating_context(detail_item, route_media_type):
     return {
         "rating": rating,
         "rating_count": detail_item.mal_rating_count,
+    }
+
+
+def _build_aggregate_rating_context(
+    media_metadata,
+    detail_item,
+    display_provider,
+    *,
+    trakt_score=None,
+    imdb_score=None,
+    mal_score=None,
+):
+    """Combine the public ratings already available on a detail page."""
+    sources = []
+    seen_keys = set()
+    external_links = media_metadata.get("external_links") or {}
+    if not isinstance(external_links, dict):
+        external_links = {}
+    provider_labels = dict(Sources.choices)
+    candidates = [
+        (
+            display_provider,
+            provider_labels.get(display_provider, str(display_provider).upper()),
+            media_metadata.get("score"),
+            media_metadata.get("score_count"),
+            media_metadata.get("display_source_url")
+            or media_metadata.get("source_url"),
+        ),
+        (
+            "trakt",
+            "Trakt",
+            getattr(detail_item, "trakt_rating", None),
+            trakt_score.get("rating_count") if trakt_score else None,
+            None,
+        ),
+        (
+            Sources.IMDB.value,
+            Sources.IMDB.label,
+            getattr(detail_item, "imdb_rating", None),
+            imdb_score.get("rating_count") if imdb_score else None,
+            external_links.get("IMDb"),
+        ),
+        (
+            Sources.MAL.value,
+            Sources.MAL.label,
+            getattr(detail_item, "mal_rating", None),
+            mal_score.get("rating_count") if mal_score else None,
+            external_links.get("MyAnimeList"),
+        ),
+    ]
+
+    for key, label, rating, votes, external_url in candidates:
+        if key in seen_keys or isinstance(rating, bool):
+            continue
+        if isinstance(votes, bool) or not isinstance(votes, int) or votes <= 0:
+            continue
+        try:
+            decimal_rating = Decimal(str(rating))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if (
+            not decimal_rating.is_finite()
+            or not Decimal(0) <= decimal_rating <= _MAX_PUBLIC_RATING
+        ):
+            continue
+        seen_keys.add(key)
+        sources.append(
+            {
+                "key": key,
+                "label": label,
+                "rating_decimal": decimal_rating,
+                "votes": votes,
+                "external_url": external_url,
+            }
+        )
+
+    if not sources:
+        return None
+
+    total_votes = sum(source["votes"] for source in sources)
+    weighted_rating = sum(
+        source["rating_decimal"] * source["votes"] for source in sources
+    ) / Decimal(total_votes)
+    for source in sources:
+        source["rating"] = float(
+            source.pop("rating_decimal").quantize(
+                Decimal("0.1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+        source["weight"] = float(
+            (Decimal(source["votes"]) * 100 / Decimal(total_votes)).quantize(
+                Decimal("0.1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+    sources.sort(key=lambda source: source["votes"], reverse=True)
+
+    return {
+        "rating": float(
+            weighted_rating.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        ),
+        "total_votes": total_votes,
+        "source_count": len(sources),
+        "sources": sources,
     }
 
 

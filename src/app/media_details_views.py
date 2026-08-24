@@ -32,6 +32,7 @@ from app.activity_builders import (
 from app.db_retry import run_retryable_db_operation
 from app.detail_builders import (
     _apply_cached_hltb_link,
+    _build_aggregate_rating_context,
     _build_detail_link_sections,
     _build_detail_person_rows,
     _build_episode_graph_from_season_cache,
@@ -1948,6 +1949,14 @@ def media_details(
         if metadata_resolution_result
         else source
     )
+    aggregate_rating = _build_aggregate_rating_context(
+        media_metadata,
+        detail_item,
+        display_provider,
+        trakt_score=trakt_score,
+        imdb_score=imdb_score,
+        mal_score=mal_score,
+    )
     grouped_preview = (
         metadata_resolution_result.grouped_preview
         if metadata_resolution_result
@@ -2046,6 +2055,7 @@ def media_details(
         "show_notes": not public_view or public_notes_view,
         "play_stats": play_stats,
         "activity_subtitle": activity_subtitle,
+        "aggregate_rating": aggregate_rating,
         "trakt_score": trakt_score,
         "imdb_score": imdb_score,
         "mal_score": mal_score,

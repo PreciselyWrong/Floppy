@@ -2636,6 +2636,56 @@ class MediaDetailsViewTests(TestCase):
         )
 
     @patch("app.providers.services.get_media_metadata")
+    def test_media_details_renders_weighted_public_rating_breakdown(
+        self, mock_get_metadata
+    ):
+        Item.objects.create(
+            media_id="aggregate-238",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Aggregate Movie",
+            image="http://example.com/image.jpg",
+            trakt_rating=6.0,
+            trakt_rating_count=50,
+            imdb_rating=9.0,
+            imdb_rating_count=200,
+        )
+        mock_get_metadata.return_value = {
+            "media_id": "aggregate-238",
+            "title": "Aggregate Movie",
+            "media_type": MediaTypes.MOVIE.value,
+            "source": Sources.TMDB.value,
+            "source_url": "https://www.themoviedb.org/movie/238",
+            "image": "http://example.com/image.jpg",
+            "score": 8.0,
+            "score_count": 100,
+            "external_links": {
+                "IMDb": "https://www.imdb.com/title/tt0000238/",
+            },
+            "details": {},
+            "related": {},
+        }
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "aggregate-238",
+                    "title": "aggregate-movie",
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["aggregate_rating"]["rating"], 8.3)
+        self.assertContains(response, "Public rating")
+        self.assertContains(response, "350 votes")
+        self.assertContains(response, "3 sources")
+        self.assertContains(response, "57.1%")
+
+    @patch("app.providers.services.get_media_metadata")
     def test_media_details_hides_trakt_score_card_without_data(self, mock_get_metadata):
         Item.objects.create(
             media_id="239",
