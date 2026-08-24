@@ -44,6 +44,7 @@ class ProjectToolContractTests(unittest.TestCase):
         self.assertIn("git credential fill", script)
         self.assertIn('Authorization = "Bearer $GitHubToken"', script)
         self.assertIn("ssh unraid-server", script)
+        self.assertIn("tr -d '\\r'", script)
         self.assertIn("pre-custom", script)
         self.assertIn("ghcr.io/dannyvfilms/floppy:latest", script)
         self.assertIn("sha-$CommitSha", script)

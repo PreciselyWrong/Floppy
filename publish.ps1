@@ -100,7 +100,7 @@ try {
 
     if ($SelectedDestinations -contains "unraid") {
         $deployScript = Get-Content -Raw (Join-Path $ProjectRoot "scripts/dev-publish/deploy-unraid.sh")
-        $deployScript | & ssh unraid-server "sh -s -- deploy '$ImmutableImage' '$CommitSha'"
+        $deployScript | & ssh unraid-server "tr -d '\r' | sh -s -- deploy '$ImmutableImage' '$CommitSha'"
         if ($LASTEXITCODE -ne 0) { exit 4 }
     }
 

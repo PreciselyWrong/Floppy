@@ -370,6 +370,9 @@ Notes:
 - After model changes, keep migration files under `src/*/migrations/` and run `uv run --no-sync python src/manage.py migrate`.
 - Media type changes follow `docs/agents/media_type_integration.md` (`app.models.choices.MediaTypes` vocabulary + `app.config.MEDIA_TYPE_CONFIG` wiring).
 
+## ⛔ Interdits
+- Never create any pull request until Nicolas has explicitly reviewed and approved that specific PR request. For functional changes, deploy from `custom` and let Nicolas test first. This keeps unapproved work out of every review queue, including trivial and non-functional changes.
+
 ## PR / Commit Expectations
 - **Never commit unless the user explicitly asks.** Finishing a task, passing tests, or reaching a natural stopping point does not justify an automatic commit. Wait for a direct instruction such as "commit this", "commit the changes", or "make a commit".
 - **Never amend a commit the user has not seen.** If a hook fails after a commit attempt, fix the issue and create a new commit — do not amend.
