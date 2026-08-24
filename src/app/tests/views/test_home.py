@@ -150,6 +150,10 @@ class HomeViewTests(TestCase):
         self.assertEqual(season_row["title"], "In Progress")
         self.assertEqual(season_row["title_main"], "In Progress")
         self.assertIsNone(season_row["title_detail"])
+        self.assertEqual(
+            season_row["collapse_key"],
+            f"home-row-{season_row['row_id']}-open",
+        )
         self.assertEqual(len(season_row["items"]), 1)
         self.assertEqual(season_row["items"][0].media.progress, 5)
         self.assertEqual(len(anime_row["items"]), 1)
@@ -168,6 +172,12 @@ class HomeViewTests(TestCase):
         self.assertNotContains(response, "Sorted by Title • Ascending", html=False)
         self.assertContains(response, 'class="home-row-card w-44 shrink-0"', html=False)
         self.assertContains(response, 'data-home-row="true"', html=False)
+        self.assertContains(
+            response,
+            'data-home-row-collapse-toggle="true"',
+            html=False,
+        )
+        self.assertContains(response, ">View all</a>", html=False)
         self.assertNotContains(
             response, '<h2 class="text-2xl font-semibold">', html=False
         )
