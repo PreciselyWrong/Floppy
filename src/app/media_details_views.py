@@ -42,6 +42,7 @@ from app.detail_builders import (
     _build_series_graph_data,
     _build_stored_season_scores_graph,
     _build_trakt_popularity_context,
+    enrich_season_cards,
 )
 from app.log_safety import exception_summary
 from app.media_list_views import _collect_reading_activity_day_keys
@@ -1729,6 +1730,12 @@ def media_details(
                         item_dict = enriched_item.get("item")
                         if isinstance(item_dict, dict):
                             item_dict["route_media_type"] = MediaTypes.ANIME.value
+
+                    if getattr(request.user, "show_season_enrichment", True):
+                        enriched_related_items = enrich_season_cards(
+                            enriched_related_items,
+                        )
+                        media_metadata["related"][section_name] = enriched_related_items
 
                 media_metadata["related"][section_name] = enriched_related_items
 

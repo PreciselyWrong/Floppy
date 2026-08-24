@@ -84,14 +84,14 @@
       <span x-show="query && query.trim().length"
             class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]">
         <span class="text-[var(--color-text-muted)]">Search:</span>
-        <span>“<span x-text="query"></span>”</span>
+        <span>&ldquo;<span x-text="query"></span>&rdquo;</span>
       </span>
 
       <span class="ml-auto text-xs"
             :class="saveState === 'saving' ? 'text-yellow-300' : (saveState === 'error' ? 'text-red-400' : 'text-[var(--color-link)]')">
         <span>Edit mode active</span>
-        <span x-show="saveState === 'saving'"> • Saving…</span>
-        <span x-show="saveState === 'error'"> • Save failed</span>
+        <span x-show="saveState === 'saving'"> &bull; Saving...</span>
+        <span x-show="saveState === 'error'"> &bull; Save failed</span>
       </span>
     {% else %}
       <span class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]">
@@ -154,7 +154,7 @@
       {% endif %}
 
       {% if saved_smart_rules.search %}
-        <span class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]"><span class="text-[var(--color-text-muted)]">Search:</span> “{{ saved_smart_rules.search }}”</span>
+        <span class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]"><span class="text-[var(--color-text-muted)]">Search:</span> &ldquo;{{ saved_smart_rules.search }}&rdquo;</span>
       {% endif %}
     {% endif %}
   </div>

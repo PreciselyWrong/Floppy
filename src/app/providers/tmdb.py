@@ -2134,12 +2134,15 @@ def process_episodes(season_metadata, episodes_in_db, season=None):
                 "image_source": image_source,
                 "title": episode.get("name") or episode.get("title") or "",
                 "overview": episode.get("overview") or "",
+                "score": episode.get("score") or episode.get("vote_average"),
+                "score_count": episode.get("score_count") or episode.get("vote_count"),
                 # Plays in the current rewatch pass — everything watched
                 # when no pass is open — so the row renders unwatched again
                 # while a rewatch is under way.
                 "history": pass_plays,
                 "all_history": all_plays,
                 "runtime": get_readable_duration(episode.get("runtime")),
+                "runtime_minutes": episode.get("runtime"),
             },
         )
     return episodes_metadata
@@ -2264,7 +2267,10 @@ def episode(media_id, season_number, episode_number, language=None):
             "episode_title": response.get("name") or f"Episode {episode_number}",
             "score": round(vote_average, 1) if vote_average else None,
             "score_count": vote_count or None,
-            "cast": get_cast_credits({"cast": cast_rows}),
+            "cast": [
+                {**row, "credit_type": "guest"}
+                for row in get_cast_credits({"cast": cast_rows})
+            ],
             "crew": get_crew_credits({"crew": crew_rows}),
         }
         tvdb_episode_images = get_tvdb_episode_image_map(

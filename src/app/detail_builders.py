@@ -1069,6 +1069,184 @@ def _build_static_row(
     }
 
 
+def enrich_episode_rows(
+    episodes,
+    *,
+    season_number,
+    now=None,
+    show_public_ratings=True,
+    obfuscate_titles=False,
+    show_skipped=True,
+):
+    """Add spoiler-safe and rating metadata to normalized episode rows."""
+    from datetime import datetime
+
+    from django.utils import timezone
+
+    now = now or timezone.now()
+    rows = [dict(episode) for episode in episodes or []]
+
+    def _released(row):
+        value = row.get("air_date")
+        if value is None:
+            return False
+        if isinstance(value, datetime) and timezone.is_naive(value):
+            value = timezone.make_aware(value)
+        return value <= now
+
+    watched_numbers = {
+        row.get("episode_number")
+        for row in rows
+        if row.get("history") and _released(row)
+    }
+    last_watched = max(watched_numbers, default=None)
+    for row in rows:
+        episode_number = row.get("episode_number")
+        watched = bool(row.get("history"))
+        row["is_watched"] = watched
+        row["is_skipped"] = bool(
+            show_skipped
+            and season_number != 0
+            and last_watched is not None
+            and episode_number is not None
+            and episode_number < last_watched
+            and not watched
+            and _released(row)
+        )
+        if show_public_ratings:
+            row["public_rating"] = row.get("score") or row.get("vote_average")
+            row["public_rating_count"] = row.get("score_count") or row.get("vote_count")
+        else:
+            row["public_rating"] = None
+            row["public_rating_count"] = None
+        row["display_title"] = (
+            f"Episode {episode_number}"
+            if obfuscate_titles and not watched and episode_number is not None
+            else row.get("title") or f"Episode {episode_number or ''}"
+        )
+    return rows
+
+
+def build_personal_rating_trend(episodes):
+    """Return chronological personal episode ratings and their direction."""
+    min_trend_points = 2
+    points = []
+    for episode in episodes or []:
+        score = getattr(episode, "score", None)
+        number = getattr(getattr(episode, "item", None), "episode_number", None)
+        if score is None or number is None:
+            continue
+        points.append({"episode_number": number, "score": float(score)})
+    points.sort(key=lambda point: point["episode_number"])
+    if len(points) < min_trend_points:
+        direction = "stable"
+    elif points[-1]["score"] > points[0]["score"]:
+        direction = "up"
+    elif points[-1]["score"] < points[0]["score"]:
+        direction = "down"
+    else:
+        direction = "stable"
+    return {"points": points, "direction": direction}
+
+
+def build_remaining_time_summary(episodes, *, now=None, window_days=28):
+    """Estimate remaining runtime from released episodes and recent progress."""
+    from datetime import datetime, timedelta
+
+    from django.utils import timezone
+
+    now = now or timezone.now()
+    cutoff = now - timedelta(days=window_days)
+    remaining = 0
+    watched_recent = 0
+    watched_runtime_recent = 0
+    known_runtimes = [
+        row.get("runtime_minutes")
+        for row in episodes or []
+        if isinstance(row.get("runtime_minutes"), (int, float))
+        and row.get("runtime_minutes") > 0
+    ]
+    fallback_runtime = round(sum(known_runtimes) / len(known_runtimes)) if known_runtimes else None
+    for row in episodes or []:
+        air_date = row.get("air_date")
+        if isinstance(air_date, str):
+            try:
+                air_date = datetime.fromisoformat(air_date)
+            except ValueError:
+                air_date = None
+        if air_date and timezone.is_naive(air_date):
+            air_date = timezone.make_aware(air_date)
+        if air_date and air_date > now:
+            continue
+        runtime = row.get("runtime_minutes") or fallback_runtime
+        if not runtime:
+            continue
+        history = row.get("all_history") or row.get("history") or []
+        if history:
+            if not row.get("history"):
+                continue
+            recent_dates = [
+                entry.get("end_date")
+                for entry in history
+                if isinstance(entry, dict) and entry.get("end_date")
+            ]
+            if any(
+                isinstance(value, datetime)
+                and value >= cutoff
+                for value in recent_dates
+            ) or not recent_dates:
+                watched_recent += 1
+                watched_runtime_recent += runtime
+        else:
+            remaining += runtime
+    pace = watched_runtime_recent / window_days
+    return {
+        "remaining_minutes": remaining,
+        "pace_minutes_per_day": round(pace, 1),
+        "estimated_days": round(remaining / pace, 1) if pace else None,
+        "estimated_finish": now + timedelta(days=remaining / pace) if pace else None,
+        "has_pace": pace > 0,
+    }
+
+
+def enrich_season_cards(seasons, *, now=None):
+    """Mark the season to resume and future seasons without changing ordering."""
+    from datetime import datetime
+
+    from django.utils import timezone
+
+    now = now or timezone.now()
+    rows = [dict(season) for season in seasons or []]
+    candidates = []
+    for row in rows:
+        details = row.get("details") or {}
+        first_air_date = row.get("first_air_date") or details.get("first_air_date")
+        if isinstance(first_air_date, str):
+            try:
+                first_air_date = datetime.fromisoformat(first_air_date)
+            except ValueError:
+                first_air_date = None
+        if first_air_date and timezone.is_naive(first_air_date):
+            first_air_date = timezone.make_aware(first_air_date)
+        media = row.get("media")
+        progress = getattr(media, "progress", None) if media else row.get("progress")
+        max_progress = getattr(media, "max_progress", None) if media else row.get("max_progress")
+        row["is_upcoming"] = bool(first_air_date and first_air_date > now)
+        row["season_progress"] = progress
+        row["season_max_progress"] = max_progress
+        row["is_resume_candidate"] = bool(
+            not row["is_upcoming"]
+            and progress not in (None, 0)
+            and max_progress not in (None, progress)
+        )
+        if row["is_resume_candidate"]:
+            candidates.append(row)
+    resume = candidates[0] if candidates else None
+    for row in rows:
+        row["is_resume"] = row is resume
+    return rows
+
+
 def _game_cast_and_crew_from_credits(item):
     """Return (cast, crew) display rows for a game's best-effort IMDB credits.
 
@@ -1106,6 +1284,7 @@ def _build_detail_person_rows(media_metadata, item=None):
     if not isinstance(media_metadata, dict):
         return {}
     cast = media_metadata.get("cast") or []
+    guest = media_metadata.get("guest") or []
     crew = media_metadata.get("crew") or []
 
     if (
@@ -1116,6 +1295,11 @@ def _build_detail_person_rows(media_metadata, item=None):
         and item.source == Sources.IGDB.value
     ):
         cast, crew = _game_cast_and_crew_from_credits(item)
+
+    guest.extend(
+        row for row in cast if row.get("credit_type") == "guest"
+    )
+    cast = [row for row in cast if row.get("credit_type") != "guest"]
     raw_recommendations = (media_metadata.get("related") or {}).get(
         "recommendations"
     ) or []
@@ -1145,6 +1329,7 @@ def _build_detail_person_rows(media_metadata, item=None):
             view_all_url=view_all_url,
             view_all_text=view_all_text,
         ),
+        "guest_row": _build_static_row("detail-guest", "Guest Stars", guest[:20]),
         "crew_row": _build_static_row("detail-crew", "Crew", crew[:20]),
         "recommendations_row": _build_static_row(
             "detail-recommendations",

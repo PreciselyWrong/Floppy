@@ -34,6 +34,7 @@ from app.templatetags import app_tags
 from lists import smart_rules
 from lists.models import CustomList
 from users.models import (
+    HOME_ALL_MEDIA_TYPE,
     DirectionChoices,
     HomeScreenRow,
     HomeScreenRowTypeChoices,
@@ -303,6 +304,13 @@ SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
         "tag",
     },
 }
+SUPPORTED_FILTERS_BY_MEDIA_TYPE[HOME_ALL_MEDIA_TYPE] = {
+    "status",
+    "rating",
+    "collection",
+    "release",
+    "tag",
+}
 
 
 class HomeScreenValidationError(ValidationError):
@@ -359,18 +367,28 @@ def get_home_configurable_media_types(
     sidebar setting exactly (used by the Home Screen settings page, so a
     disabled type isn't offered there for configuration).
     """
-    types = list(user.get_enabled_media_types())
+    types = [HOME_ALL_MEDIA_TYPE, *user.get_enabled_media_types()]
     if include_disabled_season and MediaTypes.SEASON.value not in types:
         types.append(MediaTypes.SEASON.value)
 
     preferred_order = getattr(user, "home_screen_media_type_order", None) or []
     ordered = [media_type for media_type in preferred_order if media_type in types]
+    if HOME_ALL_MEDIA_TYPE not in ordered:
+        ordered.insert(0, HOME_ALL_MEDIA_TYPE)
     remaining = [media_type for media_type in types if media_type not in ordered]
     return ordered + remaining
 
 
 def get_allowed_sort_choices(media_type: str, row_type: str) -> list[dict]:
     """Return sort options for a home row."""
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        return [
+            {"value": HomeSortChoices.RECENT, "label": "Recent"},
+            {"value": MediaSortChoices.TITLE, "label": "Title"},
+            {"value": MediaSortChoices.SCORE, "label": "Rating"},
+            {"value": MediaSortChoices.DATE_ADDED, "label": "Date Added"},
+            {"value": HomeSortChoices.RANDOM, "label": "Random"},
+        ]
     sort_choices: list[tuple[str, str]] = [
         (MediaSortChoices.SCORE, "Rating"),
         (MediaSortChoices.TITLE, "Title"),
@@ -431,7 +449,13 @@ def get_allowed_sort_choices(media_type: str, row_type: str) -> list[dict]:
 
 
 def _media_type_group_label(media_type: str) -> str:
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        return "All media"
     return app_tags.media_type_readable_plural(media_type)
+
+
+def _media_type_group_icon_name(media_type: str) -> str:
+    return "home" if media_type == HOME_ALL_MEDIA_TYPE else media_type
 
 
 def _default_library_sort(user, media_type: str) -> str:
@@ -746,14 +770,23 @@ def build_filter_field_data(
     tags_fingerprint = hashlib.md5(  # noqa: S324 - cache key, not security
         "\x1f".join(precomputed_tags or ()).encode(),
     ).hexdigest()[:12]
-    cache_key = f"home_filter_fields_v1_{user.id}_{media_type}_{tags_fingerprint}"
+    filter_media_types = (
+        get_enabled_home_media_types(user)
+        if media_type == HOME_ALL_MEDIA_TYPE
+        else [media_type]
+    )
+    media_types_fingerprint = "-".join(filter_media_types)
+    cache_key = (
+        f"home_filter_fields_v1_{user.id}_{media_type}_"
+        f"{media_types_fingerprint}_{tags_fingerprint}"
+    )
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
     filter_data = smart_rules.build_rule_filter_data(
         user,
-        [media_type],
+        filter_media_types,
         "all",
         "",
         include_collection_only_untracked=True,
@@ -1050,7 +1083,11 @@ def serialize_settings_sections(user) -> list[dict]:
                 "media_type": media_type,
                 "label": _media_type_group_label(media_type),
                 "icon_svg": str(
-                    app_tags.icon(media_type, False, "w-5 h-5 text-slate-300")
+                    app_tags.icon(
+                        _media_type_group_icon_name(media_type),
+                        False,
+                        "w-5 h-5 text-slate-300",
+                    )
                 ),
                 "sort_choices": {
                     HomeScreenRowTypeChoices.LIBRARY_QUERY: get_allowed_sort_choices(
@@ -1238,6 +1275,12 @@ def _row_payload_to_model(
     row_type = str(row_payload.get("row_type") or "").strip()
     if row_type not in HomeScreenRowTypeChoices.values:
         msg = f"Unsupported row type for {media_type}."
+        raise HomeScreenValidationError(msg)
+    if (
+        media_type == HOME_ALL_MEDIA_TYPE
+        and row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY
+    ):
+        msg = "All media only supports library rows."
         raise HomeScreenValidationError(msg)
 
     enabled = bool(row_payload.get("enabled", True))
@@ -1453,6 +1496,8 @@ def search_home_screen_lists(user, query: str, media_type: str) -> list[dict]:
 
 
 def _item_matches_home_media_type(item: Item, media_type: str) -> bool:
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        return True
     library_media_type = getattr(item, "library_media_type", "") or ""
     return media_type in (library_media_type, item.media_type)
 
@@ -2241,8 +2286,13 @@ def _library_query_entries(
             )
         # MUSIC_SUBVIEW_TRACKS falls through to the standard Music/Item query below.
     status_filter = normalized_filters.get("status") or []
+    rule_media_types = (
+        get_enabled_home_media_types(user)
+        if row.media_type == HOME_ALL_MEDIA_TYPE
+        else [row.media_type]
+    )
     rule_payload = {
-        "media_types": [row.media_type],
+        "media_types": rule_media_types,
         **normalized_filters,
     }
     item_ids = smart_rules.collect_matching_item_ids(
@@ -2412,6 +2462,9 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
         return base
 
     # Library-query / recently-unrated rows open the media list.
+    if row.media_type == HOME_ALL_MEDIA_TYPE:
+        return ""
+
     query_pairs = [
         ("sort", row.sort_by),
         ("direction", row.direction),
@@ -2610,7 +2663,11 @@ def build_home_page_groups(
                     "media_type": media_type,
                     "label": _media_type_group_label(media_type),
                     "icon_svg": str(
-                        app_tags.icon(media_type, False, "w-6 h-6 text-gray-300"),
+                        app_tags.icon(
+                            _media_type_group_icon_name(media_type),
+                            False,
+                            "w-6 h-6 text-gray-300",
+                        ),
                     ),
                     "rows": row_sections,
                 },

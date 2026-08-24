@@ -920,6 +920,14 @@ def preferences(request):
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
         progress_bar_raw = request.POST.get("progress_bar")
+        season_enrichment_raw = request.POST.get("show_season_enrichment")
+        episode_public_ratings_raw = request.POST.get("show_episode_public_ratings")
+        personal_rating_trend_raw = request.POST.get("show_personal_rating_trend")
+        obfuscate_episode_titles_raw = request.POST.get("obfuscate_episode_titles")
+        skipped_episodes_raw = request.POST.get("show_skipped_episodes")
+        remaining_time_raw = request.POST.get("show_remaining_time")
+        person_sections_order_raw = request.POST.get("person_sections_order")
+        person_hidden_sections_raw = request.POST.get("person_hidden_sections")
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1095,6 +1103,55 @@ def preferences(request):
                 request.user.progress_bar = progress_bar
                 fields_to_update.append("progress_bar")
 
+        for field_name, raw_value in (
+            ("show_season_enrichment", season_enrichment_raw),
+            ("show_episode_public_ratings", episode_public_ratings_raw),
+            ("show_personal_rating_trend", personal_rating_trend_raw),
+            ("obfuscate_episode_titles", obfuscate_episode_titles_raw),
+            ("show_skipped_episodes", skipped_episodes_raw),
+            ("show_remaining_time", remaining_time_raw),
+        ):
+            if raw_value is None:
+                continue
+            value = raw_value == "1"
+            if getattr(request.user, field_name) != value:
+                setattr(request.user, field_name, value)
+                fields_to_update.append(field_name)
+
+        valid_person_sections = {
+            "known_for",
+            "tracked",
+            "cast",
+            "guest",
+            "crew",
+            "biography",
+            "details",
+        }
+        if person_sections_order_raw is not None:
+            requested_order = [
+                value.strip()
+                for value in person_sections_order_raw.split(",")
+                if value.strip() in valid_person_sections
+            ]
+            requested_order = list(dict.fromkeys(requested_order))
+            for value in valid_person_sections:
+                if value not in requested_order:
+                    requested_order.append(value)
+            if request.user.person_sections_order != requested_order:
+                request.user.person_sections_order = requested_order
+                fields_to_update.append("person_sections_order")
+        if person_hidden_sections_raw is not None:
+            hidden_sections = list(
+                dict.fromkeys(
+                    value.strip()
+                    for value in person_hidden_sections_raw.split(",")
+                    if value.strip() in valid_person_sections
+                )
+            )
+            if request.user.person_hidden_sections != hidden_sections:
+                request.user.person_hidden_sections = hidden_sections
+                fields_to_update.append("person_hidden_sections")
+
         if (
             quick_season_update_mobile is not None
             and request.user.quick_season_update_mobile != quick_season_update_mobile
@@ -1236,6 +1293,16 @@ def preferences(request):
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
         "tvdb_enabled": tvdb_enabled,
+        "season_display_preferences": (
+            ("show_season_enrichment", "Season progress and upcoming indicators", request.user.show_season_enrichment),
+            ("show_episode_public_ratings", "Public episode ratings", request.user.show_episode_public_ratings),
+            ("show_personal_rating_trend", "Personal rating trend", request.user.show_personal_rating_trend),
+            ("obfuscate_episode_titles", "Hide unseen episode titles", request.user.obfuscate_episode_titles),
+            ("show_skipped_episodes", "Skipped episode warnings", request.user.show_skipped_episodes),
+            ("show_remaining_time", "Remaining time and estimated finish", request.user.show_remaining_time),
+        ),
+        "person_sections_order_text": ", ".join(request.user.person_sections_order or []),
+        "person_hidden_sections_text": ", ".join(request.user.person_hidden_sections or []),
     }
 
     return render(request, "users/preferences.html", context)

@@ -314,6 +314,7 @@
                       Library Row
                     </button>
                     <button type="button"
+                            x-show="section.media_type !== 'all'"
                             class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
                             @click="addRow(section, 'recently_unrated'); section.addRowMenuOpen = false"
                             :disabled="section.rows.some(row => row.row_type === 'recently_unrated')"
@@ -325,6 +326,7 @@
                 </div>
 
                 <button type="button"
+                        x-show="section.media_type !== 'all'"
                         class="inline-flex items-center rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-muted)] cursor-pointer"
                         @click="addRow(section, 'custom_list')">
                   {% include "app/icons/list.svg" with classes="mr-2 h-4 w-4" %}

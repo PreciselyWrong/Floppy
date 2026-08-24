@@ -27,6 +27,7 @@
 
     <div class="w-full md:w-3/4">
       <h1 class="text-3xl font-bold mb-4 text-center md:text-start">{{ person.name }}</h1>
+      {% if person.age is not None %}<p class="mb-3 text-sm text-[var(--color-text-secondary)]">Age {{ person.age }}{% if person.death_date %} at death{% endif %}</p>{% endif %}
 
       <div class="flex flex-wrap gap-2 mb-4">
         {% if person.known_for_department %}
@@ -119,6 +120,27 @@
       </div>
     </div>
   </div>
+
+  {% if known_for and 'known_for' not in person_hidden_sections %}
+    <section class="mb-8">
+      <h2 class="mb-4 text-xl font-bold">Known for</h2>
+      <div class="detail-media-grid">
+        {% for entry in known_for %}
+          {% include "app/components/person_filmography_card.html" with entry=entry user=user source=source IMG_NONE=IMG_NONE show_watched_runtime_chip=False only %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+  {% if tracked_titles and 'tracked' not in person_hidden_sections %}
+    <section class="mb-8">
+      <h2 class="mb-4 text-xl font-bold">Tracked titles</h2>
+      <div class="flex gap-4 overflow-x-auto pb-2">
+        {% for entry in tracked_titles|slice:":20" %}
+          {% include "app/components/person_filmography_card.html" with entry=entry user=user source=source IMG_NONE=IMG_NONE show_watched_runtime_chip=True only %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
 
   <div x-data="{
     mediaListUrl: '{{ person_detail_url }}',

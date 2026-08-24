@@ -246,6 +246,7 @@ class CreditRoleType(models.TextChoices):
     """Credit role category."""
 
     CAST = "cast", "Cast"
+    GUEST = "guest", "Guest Star"
     CREW = "crew", "Crew"
     AUTHOR = "author", "Author"
 

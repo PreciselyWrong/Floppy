@@ -1,12 +1,55 @@
+from datetime import timedelta
+
 from django.test import TestCase
+from django.utils import timezone
 
 from app.detail_builders import (
     _build_detail_link_sections,
     _build_imdb_rating_context,
     _build_mal_rating_context,
     _build_series_graph_data,
+    enrich_episode_rows,
+    enrich_season_cards,
 )
 from app.models import Item, ItemProviderLink, MediaTypes, Sources
+
+
+class DetailEnrichmentTests(TestCase):
+    def test_episode_enrichment_marks_only_aired_non_special_gaps(self):
+        now = timezone.now()
+        rows = enrich_episode_rows(
+            [
+                {"episode_number": 1, "air_date": now - timedelta(days=3), "history": [{"id": 1}], "title": "One"},
+                {"episode_number": 2, "air_date": now - timedelta(days=2), "history": [], "title": "Two"},
+                {"episode_number": 3, "air_date": now - timedelta(days=1), "history": [{"id": 3}], "title": "Three"},
+                {"episode_number": 4, "air_date": now + timedelta(days=1), "history": [], "title": "Four"},
+            ],
+            season_number=1,
+            now=now,
+            obfuscate_titles=True,
+        )
+        self.assertTrue(rows[1]["is_skipped"])
+        self.assertEqual(rows[1]["display_title"], "Episode 2")
+        self.assertFalse(rows[3]["is_skipped"])
+
+        specials = enrich_episode_rows(
+            [{"episode_number": 1, "air_date": now - timedelta(days=1), "history": []}],
+            season_number=0,
+            now=now,
+        )
+        self.assertFalse(specials[0]["is_skipped"])
+
+    def test_season_cards_mark_resume_and_future(self):
+        now = timezone.now()
+        rows = enrich_season_cards(
+            [
+                {"season_number": 1, "first_air_date": now - timedelta(days=1), "progress": 2, "max_progress": 8},
+                {"season_number": 2, "first_air_date": now + timedelta(days=1), "progress": 0, "max_progress": 8},
+            ],
+            now=now,
+        )
+        self.assertTrue(rows[0]["is_resume"])
+        self.assertTrue(rows[1]["is_upcoming"])
 
 
 class SeriesGraphBuilderTests(TestCase):

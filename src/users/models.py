@@ -18,13 +18,20 @@ from integrations import import_progress
 from users import helpers
 
 EXCLUDED_SEARCH_TYPES = [MediaTypes.SEASON.value, MediaTypes.EPISODE.value]
+HOME_ALL_MEDIA_TYPE = "all"
+
+
+def default_person_sections_order():
+    """Return the default order for configurable person-page sections."""
+    return ["known_for", "tracked", "cast", "guest", "crew", "biography", "details"]
 
 VALID_SEARCH_TYPES = [
     value for value in MediaTypes.values if value not in EXCLUDED_SEARCH_TYPES
 ]
 
 VALID_HOME_SCREEN_MEDIA_TYPES = [
-    value for value in MediaTypes.values if value != MediaTypes.EPISODE.value
+    HOME_ALL_MEDIA_TYPE,
+    *[value for value in MediaTypes.values if value != MediaTypes.EPISODE.value],
 ]
 
 MULTI_STATUS_PREFERENCE_FIELDS = {
@@ -777,6 +784,35 @@ class User(AbstractUser):
         default=False,
         help_text="Blur unseen episode thumbnails to avoid spoilers",
     )
+    show_season_enrichment = models.BooleanField(
+        default=True,
+        help_text="Show season progress, resume and upcoming indicators",
+    )
+    show_episode_public_ratings = models.BooleanField(
+        default=True,
+        help_text="Show public episode ratings",
+    )
+    show_personal_rating_trend = models.BooleanField(
+        default=True,
+        help_text="Show the personal episode rating trend",
+    )
+    obfuscate_episode_titles = models.BooleanField(
+        default=False,
+        help_text="Hide unseen episode titles to avoid spoilers",
+    )
+    show_skipped_episodes = models.BooleanField(
+        default=True,
+        help_text="Show detected skipped episodes",
+    )
+    show_remaining_time = models.BooleanField(
+        default=True,
+        help_text="Show remaining time and estimated finish",
+    )
+    person_sections_order = models.JSONField(
+        default=default_person_sections_order,
+        blank=True,
+    )
+    person_hidden_sections = models.JSONField(default=list, blank=True)
 
     # Watch provider region
     watch_provider_region = models.CharField(
@@ -2150,7 +2186,7 @@ class HomeScreenRow(models.Model):
     )
     media_type = models.CharField(
         max_length=16,
-        choices=MediaTypes.choices,
+        choices=[(HOME_ALL_MEDIA_TYPE, "All media"), *MediaTypes.choices],
     )
     position = models.PositiveIntegerField(default=0)
     enabled = models.BooleanField(default=True)
