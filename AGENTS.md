@@ -372,6 +372,7 @@ Notes:
 
 ## ⛔ Interdits
 - Never create any pull request until Nicolas has explicitly reviewed and approved that specific PR request. For functional changes, deploy from `custom` and let Nicolas test first. This keeps unapproved work out of every review queue, including trivial and non-functional changes.
+- Do not prioritize i18n or French translation work until Nicolas explicitly reactivates it. Home parity with Floppy Companion is the current roadmap priority.
 
 ## PR / Commit Expectations
 - **Never commit unless the user explicitly asks.** Finishing a task, passing tests, or reaching a natural stopping point does not justify an automatic commit. Wait for a direct instruction such as "commit this", "commit the changes", or "make a commit".
