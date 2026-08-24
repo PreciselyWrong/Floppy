@@ -27,7 +27,7 @@ Le coordinateur ajoute immédiatement une ligne `Development` à `CONTRIBUTIONS.
 2. Faire le plus petit changement qui le rend vert.
 3. Valider selon le risque : test ciblé, migration, Ruff, puis suite rapide si nécessaire.
 4. Ne modifier ni `custom`, ni `latest`, ni un autre worktree.
-5. Ne committer qu'après demande explicite de Nicolas.
+5. Après un milestone validé, vérifier l'absence de secret puis committer sans demander de confirmation supplémentaire.
 6. Livrer au coordinateur : fichiers, comportement, tests, risques et commit.
 
 Une migration part toujours du graphe de `upstream/latest`. Elle ne dépend jamais d'une autre feature non mergée. Si deux branches créent deux feuilles de même numéro, leur intégration dans `custom` reçoit une migration de fusion fork-only.

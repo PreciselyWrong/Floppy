@@ -47,6 +47,17 @@ systems: [Catppuccin](https://python.catppuccin.com/docs/catppuccin/palette.html
 colours plus bounded radius, blur and surface-opacity values as inline variables.
 `users.appearance` is the allowlist and validation boundary for those values.
 
+Every explicit preset also owns its shape and motion through
+`--theme-radius`, `--motion-duration`, `--motion-distance`, and
+`--motion-ease`. Components consume those tokens rather than inventing local
+timings or radii, so changing a preset changes the whole interface coherently.
+Glass is deliberately soft and fluid, OLED is crisp, and the classic themes
+remain restrained.
+
+The global `prefers-reduced-motion: reduce` block is a required safety net. It
+must keep navigation and controls usable while reducing animations and smooth
+scrolling to effectively instantaneous changes.
+
 `html.dark` repeats the `:root` values. That repetition is redundant, since
 `:root` already carries the dark values and the light media query is guarded by
 `:not(.dark)`. It is kept only so the four blocks read symmetrically. If you add

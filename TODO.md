@@ -26,6 +26,7 @@
 
 ## Done
 
+- Logo masquable ou personnalisable, avec mouvements et arrondis adaptés à chaque thème.
 - Moyenne publique pondérée configurable avec détail des sources et des votes.
 - Thèmes classiques et modernes distincts, avec mise en page configurable des fiches.
 - Affichage de `SxxExx` pour le prochain épisode connu dans `Up Next`.

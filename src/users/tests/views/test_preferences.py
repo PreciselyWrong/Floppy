@@ -1,7 +1,13 @@
+from io import BytesIO
+
 from bs4 import BeautifulSoup
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.urls import reverse
+from PIL import Image
+
+from users.models import LogoStyleChoices
 
 
 class PreferencesViewTests(TestCase):
@@ -51,6 +57,78 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.logo_style, "colorful")
 
+    def test_preferences_exposes_every_logo_mode(self):
+        response = self.client.get(reverse("preferences"))
+
+        self.assertEqual(
+            set(LogoStyleChoices.values),
+            {"colorful", "monochrome", "text", "custom", "hidden"},
+        )
+        for label in ("Original color", "Monochrome", "Text", "Custom image", "Hidden"):
+            self.assertContains(response, label)
+
+    def test_preferences_persists_text_wordmark(self):
+        response = self.client.post(
+            reverse("preferences"),
+            {"logo_style": "text", "logo_text": "Nicolas Floppy"},
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "text")
+        self.assertEqual(self.user.logo_text, "Nicolas Floppy")
+        rendered = self.client.get(reverse("preferences"))
+        self.assertContains(rendered, "Nicolas Floppy")
+        self.assertContains(rendered, 'data-brand-mode="text"')
+
+    def test_preferences_normalizes_custom_logo_upload(self):
+        source = BytesIO()
+        Image.new("RGBA", (900, 300), (255, 0, 120, 180)).save(source, "PNG")
+        upload = SimpleUploadedFile(
+            "brand.png",
+            source.getvalue(),
+            content_type="image/png",
+        )
+
+        response = self.client.post(
+            reverse("preferences"),
+            {"logo_style": "custom", "logo_upload": upload},
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "custom")
+        self.assertTrue(self.user.custom_logo_data.startswith("data:image/webp;base64,"))
+        self.assertLessEqual(len(self.user.custom_logo_data), 40_000)
+        rendered = self.client.get(reverse("preferences"))
+        self.assertContains(rendered, 'data-brand-mode="custom"')
+        self.assertContains(rendered, self.user.custom_logo_data)
+
+    def test_preferences_rejects_non_image_custom_logo(self):
+        upload = SimpleUploadedFile(
+            "brand.svg",
+            b"<svg onload=alert(1)></svg>",
+            content_type="image/svg+xml",
+        )
+
+        self.client.post(
+            reverse("preferences"),
+            {"logo_style": "custom", "logo_upload": upload},
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "colorful")
+        self.assertEqual(self.user.custom_logo_data, "")
+
+    def test_hidden_logo_keeps_an_accessible_home_link(self):
+        self.user.logo_style = "hidden"
+        self.user.save(update_fields=["logo_style"])
+
+        response = self.client.get(reverse("preferences"))
+
+        self.assertContains(response, 'data-brand-mode="hidden"')
+        self.assertContains(response, 'aria-label="Floppy home"')
+
     def test_preferences_post_rejects_invalid_theme(self):
         """POSTing an invalid theme value should be ignored, not persisted."""
         response = self.client.post(reverse("preferences"), {"theme": "solarized"})
@@ -63,7 +141,7 @@ class PreferencesViewTests(TestCase):
         response = self.client.get(reverse("preferences"))
 
         self.assertContains(response, 'name="logo_style"')
-        self.assertContains(response, "Colorful")
+        self.assertContains(response, "Original color")
         self.assertContains(response, "System default — Aug 12, 2025 / 12 Aug 2025")
         self.assertContains(response, "System default — 6:45 PM / 18:45")
         self.assertNotContains(response, "System default (locale)")

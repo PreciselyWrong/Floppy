@@ -7,10 +7,12 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | — | Pending | — | On custom — calcul, affichage, options, Ruff et templates validés |
-| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `10719daa` | `sha-fcf9ed7e` | Pending | — | Deployed — thèmes explicites corrigés; palettes classiques, OLED et Plex ajoutées; préflight vert |
+| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `ef31d49f` | — | Pending | — | On custom — arrondis et mouvements par thème; logo masquable ou personnalisable; tests ciblés et Ruff verts |
+| HOME-008 | Configurable Home history row | `feat/home-history-row` | — | — | Pending | — | Validated — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
+| HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | — | — | Pending | — | Validated — regroupement par série et saison, 28 tests History et Ruff validés |
 | HOME-006 | Cross-media `In progress` row | `feat/home-all-media-in-progress` | — | — | Pending | — | Validated — 47 tests Home, migration `users` et Ruff validés |
 | HOME-005 | Collapsible Home rows | `feat/home-collapsible-rows` | `c1aebfb9` | `sha-a9e52961` | Works | — | Tested |
-| HOME-004 | `Up Next` row | `feat/home-up-next` | `2685526b` | `sha-a9e52961` | Changes requested — conserver `SxxExx` | — | Changes requested |
+| HOME-004 | `Up Next` row | `feat/home-up-next` | `2685526b` | `sha-a9e52961` | Pending | — | Validated — `SxxExx` conservé pour l’épisode connu; 45 tests Home validés |
 | HOME-003 | Stale Home row | `feat/home-stale-row` | `79267e47` | `sha-a9e52961` | Pending | — | Deployed |
 | HOME-002 | Resume next-episode navigation | `feat/home-resume-navigation` | `ab710d19` | `sha-a9e52961` | Pending | — | Deployed |
 | HOME-001 | Pinned Home titles | `feat/home-pins` | `6e5a1d7e` | `sha-a9e52961` | Pending | — | Deployed |
