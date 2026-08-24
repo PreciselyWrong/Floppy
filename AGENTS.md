@@ -77,6 +77,7 @@ docker compose up -d
 - ⛔ Utiliser une classe Tailwind `dark:` — elle suit l'OS et contredit le choix de thème explicite de l'utilisateur.
 - ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
 - ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.
+- ⛔ Placer les réglages du logo hors de `Settings > Appearance` ou laisser le logo de la sidebar se contracter — l'identité visuelle doit rester trouvable et lisible.
 - ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
 - ⛔ Afficher le switcher soleil/lune avec un thème autre que `System`, `Light` ou `Dark` — il écraserait le thème choisi.
 - ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.
@@ -105,4 +106,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Les options de mouvement, de logo et la protection du thème choisi sont déployées sur `unraid-server` avec l'image `sha-2d692b39`; attendre le verdict de Nicolas avant toute proposition de PR.
+- Le logo agrandi et ses réglages dans Appearance sont intégrés dans `custom`; les déployer sur `unraid-server`, puis attendre le verdict de Nicolas avant toute proposition de PR.

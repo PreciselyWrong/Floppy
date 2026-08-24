@@ -115,3 +115,16 @@ class ThemeTokenContractTests(SimpleTestCase):
 
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertIn("animation-duration: 0.01ms", css)
+
+    def test_sidebar_logo_keeps_its_full_brand_dimensions(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+        logo_rule = re.search(
+            r"\.brand-built-in-image\s*\{(?P<body>.*?)\n\}",
+            css,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(logo_rule)
+        self.assertIn("width: 9.875rem", logo_rule.group("body"))
+        self.assertIn("height: 3rem", logo_rule.group("body"))
+        self.assertIn("flex-shrink: 0", logo_rule.group("body"))

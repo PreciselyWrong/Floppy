@@ -879,7 +879,7 @@ def ui_preferences(request):
 
 @require_http_methods(["GET", "POST"])
 def appearance(request):
-    """Configure application colors and detail page composition."""
+    """Configure branding, application colors, and detail page composition."""
     if request.method == "POST":
         if request.user.is_demo:
             messages.error(request, "This section is view-only for demo accounts.")
@@ -888,6 +888,18 @@ def appearance(request):
         theme = request.POST.get("theme")
         if theme not in ThemeChoices.values:
             messages.error(request, "Unsupported theme.")
+            return redirect("appearance")
+        logo_style = request.POST.get("logo_style", request.user.logo_style)
+        if logo_style not in LogoStyleChoices.values:
+            messages.error(request, "Unsupported logo style.")
+            return redirect("appearance")
+        logo_upload = request.FILES.get("logo_upload")
+        if (
+            logo_style == LogoStyleChoices.CUSTOM
+            and logo_upload is None
+            and not request.user.custom_logo_data
+        ):
+            messages.error(request, "Choose an image for the custom logo.")
             return redirect("appearance")
         try:
             raw_custom_theme = request.POST.get("custom_theme")
@@ -899,6 +911,12 @@ def appearance(request):
             detail_layouts = appearance_config.parse_detail_layouts(
                 request.POST.get("detail_layouts")
             )
+            logo_text = branding.normalize_logo_text(
+                request.POST.get("logo_text", request.user.logo_text)
+            )
+            custom_logo_data = request.user.custom_logo_data
+            if logo_style == LogoStyleChoices.CUSTOM and logo_upload is not None:
+                custom_logo_data = branding.normalize_logo_upload(logo_upload)
         except ValidationError as exc:
             messages.error(request, exc.messages[0])
             return redirect("appearance")
@@ -906,8 +924,18 @@ def appearance(request):
         request.user.theme = theme
         request.user.custom_theme = custom_theme
         request.user.detail_page_layouts = detail_layouts
+        request.user.logo_style = logo_style
+        request.user.logo_text = logo_text
+        request.user.custom_logo_data = custom_logo_data
         request.user.save(
-            update_fields=["theme", "custom_theme", "detail_page_layouts"]
+            update_fields=[
+                "theme",
+                "custom_theme",
+                "detail_page_layouts",
+                "logo_style",
+                "logo_text",
+                "custom_logo_data",
+            ]
         )
         messages.success(request, "Appearance updated")
         return redirect("appearance")
@@ -932,6 +960,7 @@ def appearance(request):
         "custom_theme_colors": appearance_config.CUSTOM_THEME_COLORS,
         "custom_theme_effects": appearance_config.CUSTOM_THEME_EFFECTS,
         "appearance_theme": request.user.theme,
+        "logo_style_choices": LogoStyleChoices.choices,
         "custom_theme_json": palette,
         "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
         "detail_layouts_json": appearance_config.resolved_detail_layouts(
@@ -993,9 +1022,6 @@ def preferences(request):
         selected_media_types = request.POST.getlist("media_types_checkboxes")
         date_format = request.POST.get("date_format")
         theme = request.POST.get("theme")
-        logo_style = request.POST.get("logo_style")
-        logo_text = request.POST.get("logo_text")
-        logo_upload = request.FILES.get("logo_upload")
         time_format = request.POST.get("time_format")
         activity_history_view = request.POST.get("activity_history_view")
         game_logging_style = request.POST.get("game_logging_style")
@@ -1074,37 +1100,6 @@ def preferences(request):
         ):
             request.user.theme = theme
             fields_to_update.append("theme")
-
-        if logo_style and logo_style in LogoStyleChoices.values:
-            if (
-                logo_style == LogoStyleChoices.CUSTOM
-                and logo_upload is None
-                and not request.user.custom_logo_data
-            ):
-                messages.error(request, "Choose an image for the custom logo.")
-                return redirect("preferences")
-
-            try:
-                if logo_text is not None:
-                    cleaned_logo_text = branding.normalize_logo_text(logo_text)
-                    if request.user.logo_text != cleaned_logo_text:
-                        request.user.logo_text = cleaned_logo_text
-                        fields_to_update.append("logo_text")
-                if (
-                    logo_style == LogoStyleChoices.CUSTOM
-                    and logo_upload is not None
-                ):
-                    custom_logo_data = branding.normalize_logo_upload(logo_upload)
-                    if request.user.custom_logo_data != custom_logo_data:
-                        request.user.custom_logo_data = custom_logo_data
-                        fields_to_update.append("custom_logo_data")
-            except ValidationError as exc:
-                messages.error(request, exc.messages[0])
-                return redirect("preferences")
-
-            if request.user.logo_style != logo_style:
-                request.user.logo_style = logo_style
-                fields_to_update.append("logo_style")
 
         if (
             time_format
@@ -1408,7 +1403,6 @@ def preferences(request):
         "tv_metadata_source_choices": tv_metadata_source_choices,
         "anime_metadata_source_choices": anime_metadata_source_choices,
         "anime_library_mode_choices": AnimeLibraryModeChoices.choices,
-        "logo_style_choices": LogoStyleChoices.choices,
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
         "tvdb_enabled": tvdb_enabled,

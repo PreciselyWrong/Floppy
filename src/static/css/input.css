@@ -486,6 +486,7 @@ main > .container,
 
 .brand-link {
   display: inline-flex;
+  flex-shrink: 0;
   min-width: 0;
   align-items: center;
   transform-origin: left center;
@@ -498,12 +499,20 @@ main > .container,
   transform: translateY(1px) scale(0.97);
 }
 
-.brand-built-in-image,
+.brand-built-in-image {
+  display: block;
+  flex-shrink: 0;
+  width: 9.875rem;
+  height: 3rem;
+  object-fit: contain;
+}
+
 .brand-custom-image {
   display: block;
+  flex-shrink: 0;
   width: auto;
-  height: 2.25rem;
-  max-width: 10rem;
+  height: 3rem;
+  max-width: 11rem;
   object-fit: contain;
 }
 

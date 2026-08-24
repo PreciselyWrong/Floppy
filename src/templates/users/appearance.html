@@ -1,6 +1,9 @@
 {% extends "users/base.html" %}
+{% load static %}
 
-{% block title %}Appearance - Floppy{% endblock title %}
+{% block title %}
+  Appearance - Floppy
+{% endblock title %}
 
 {% block settings_content %}
   {{ detail_layout_families_json|json_script:"detail-layout-families" }}
@@ -8,11 +11,13 @@
   {{ custom_theme_json|json_script:"custom-theme-values" }}
 
   <form method="post"
+        enctype="multipart/form-data"
         class="space-y-8"
         x-data="appearanceEditor()"
         x-init="init()">
     {% csrf_token %}
     <input type="hidden" name="theme" :value="theme">
+    <input type="hidden" name="logo_style" :value="logoStyle">
     <input type="hidden" name="custom_theme" :value="JSON.stringify(palette)">
     <input type="hidden" name="detail_layouts" :value="JSON.stringify(layouts)">
 
@@ -51,7 +56,8 @@
                        x-model="palette.{{ key }}"
                        class="h-9 w-11 cursor-pointer rounded border-0 bg-transparent p-0"
                        aria-label="{{ color.label }} color">
-                <code class="text-xs text-[var(--color-text-muted)]" x-text="palette.{{ key }}"></code>
+                <code class="text-xs text-[var(--color-text-muted)]"
+                      x-text="palette.{{ key }}"></code>
               </span>
             </label>
           {% endfor %}
@@ -73,6 +79,90 @@
                      aria-label="{{ effect.label }}">
             </label>
           {% endfor %}
+        </div>
+      </div>
+    </section>
+
+    <section class="preferences-section">
+      <div class="preferences-section-header">
+        <div class="preferences-section-icon">{% include "app/icons/image.svg" with classes="w-5 h-5" %}</div>
+        <div>
+          <h2>Branding</h2>
+          <p>Choose what appears at the top of the sidebar.</p>
+        </div>
+      </div>
+
+      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {% for value, label in logo_style_choices %}
+          <button type="button"
+                  @click="logoStyle = '{{ value }}'"
+                  :aria-pressed="(logoStyle === '{{ value }}').toString()"
+                  :class="logoStyle === '{{ value }}' ? 'border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]/30' : 'border-[var(--color-surface-border)] hover:border-[var(--color-text-muted)]'"
+                  class="rounded-xl border bg-[var(--color-surface)] px-4 py-3 text-left text-sm font-medium transition-colors cursor-pointer">
+            {{ label }}
+          </button>
+        {% endfor %}
+      </div>
+
+      <div class="mt-5 grid gap-5 rounded-xl border border-[var(--color-surface-border)] bg-[var(--color-panel)] p-5 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,1fr)]">
+        <div class="flex min-h-24 items-center justify-center rounded-xl bg-[var(--color-sidebar)] px-6">
+          <img x-show="logoStyle === 'colorful'"
+               x-cloak
+               src="{% static 'img/floppy-logo.png' %}"
+               alt="Floppy preview"
+               class="brand-built-in-image">
+          <img x-show="logoStyle === 'monochrome'"
+               x-cloak
+               src="{% static 'img/floppy-logo-white.png' %}"
+               alt="Floppy preview"
+               class="brand-built-in-image">
+          <span x-show="logoStyle === 'text'"
+                x-cloak
+                class="brand-wordmark"
+                x-text="logoText || 'Floppy'"></span>
+          {% if user.custom_logo_data %}
+            <img x-show="logoStyle === 'custom'"
+                 x-cloak
+                 src="{{ user.custom_logo_data }}"
+                 alt="Custom logo preview"
+                 class="brand-custom-image">
+          {% else %}
+            <span x-show="logoStyle === 'custom'"
+                  x-cloak
+                  class="text-sm text-[var(--color-text-muted)]">Choose an image to preview it.</span>
+          {% endif %}
+          <span x-show="logoStyle === 'hidden'"
+                x-cloak
+                class="text-sm text-[var(--color-text-muted)]">The logo will be hidden.</span>
+        </div>
+
+        <div class="space-y-4">
+          <label x-show="logoStyle === 'text' || logoStyle === 'custom'"
+                 x-cloak
+                 class="block">
+            <span class="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Logo text</span>
+            <input type="text"
+                   name="logo_text"
+                   maxlength="32"
+                   x-model="logoText"
+                   class="w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[var(--color-text)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30">
+          </label>
+          <label x-show="logoStyle === 'custom'" x-cloak class="block">
+            <span class="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Custom image</span>
+            <input type="file"
+                   name="logo_upload"
+                   accept="image/png,image/jpeg,image/webp"
+                   class="block w-full text-sm text-[var(--color-text-muted)] file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--color-accent)] file:px-4 file:py-2.5 file:font-medium file:text-white file:cursor-pointer">
+            <span class="mt-2 block text-xs text-[var(--color-text-muted)]">
+              PNG, JPEG or WebP, up to 2 MB.
+              {% if user.custom_logo_data %}Your current image stays until you replace it.{% endif %}
+            </span>
+          </label>
+          <p x-show="logoStyle === 'hidden'"
+             x-cloak
+             class="text-sm text-[var(--color-text-muted)]">
+            The accessible Home link remains available for keyboard and screen-reader users.
+          </p>
         </div>
       </div>
     </section>
@@ -112,11 +202,13 @@
 
       <template x-if="selectedFamily">
         <div class="mt-5 grid gap-5 lg:grid-cols-2">
-          <template x-for="(zone, zoneKey) in families[selectedFamily].zones" :key="zoneKey">
+          <template x-for="(zone, zoneKey) in families[selectedFamily].zones"
+                    :key="zoneKey">
             <div class="rounded-xl border border-[var(--color-surface-border)] bg-[var(--color-panel)] p-4">
               <h3 class="mb-3 font-semibold" x-text="zone.label"></h3>
               <div class="space-y-2">
-                <template x-for="section in orderedSections(selectedFamily, zoneKey)" :key="section.key">
+                <template x-for="section in orderedSections(selectedFamily, zoneKey)"
+                          :key="section.key">
                   <div class="flex items-center gap-3 rounded-lg bg-[var(--color-surface)] p-3">
                     <input type="checkbox"
                            :checked="isEnabled(selectedFamily, zoneKey, section.key)"
@@ -160,6 +252,8 @@
     function appearanceEditor() {
       return {
         theme: '{{ appearance_theme|escapejs }}',
+        logoStyle: '{{ user.logo_style|escapejs }}',
+        logoText: '{{ user.logo_text|escapejs }}',
         palette: {},
         families: {},
         layouts: {},
