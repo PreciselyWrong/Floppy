@@ -6,7 +6,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
-| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `195fe4b1` | — | Pending | — | On custom — 20 tests, migration `users` et Ruff validés; rendu visuel restant |
+| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `195fe4b1` | `sha-daddc621` | Pending | — | Deployed — healthy, preflight vert; test visuel restant |
 | HOME-006 | Cross-media `In progress` row | `feat/home-all-media-in-progress` | — | — | Pending | — | Validated — 47 tests Home, migration `users` et Ruff validés |
 | HOME-005 | Collapsible Home rows | `feat/home-collapsible-rows` | `c1aebfb9` | `sha-a9e52961` | Works | — | Tested |
 | HOME-004 | `Up Next` row | `feat/home-up-next` | `2685526b` | `sha-a9e52961` | Changes requested — conserver `SxxExx` | — | Changes requested |
