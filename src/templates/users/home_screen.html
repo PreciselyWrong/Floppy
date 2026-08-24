@@ -503,7 +503,7 @@
             const statusLabels = statuses.map(value => this.fieldOptionLabel(section, 'status', value));
             labels.push(statuses.length === 1 ? statusLabels[0] : `${statuses.length} Statuses`);
           }
-          for (const key of ['progress', 'rating', 'collection', 'genre', 'year', 'release', 'source', 'language', 'country', 'platform', 'origin', 'format', 'author', 'provider']) {
+          for (const key of ['progress', 'stale_days', 'rating', 'collection', 'genre', 'year', 'release', 'source', 'language', 'country', 'platform', 'origin', 'format', 'author', 'provider']) {
             const value = row.filters?.[key];
             if (!value || value === 'all') continue;
             labels.push(this.fieldOptionLabel(section, key, value));
@@ -560,7 +560,7 @@
             return option ? option.label : value;
           };
 
-          ['progress', 'rating', 'collection', 'genre', 'year', 'release', 'source', 'language', 'country', 'platform', 'origin', 'format', 'author', 'provider']
+          ['progress', 'stale_days', 'rating', 'collection', 'genre', 'year', 'release', 'source', 'language', 'country', 'platform', 'origin', 'format', 'author', 'provider']
             .forEach(key => {
               const value = row.filters?.[key];
               if (!value || value === 'all') return;
