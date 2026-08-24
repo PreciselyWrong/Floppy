@@ -20,4 +20,3 @@
 - [x] Rechercher les sorties du calendrier par titre
 
 ## Dropped
-
