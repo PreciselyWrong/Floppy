@@ -2547,6 +2547,7 @@ def _build_row_section(
     )
     return {
         "row_id": row.id,
+        "collapse_key": f"home-row-{row.id}-open",
         "title": row_title(row, user),
         "title_main": title_main,
         "title_detail": title_detail,
