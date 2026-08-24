@@ -221,8 +221,11 @@ class ThemeChoices(models.TextChoices):
 class LogoStyleChoices(models.TextChoices):
     """Choices for the Floppy logo style preference."""
 
-    COLORFUL = "colorful", "Colorful"
+    COLORFUL = "colorful", "Original color"
     MONOCHROME = "monochrome", "Monochrome"
+    TEXT = "text", "Text"
+    CUSTOM = "custom", "Custom image"
+    HIDDEN = "hidden", "Hidden"
 
 
 class TimeFormatChoices(models.TextChoices):
@@ -1034,6 +1037,18 @@ class User(AbstractUser):
         default=LogoStyleChoices.COLORFUL,
         choices=LogoStyleChoices.choices,
         help_text="Preferred Floppy logo style",
+    )
+
+    logo_text = models.CharField(
+        max_length=32,
+        default="Floppy",
+        help_text="Short navigation wordmark",
+    )
+
+    custom_logo_data = models.TextField(
+        blank=True,
+        default="",
+        help_text="Normalized custom navigation logo",
     )
 
     time_format = models.CharField(

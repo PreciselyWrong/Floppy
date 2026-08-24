@@ -94,3 +94,24 @@ class ThemeTokenContractTests(SimpleTestCase):
 
         self.assertIn("(!hasExplicitTheme && systemPrefersLight)", template)
         self.assertIn("html.classList.remove(...explicitThemes)", template)
+
+    def test_every_explicit_theme_defines_shape_and_motion(self):
+        """Radius and movement are part of each preset's identity."""
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+
+        for theme in (theme for theme in THEME_PRESETS if theme != "system"):
+            block = re.search(rf"html\.{theme}\s*\{{(?P<body>.*?)\n\}}", css, re.DOTALL)
+            self.assertIsNotNone(block, theme)
+            for token in (
+                "--theme-radius",
+                "--motion-duration",
+                "--motion-distance",
+                "--motion-ease",
+            ):
+                self.assertIn(token, block.group("body"), f"{theme}: {token}")
+
+    def test_motion_has_an_accessibility_killswitch(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+
+        self.assertIn("@media (prefers-reduced-motion: reduce)", css)
+        self.assertIn("animation-duration: 0.01ms", css)

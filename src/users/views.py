@@ -41,7 +41,7 @@ from integrations.models import (
 )
 from integrations.plex_watchlist import WATCHLIST_TASK_NAME
 from users import appearance as appearance_config
-from users import cache_management
+from users import branding, cache_management
 from users.forms import (
     AuthenticatorSetupForm,
     NotificationSettingsForm,
@@ -964,6 +964,8 @@ def preferences(request):
         date_format = request.POST.get("date_format")
         theme = request.POST.get("theme")
         logo_style = request.POST.get("logo_style")
+        logo_text = request.POST.get("logo_text")
+        logo_upload = request.FILES.get("logo_upload")
         time_format = request.POST.get("time_format")
         activity_history_view = request.POST.get("activity_history_view")
         game_logging_style = request.POST.get("game_logging_style")
@@ -1035,13 +1037,36 @@ def preferences(request):
             request.user.theme = theme
             fields_to_update.append("theme")
 
-        if (
-            logo_style
-            and logo_style in LogoStyleChoices.values
-            and request.user.logo_style != logo_style
-        ):
-            request.user.logo_style = logo_style
-            fields_to_update.append("logo_style")
+        if logo_style and logo_style in LogoStyleChoices.values:
+            if (
+                logo_style == LogoStyleChoices.CUSTOM
+                and logo_upload is None
+                and not request.user.custom_logo_data
+            ):
+                messages.error(request, "Choose an image for the custom logo.")
+                return redirect("preferences")
+
+            try:
+                if logo_text is not None:
+                    cleaned_logo_text = branding.normalize_logo_text(logo_text)
+                    if request.user.logo_text != cleaned_logo_text:
+                        request.user.logo_text = cleaned_logo_text
+                        fields_to_update.append("logo_text")
+                if (
+                    logo_style == LogoStyleChoices.CUSTOM
+                    and logo_upload is not None
+                ):
+                    custom_logo_data = branding.normalize_logo_upload(logo_upload)
+                    if request.user.custom_logo_data != custom_logo_data:
+                        request.user.custom_logo_data = custom_logo_data
+                        fields_to_update.append("custom_logo_data")
+            except ValidationError as exc:
+                messages.error(request, exc.messages[0])
+                return redirect("preferences")
+
+            if request.user.logo_style != logo_style:
+                request.user.logo_style = logo_style
+                fields_to_update.append("logo_style")
 
         if (
             time_format
@@ -1295,6 +1320,7 @@ def preferences(request):
         "tv_metadata_source_choices": tv_metadata_source_choices,
         "anime_metadata_source_choices": anime_metadata_source_choices,
         "anime_library_mode_choices": AnimeLibraryModeChoices.choices,
+        "logo_style_choices": LogoStyleChoices.choices,
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
         "tvdb_enabled": tvdb_enabled,

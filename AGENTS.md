@@ -61,12 +61,13 @@ docker compose up -d
 - `src/app/log_safety.py`, installé par `src/config/__init__.py`, filtre les secrets avant tout handler.
 - `LoginRequiredMiddleware` protège toutes les vues; une route publique doit porter explicitement `@login_not_required`.
 - Les changements de thème doivent respecter les six états décrits dans `docs/architecture/theming.md`.
+- Les logos personnalisés sont réencodés en WebP, sans métadonnées, et restent sous les limites définies dans `users.branding`.
 - La baseline tests/Ruff/lint est zéro : confirmer puis corriger toute régression observée, même préexistante, sauf risque disproportionné explicité.
 
 ## ⛔ Interdits
 
 - ⛔ Créer une PR sans validation et accord explicite de Nicolas — le fork doit d'abord être testé sur son serveur.
-- ⛔ Committer sans demande explicite — les changements locaux peuvent appartenir à Nicolas.
+- ⛔ Demander une confirmation pour committer ou intégrer dans `custom` après un milestone validé sans secret — Nicolas autorise ces deux étapes automatiquement.
 - ⛔ Amender un commit que Nicolas n'a pas vu — corriger avec un nouveau commit.
 - ⛔ Modifier `.github/workflows/**` dans une PR ordinaire — les gardes CI rejettent ces changements.
 - ⛔ Copier une migration du projet source ou son étape intermédiaire — le graphe et les données du fork divergent.
@@ -74,6 +75,8 @@ docker compose up -d
 - ⛔ Ajouter `celery` aux queues du worker `interactive` — les tâches longues bloqueraient les actions utilisateur.
 - ⛔ Déplacer l'installation du filtre de logs ou élargir son `except` — une panne peut alors exposer des secrets silencieusement.
 - ⛔ Utiliser une classe Tailwind `dark:` — elle suit l'OS et contredit le choix de thème explicite de l'utilisateur.
+- ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
+- ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.
 - ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
 - ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.
 - ⛔ Lire, afficher ou committer `.env`, clés, jetons ou données de production — ce sont des secrets hors périmètre.
@@ -100,5 +103,5 @@ docker compose up -d
 
 ## État
 
-- Branche active : `feat/home-all-media-in-progress`; le worktree contient des changements Home/Apparence non commités à préserver.
-- Prochaine étape : committer sur demande, intégrer dans `custom`, déployer sur `unraid-server`, puis laisser Nicolas tester avant toute proposition de PR.
+- Branche active : `feat/user-appearance`; le worktree contient les options de thème, mouvement et logo validées localement.
+- Prochaine étape : intégrer dans `custom`, déployer sur `unraid-server`, puis laisser Nicolas tester avant toute proposition de PR.
