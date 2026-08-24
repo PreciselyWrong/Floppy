@@ -324,6 +324,21 @@ class HomeRowEntry:
     podcast_show: object | None = None
     show_progress_controls: bool = True
     subtitle_override: object | None = None
+    resume_navigation: bool = False
+    title_item_override: Item | None = None
+
+
+def _resume_navigation_metadata(item, media, status_filter) -> tuple[bool, Item | None]:
+    if status_filter != [Status.IN_PROGRESS.value] or item.media_type not in {
+        MediaTypes.TV.value,
+        MediaTypes.ANIME.value,
+        MediaTypes.SEASON.value,
+    }:
+        return False, None
+    if item.media_type == MediaTypes.SEASON.value:
+        related_tv = getattr(media, "related_tv", None)
+        return True, getattr(related_tv, "item", item)
+    return True, item
 
 
 def resolve_home_row_direction(sort_by: str, direction: str | None = None) -> str:
@@ -2092,6 +2107,8 @@ def _resolve_up_next_entry(media) -> HomeRowEntry | None:
         item=media.item,
         media=media,
         subtitle_override=subtitle,
+        resume_navigation=True,
+        title_item_override=media.item,
     )
 
 
@@ -2106,8 +2123,7 @@ def _up_next_entries(user) -> list[HomeRowEntry]:
                 user,
                 media_type,
                 [Status.IN_PROGRESS.value, Status.PLANNING.value],
-                HomeSortChoices.RECENT,
-                direction=DirectionChoices.DESC,
+                None,
             )
         )
 
@@ -2412,22 +2428,30 @@ def _library_query_entries(
         items,
         status_filter=status_filter,
     )
-    entries = [
-        HomeRowEntry(
-            item=item,
-            media=media_lookup.get(item.id),
-            use_podcast_show=bool(
-                getattr(media_lookup.get(item.id), "use_podcast_show", False)
-            ),
-            podcast_show=getattr(media_lookup.get(item.id), "show", None),
-            show_progress_controls=media_lookup.get(item.id) is not None,
-            subtitle_override=_entry_release_date(item)
-            if status_filter == [Status.PLANNING.value]
-            else None,
+    entries = []
+    for item in items:
+        if not _item_matches_home_media_type(item, row.media_type):
+            continue
+        media = media_lookup.get(item.id)
+        resume_navigation, title_item_override = _resume_navigation_metadata(
+            item,
+            media,
+            status_filter,
         )
-        for item in items
-        if _item_matches_home_media_type(item, row.media_type)
-    ]
+        entries.append(
+            HomeRowEntry(
+                item=item,
+                media=media,
+                use_podcast_show=bool(getattr(media, "use_podcast_show", False)),
+                podcast_show=getattr(media, "show", None),
+                show_progress_controls=media is not None,
+                subtitle_override=_entry_release_date(item)
+                if status_filter == [Status.PLANNING.value]
+                else None,
+                resume_navigation=resume_navigation,
+                title_item_override=title_item_override,
+            )
+        )
     if status_filter:
         entries = [entry for entry in entries if entry.media is not None]
     entries = _apply_progress_filter(

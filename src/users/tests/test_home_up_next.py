@@ -45,6 +45,8 @@ class HomeUpNextTests(SimpleTestCase):
         self.assertIs(entries[0].item, item)
         self.assertIs(entries[0].media, media)
         self.assertEqual(entries[0].subtitle_override, "S01E03")
+        self.assertTrue(entries[0].resume_navigation)
+        self.assertIs(entries[0].title_item_override, item)
 
     def test_announced_release_is_used_when_no_episode_is_ready(self):
         release = timezone.now() + timedelta(days=2)
@@ -125,3 +127,19 @@ class HomeUpNextTests(SimpleTestCase):
             [entry.item.title for entry in entries],
             ["Pinned Show", "Automatic Show"],
         )
+
+    def test_season_resume_title_targets_the_parent_series(self):
+        series_item = SimpleNamespace(media_type=MediaTypes.TV.value)
+        season_item = SimpleNamespace(media_type=MediaTypes.SEASON.value)
+        media = SimpleNamespace(
+            related_tv=SimpleNamespace(item=series_item),
+        )
+
+        resume_navigation, title_item = home_screen._resume_navigation_metadata(
+            season_item,
+            media,
+            ["In progress"],
+        )
+
+        self.assertTrue(resume_navigation)
+        self.assertIs(title_item, series_item)

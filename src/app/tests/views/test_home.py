@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from app import live_playback
+from app.templatetags import app_tags
 from app.models import (
     TV,
     Anime,
@@ -27,8 +28,11 @@ from users.models import (
     DateFormatChoices,
     DirectionChoices,
     HomeScreenRow,
+    HomeScreenRowTypeChoices,
     HomeSortChoices,
+    HomePinnedItem,
 )
+from events.models import Event
 
 
 class HomeViewTests(TestCase):
@@ -182,6 +186,47 @@ class HomeViewTests(TestCase):
             response, '<h2 class="text-2xl font-semibold">', html=False
         )
         self.assertNotContains(response, "Load All")
+
+    def test_up_next_resume_links_episode_visual_and_series_title(self):
+        season = Season.objects.get(
+            user=self.user,
+            item__media_id="1668",
+            item__season_number=1,
+        )
+        tv = season.related_tv
+        Event.objects.create(
+            item=season.item,
+            content_number=6,
+            datetime=timezone.now() - timezone.timedelta(hours=1),
+        )
+        HomePinnedItem.objects.create(user=self.user, item=tv.item)
+        HomeScreenRow.objects.filter(user=self.user).delete()
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=MediaTypes.TV.value,
+            position=0,
+            row_type=HomeScreenRowTypeChoices.UP_NEXT,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        response = self._get_hydrated_home()
+        row = self._get_first_row(response, MediaTypes.TV.value)
+        entry = row["items"][0]
+        episode_url = app_tags.next_episode_url(entry.item, entry.media)
+        series_url = app_tags.media_url(entry.title_item_override)
+
+        self.assertTrue(entry.resume_navigation)
+        self.assertEqual(entry.subtitle_override, "S01E06")
+        self.assertContains(response, f'href="{episode_url}"', html=False)
+        self.assertContains(response, 'data-resume-episode-link="true"', html=False)
+        self.assertContains(response, f'href="{series_url}"', html=False)
+        self.assertContains(response, 'data-resume-title-link="true"', html=False)
+        self.assertContains(
+            response,
+            'data-resume-episode-label-link="true"',
+            html=False,
+        )
 
     def test_home_row_direction_matches_persisted_row(self):
         """Each row dict must carry its own direction for the header arrow icon.
