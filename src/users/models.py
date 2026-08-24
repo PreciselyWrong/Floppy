@@ -381,6 +381,7 @@ class HomeScreenRowTypeChoices(models.TextChoices):
     LIBRARY_QUERY = "library_query", "Library Row"
     CUSTOM_LIST = "custom_list", "List / Smart List"
     RECENTLY_UNRATED = "recently_unrated", "Recently Played - Not Rated"
+    UP_NEXT = "up_next", "Up Next"
 
 
 # kept: unrenamed model field/class names and help_text below (avoids a migration; see plan)

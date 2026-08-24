@@ -94,6 +94,41 @@ class HomeScreenViewTests(TestCase):
         self.assertNotContains(response, "Add Recently Played Row")
         self.assertNotContains(response, "Enabled")
 
+    def test_up_next_row_is_configurable_once_across_episodic_sections(self):
+        self._set_enabled_media_types(MediaTypes.TV.value, MediaTypes.ANIME.value)
+        response = self.client.get(reverse("home_screen"))
+
+        self.assertContains(response, "Up Next Row")
+        row = home_screen._row_payload_to_model(
+            self.user,
+            MediaTypes.TV.value,
+            {
+                "row_type": HomeScreenRowTypeChoices.UP_NEXT,
+                "enabled": True,
+            },
+            0,
+        )
+        self.assertEqual(row.row_type, HomeScreenRowTypeChoices.UP_NEXT)
+        self.assertEqual(row.sort_by, HomeSortChoices.RECENT)
+
+        duplicate_payload = json.dumps(
+            [
+                {
+                    "media_type": MediaTypes.TV.value,
+                    "rows": [{"row_type": HomeScreenRowTypeChoices.UP_NEXT}],
+                },
+                {
+                    "media_type": MediaTypes.ANIME.value,
+                    "rows": [{"row_type": HomeScreenRowTypeChoices.UP_NEXT}],
+                },
+            ]
+        )
+        with self.assertRaises(home_screen.HomeScreenValidationError):
+            home_screen.save_home_screen_configuration(
+                self.user,
+                duplicate_payload,
+            )
+
     def test_home_rows_progress_filter_ignores_dropped_tv_seasons(self):
         """Home not-caught-up rows should ignore dropped TV seasons."""
         self._set_enabled_media_types(MediaTypes.TV.value)
