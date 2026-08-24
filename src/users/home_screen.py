@@ -38,6 +38,7 @@ from users.models import (
     HomeScreenRow,
     HomeScreenRowTypeChoices,
     HomeSortChoices,
+    HomePinnedItem,
     ListDetailSortChoices,
     MediaSortChoices,
     MediaStatusChoices,
@@ -2073,6 +2074,27 @@ def _apply_stale_filter(
     ]
 
 
+def _resolve_up_next_entry(media) -> HomeRowEntry | None:
+    target = (
+        media.next_episode_target()
+        if hasattr(media, "next_episode_target")
+        else None
+    )
+    if target is not None:
+        season, episode_number = target
+        season_number = getattr(season.item, "season_number", 0) or 0
+        subtitle = f"S{season_number:02d}E{episode_number:02d}"
+    else:
+        subtitle = BasicMedia.objects._next_episode_air_date_value(media)
+        if subtitle is None:
+            return None
+    return HomeRowEntry(
+        item=media.item,
+        media=media,
+        subtitle_override=subtitle,
+    )
+
+
 def _up_next_entries(user) -> list[HomeRowEntry]:
     enabled_types = set(user.get_enabled_media_types())
     candidates = []
@@ -2083,7 +2105,7 @@ def _up_next_entries(user) -> list[HomeRowEntry]:
             BasicMedia.objects.get_media_list(
                 user,
                 media_type,
-                [Status.IN_PROGRESS.value],
+                [Status.IN_PROGRESS.value, Status.PLANNING.value],
                 HomeSortChoices.RECENT,
                 direction=DirectionChoices.DESC,
             )
@@ -2096,28 +2118,30 @@ def _up_next_entries(user) -> list[HomeRowEntry]:
         ),
         reverse=True,
     )
+    media_by_item_id = {media.item_id: media for media in candidates}
+    pins = list(HomePinnedItem.objects.filter(user=user))
+    pinned_item_ids = [pin.item_id for pin in pins]
+
+    entries = []
+    for item_id in pinned_item_ids:
+        media = media_by_item_id.get(item_id)
+        if media is None:
+            continue
+        entry = _resolve_up_next_entry(media)
+        if entry is not None:
+            entries.append(entry)
+
+    pinned_item_id_set = set(pinned_item_ids)
     for media in candidates:
-        target = (
-            media.next_episode_target()
-            if hasattr(media, "next_episode_target")
-            else None
-        )
-        if target is not None:
-            season, episode_number = target
-            season_number = getattr(season.item, "season_number", 0) or 0
-            subtitle = f"S{season_number:02d}E{episode_number:02d}"
-        else:
-            subtitle = BasicMedia.objects._next_episode_air_date_value(media)
-            if subtitle is None:
-                continue
-        return [
-            HomeRowEntry(
-                item=media.item,
-                media=media,
-                subtitle_override=subtitle,
-            )
-        ]
-    return []
+        if media.item_id in pinned_item_id_set:
+            continue
+        if getattr(media, "status", Status.IN_PROGRESS.value) != Status.IN_PROGRESS.value:
+            continue
+        entry = _resolve_up_next_entry(media)
+        if entry is not None:
+            entries.append(entry)
+            break
+    return entries
 
 
 def _sort_numeric(

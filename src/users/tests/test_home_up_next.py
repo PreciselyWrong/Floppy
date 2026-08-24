@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from app.models import MediaTypes
 from users import home_screen
+from users.models import HomePinnedItem
 
 
 class HomeUpNextTests(SimpleTestCase):
@@ -20,18 +21,22 @@ class HomeUpNextTests(SimpleTestCase):
 
     def test_ready_episode_is_selected_from_latest_active_title(self):
         season = SimpleNamespace(item=SimpleNamespace(season_number=1))
-        item = SimpleNamespace(media_type=MediaTypes.TV.value, title="The Show")
+        item = SimpleNamespace(id=1, media_type=MediaTypes.TV.value, title="The Show")
         media = SimpleNamespace(
             item=item,
+            item_id=item.id,
             progressed_at=timezone.now(),
             next_episode_target=lambda: (season, 3),
         )
 
-        with patch.object(
-            home_screen.BasicMedia.objects,
-            "get_media_list",
-            side_effect=lambda _user, media_type, *_args, **_kwargs: (
-                [media] if media_type == MediaTypes.TV.value else []
+        with (
+            patch.object(HomePinnedItem.objects, "filter", return_value=[]),
+            patch.object(
+                home_screen.BasicMedia.objects,
+                "get_media_list",
+                side_effect=lambda _user, media_type, *_args, **_kwargs: (
+                    [media] if media_type == MediaTypes.TV.value else []
+                ),
             ),
         ):
             entries = home_screen._up_next_entries(self.user)
@@ -43,14 +48,16 @@ class HomeUpNextTests(SimpleTestCase):
 
     def test_announced_release_is_used_when_no_episode_is_ready(self):
         release = timezone.now() + timedelta(days=2)
-        item = SimpleNamespace(media_type=MediaTypes.ANIME.value, title="The Anime")
+        item = SimpleNamespace(id=1, media_type=MediaTypes.ANIME.value, title="The Anime")
         media = SimpleNamespace(
             item=item,
+            item_id=item.id,
             progressed_at=timezone.now(),
             next_episode_target=lambda: None,
         )
 
         with (
+            patch.object(HomePinnedItem.objects, "filter", return_value=[]),
             patch.object(
                 home_screen.BasicMedia.objects,
                 "get_media_list",
@@ -68,3 +75,53 @@ class HomeUpNextTests(SimpleTestCase):
 
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].subtitle_override, release)
+
+    def test_pins_are_ordered_before_and_deduplicated_from_automatic_resume(self):
+        now = timezone.now()
+        pinned_item = SimpleNamespace(
+            id=1,
+            media_type=MediaTypes.TV.value,
+            title="Pinned Show",
+        )
+        automatic_item = SimpleNamespace(
+            id=2,
+            media_type=MediaTypes.TV.value,
+            title="Automatic Show",
+        )
+        season = SimpleNamespace(item=SimpleNamespace(season_number=1))
+        pinned_media = SimpleNamespace(
+            item=pinned_item,
+            item_id=1,
+            progressed_at=now - timedelta(days=2),
+            next_episode_target=lambda: (season, 2),
+        )
+        automatic_media = SimpleNamespace(
+            item=automatic_item,
+            item_id=2,
+            progressed_at=now,
+            next_episode_target=lambda: (season, 4),
+        )
+        pins = [SimpleNamespace(item_id=1)]
+
+        with (
+            patch.object(
+                HomePinnedItem.objects,
+                "filter",
+                return_value=pins,
+            ),
+            patch.object(
+                home_screen.BasicMedia.objects,
+                "get_media_list",
+                side_effect=lambda _user, media_type, *_args, **_kwargs: (
+                    [automatic_media, pinned_media]
+                    if media_type == MediaTypes.TV.value
+                    else []
+                ),
+            ),
+        ):
+            entries = home_screen._up_next_entries(self.user)
+
+        self.assertEqual(
+            [entry.item.title for entry in entries],
+            ["Pinned Show", "Automatic Show"],
+        )

@@ -1,0 +1,11 @@
+<form hx-post="{% url 'toggle_home_pin' item.id %}"
+      hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'
+      hx-swap="outerHTML"
+      class="flex-1 sm:flex-none">
+    <button type="submit"
+            title="{% if is_home_pinned %}Remove from Up Next{% else %}Pin to Up Next{% endif %}"
+            aria-label="{% if is_home_pinned %}Remove from Up Next{% else %}Pin to Up Next{% endif %}"
+            class="inline-flex h-11 w-full items-center justify-center rounded-xl border border-[var(--color-surface-border)] {% if is_home_pinned %}bg-indigo-600 text-white{% else %}bg-[var(--color-surface)] text-[var(--color-text)]{% endif %} shadow-sm transition-colors duration-200 hover:bg-[var(--color-surface-muted)] cursor-pointer sm:size-11 sm:w-11">
+        {% include "app/icons/star.svg" with classes="w-4 h-4" %}
+    </button>
+</form>

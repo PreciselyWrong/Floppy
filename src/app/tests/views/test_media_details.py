@@ -616,7 +616,7 @@ class MediaDetailsViewTests(TestCase):
             else volume_metadata
         )
 
-        volume_item = Item.objects.create(
+        Item.objects.create(
             media_id="500",
             source=Sources.COMICVINE.value,
             media_type=MediaTypes.COMIC.value,
@@ -3049,6 +3049,12 @@ class MediaDetailsViewTests(TestCase):
         self.assertNotContains(response, "FIRST PLAYED")
         self.assertNotContains(response, "LAST PLAYED")
         self.assertNotContains(response, "WATCHED HOURS")
+
+        self.assertContains(response, "Pin to Up Next")
+        self.assertContains(
+            response,
+            reverse("toggle_home_pin", args=[item.id]),
+        )
 
     @patch("app.providers.services.get_media_metadata")
     def test_movie_media_details_renders_watch_subtitle_above_score_chips(

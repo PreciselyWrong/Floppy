@@ -63,6 +63,7 @@ from users.models import (
     DateFormatChoices,
     DurationFormatChoices,
     GameLoggingStyleChoices,
+    HomePinnedItem,
     ImportFrequencyChoices,
     ImportModeChoices,
     LogoStyleChoices,
@@ -87,6 +88,32 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
 
 
 logger = logging.getLogger(__name__)
+
+
+@login_required
+@require_POST
+def toggle_home_pin(request, item_id):
+    """Toggle one tracked episodic title in the user's Up Next row."""
+    item = get_object_or_404(
+        Item,
+        id=item_id,
+        media_type__in=[MediaTypes.TV.value, MediaTypes.ANIME.value],
+    )
+    tracker_model = apps.get_model("app", item.media_type)
+    if not tracker_model.objects.filter(user=request.user, item=item).exists():
+        return HttpResponse(status=404)
+
+    pin, created = HomePinnedItem.objects.get_or_create(
+        user=request.user,
+        item=item,
+    )
+    if not created:
+        pin.delete()
+    return render(
+        request,
+        "app/components/home_pin_button.html",
+        {"item": item, "is_home_pinned": created},
+    )
 
 
 class CustomSignupView(SignupView):

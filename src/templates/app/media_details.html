@@ -493,6 +493,9 @@
           </div>
 
           <div class="flex w-full items-center gap-2 sm:w-auto sm:flex-wrap">
+            {% if can_home_pin %}
+              {% include "app/components/home_pin_button.html" with item=detail_item is_home_pinned=is_home_pinned %}
+            {% endif %}
             {% if detail_link_sections %}
               <div x-data="{ linksOpen: false, linksPinned: false }"
                    class="relative flex-1 sm:flex-none"

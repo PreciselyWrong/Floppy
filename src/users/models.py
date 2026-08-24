@@ -2204,3 +2204,28 @@ class HomeScreenRow(models.Model):
     def __str__(self):
         """Return a compact label for admin/debug use."""
         return f"{self.user_id}:{self.media_type}:{self.row_type}:{self.position}"
+
+
+class HomePinnedItem(models.Model):
+    """A title the user wants ahead of automatic Home resume suggestions."""
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="home_pinned_items",
+    )
+    item = models.ForeignKey(
+        "app.Item",
+        on_delete=models.CASCADE,
+        related_name="home_pins",
+    )
+    pinned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-pinned_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "item"],
+                name="unique_home_pinned_item_per_user",
+            ),
+        ]
