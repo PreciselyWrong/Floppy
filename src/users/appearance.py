@@ -7,6 +7,7 @@ THEME_PRESETS = {
     "system": {"label": "System default"},
     "light": {"label": "Light"},
     "dark": {"label": "Dark"},
+    "glass": {"label": "Glass cinema"},
     "projector": {"label": "Projector"},
     "video_store": {"label": "Video store"},
     "custom": {"label": "Custom palette"},
@@ -19,6 +20,36 @@ CUSTOM_THEME_COLORS = {
     "text": {"label": "Text", "default": "#f6f1df", "token": "text"},
     "muted": {"label": "Muted text", "default": "#adb7cc", "token": "text-muted"},
     "accent": {"label": "Accent", "default": "#ffb454", "token": "accent"},
+}
+
+CUSTOM_THEME_EFFECTS = {
+    "radius": {
+        "label": "Corner radius",
+        "default": 12,
+        "min": 0,
+        "max": 28,
+        "step": 2,
+        "token": "radius",
+        "unit": "px",
+    },
+    "blur": {
+        "label": "Backdrop blur",
+        "default": 12,
+        "min": 0,
+        "max": 24,
+        "step": 2,
+        "token": "blur",
+        "unit": "px",
+    },
+    "surface_opacity": {
+        "label": "Surface opacity",
+        "default": 82,
+        "min": 40,
+        "max": 100,
+        "step": 2,
+        "token": "surface-opacity",
+        "unit": "%",
+    },
 }
 
 
@@ -255,20 +286,30 @@ def parse_detail_layouts(raw_payload):
 
 
 def parse_custom_theme(raw_payload):
-    """Parse a custom palette and keep only allowlisted hex colors."""
+    """Parse allowlisted custom colours and bounded visual effects."""
     try:
         payload = json.loads(raw_payload or "{}")
     except json.JSONDecodeError as exc:
         raise ValidationError(_INVALID_PALETTE) from exc
     if not isinstance(payload, dict):
         raise ValidationError(_INVALID_PALETTE)
-    return {
-        key: value.lower()
-        for key, value in payload.items()
-        if key in CUSTOM_THEME_COLORS
-        and isinstance(value, str)
-        and _HEX_COLOR.fullmatch(value)
-    }
+    cleaned = {}
+    for key, value in payload.items():
+        if key in CUSTOM_THEME_COLORS:
+            if not isinstance(value, str) or not _HEX_COLOR.fullmatch(value):
+                raise ValidationError(_INVALID_PALETTE)
+            cleaned[key] = value.lower()
+        elif key in CUSTOM_THEME_EFFECTS:
+            definition = CUSTOM_THEME_EFFECTS[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not definition["min"] <= value <= definition["max"]
+                or (value - definition["min"]) % definition["step"]
+            ):
+                raise ValidationError(_INVALID_PALETTE)
+            cleaned[key] = value
+    return cleaned
 
 
 def custom_theme_css(saved_palette):
@@ -280,4 +321,15 @@ def custom_theme_css(saved_palette):
         value = saved_palette.get(key)
         if isinstance(value, str) and _HEX_COLOR.fullmatch(value):
             declarations.append(f"--color-{definition['token']}: {value.lower()}")
+    for key, definition in CUSTOM_THEME_EFFECTS.items():
+        value = saved_palette.get(key)
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and definition["min"] <= value <= definition["max"]
+            and not (value - definition["min"]) % definition["step"]
+        ):
+            declarations.append(
+                f"--theme-{definition['token']}: {value}{definition['unit']}"
+            )
     return "; ".join(declarations)

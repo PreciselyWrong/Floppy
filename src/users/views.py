@@ -891,18 +891,21 @@ def appearance(request):
         key: saved_palette.get(key, definition["default"])
         for key, definition in appearance_config.CUSTOM_THEME_COLORS.items()
     }
+    palette.update(
+        {
+            key: saved_palette.get(key, definition["default"])
+            for key, definition in appearance_config.CUSTOM_THEME_EFFECTS.items()
+        }
+    )
     context = {
         "theme_presets": appearance_config.THEME_PRESETS,
         "custom_theme_colors": appearance_config.CUSTOM_THEME_COLORS,
+        "custom_theme_effects": appearance_config.CUSTOM_THEME_EFFECTS,
         "appearance_theme": request.user.theme,
-        "custom_theme_json": json.dumps(palette),
-        "detail_layout_families_json": json.dumps(
-            appearance_config.DETAIL_LAYOUT_FAMILIES
-        ),
-        "detail_layouts_json": json.dumps(
-            appearance_config.resolved_detail_layouts(
-                request.user.detail_page_layouts
-            )
+        "custom_theme_json": palette,
+        "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
+        "detail_layouts_json": appearance_config.resolved_detail_layouts(
+            request.user.detail_page_layouts
         ),
     }
     return render(request, "users/appearance.html", context)

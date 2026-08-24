@@ -6,8 +6,9 @@ neither failure is visible in the theme the author has open.
 
 ## How a theme is selected
 
-`user.theme` holds `system`, `light`, `dark`, `projector`, `video_store`, or
-`custom`. `base.html` writes every explicit choice onto the root element:
+`user.theme` holds `system`, `light`, `dark`, `glass`, `projector`,
+`video_store`, or `custom`. `base.html` writes every explicit choice onto the
+root element:
 
 ```html
 <html class="{% if user.theme != 'system' %}{{ user.theme }}{% endif %}">
@@ -30,8 +31,9 @@ palette are explicit states. Any token change must be checked in every state.
 | `html.dark` | an explicit dark choice |
 
 Preset classes override the tokens they intentionally change and inherit the
-remaining dark defaults. `html.custom` also inherits the dark defaults;
-`base.html` adds only the six validated custom values as inline variables.
+remaining dark defaults. `html.glass` adds a fixed translucent cinema treatment.
+`html.custom` inherits the dark defaults; `base.html` adds the six validated
+colours plus bounded radius, blur and surface-opacity values as inline variables.
 `users.appearance` is the allowlist and validation boundary for those values.
 
 `html.dark` repeats the `:root` values. That repetition is redundant, since
@@ -95,6 +97,8 @@ be reset on every toggle. `users.tests.views.test_theme_toggle` pins this.
 
 Settings > Appearance owns preset selection, the custom palette, and detail
 page composition. It validates the complete payload before saving any part.
+Values passed to Django's `json_script` must remain Python dictionaries; the
+filter performs the single required serialization before Alpine parses them.
 
 `PATCH /api/v1/user/preferences/` follows the same rule and ignores any field
 the body omits. It does not currently accept `theme`.

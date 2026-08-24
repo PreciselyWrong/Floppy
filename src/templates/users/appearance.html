@@ -56,6 +56,24 @@
             </label>
           {% endfor %}
         </div>
+        <div class="mt-5 grid gap-4 lg:grid-cols-3">
+          {% for key, effect in custom_theme_effects.items %}
+            <label class="rounded-lg bg-[var(--color-surface)] p-3">
+              <span class="mb-2 flex items-center justify-between gap-3 text-sm">
+                <span class="text-[var(--color-text-secondary)]">{{ effect.label }}</span>
+                <output class="font-mono text-xs text-[var(--color-text-muted)]"
+                        x-text="palette.{{ key }} + '{{ effect.unit }}'"></output>
+              </span>
+              <input type="range"
+                     min="{{ effect.min }}"
+                     max="{{ effect.max }}"
+                     step="{{ effect.step }}"
+                     x-model.number="palette.{{ key }}"
+                     class="w-full accent-[var(--color-accent)]"
+                     aria-label="{{ effect.label }}">
+            </label>
+          {% endfor %}
+        </div>
       </div>
     </section>
 
@@ -68,14 +86,26 @@
         </div>
       </div>
 
-      <div class="flex gap-2 overflow-x-auto pb-2" role="tablist" aria-label="Detail page family">
+      <label class="block md:hidden">
+        <span class="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Page type</span>
+        <select x-model="selectedFamily"
+                class="w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[var(--color-text)]">
+          <template x-for="(family, familyKey) in families" :key="familyKey">
+            <option :value="familyKey" x-text="family.label"></option>
+          </template>
+        </select>
+      </label>
+
+      <div class="hidden flex-wrap gap-2 md:flex"
+           role="tablist"
+           aria-label="Detail page family">
         <template x-for="(family, familyKey) in families" :key="familyKey">
           <button type="button"
                   role="tab"
                   @click="selectedFamily = familyKey"
                   :aria-selected="(selectedFamily === familyKey).toString()"
                   :class="selectedFamily === familyKey ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'"
-                  class="shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors cursor-pointer"
+                  class="rounded-full px-4 py-2 text-sm font-medium transition-colors cursor-pointer"
                   x-text="family.label"></button>
         </template>
       </div>
