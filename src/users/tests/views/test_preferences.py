@@ -70,6 +70,12 @@ class PreferencesViewTests(TestCase):
         self.assertContains(response, "/static/img/floppy-logo.png")
         self.assertNotContains(response, "/static/img/floppy-logo-white.png")
 
+    def test_preferences_keeps_all_theme_choices(self):
+        response = self.client.get(reverse("preferences"))
+
+        for label in ("System default", "Dark", "Light", "Projector", "Video store", "Custom palette"):
+            self.assertContains(response, label)
+
     def test_preferences_uses_monochrome_logo_for_authenticated_user(self):
         """Authenticated branding should follow the saved logo style."""
         self.user.logo_style = "monochrome"

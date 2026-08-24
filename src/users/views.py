@@ -890,8 +890,11 @@ def appearance(request):
             messages.error(request, "Unsupported theme.")
             return redirect("appearance")
         try:
-            custom_theme = appearance_config.parse_custom_theme(
-                request.POST.get("custom_theme")
+            raw_custom_theme = request.POST.get("custom_theme")
+            custom_theme = (
+                appearance_config.parse_custom_theme(raw_custom_theme)
+                if raw_custom_theme is not None
+                else request.user.custom_theme
             )
             detail_layouts = appearance_config.parse_detail_layouts(
                 request.POST.get("detail_layouts")
@@ -1313,6 +1316,7 @@ def preferences(request):
 
     context = {
         "media_types": media_types,
+        "theme_presets": appearance_config.THEME_PRESETS,
         "active_libraries": active_libraries,
         "auto_pause_enabled": request.user.auto_pause_in_progress_enabled,
         "auto_pause_rules_json": json.dumps(request.user.auto_pause_rules or []),

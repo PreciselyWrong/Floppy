@@ -103,6 +103,20 @@ class AppearanceViewTests(TestCase):
         self.assertEqual(self.user.theme, "system")
         self.assertEqual(self.user.detail_page_layouts, {})
 
+    def test_appearance_keeps_palette_when_custom_payload_is_missing(self):
+        self.user.theme = "custom"
+        self.user.custom_theme = {"accent": "#ffb454"}
+        self.user.save(update_fields=["theme", "custom_theme"])
+
+        response = self.client.post(
+            reverse("appearance"),
+            {"theme": "custom", "detail_layouts": "{}"},
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.custom_theme, {"accent": "#ffb454"})
+
     def test_custom_theme_is_rendered_as_safe_css_variables(self):
         self.user.theme = "custom"
         self.user.custom_theme = {

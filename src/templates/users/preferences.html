@@ -60,21 +60,13 @@
                  x-transition:leave-start="transform opacity-100 scale-100"
                  x-transition:leave-end="transform opacity-0 scale-95"
                  class="absolute left-0 right-0 mt-2 py-1 bg-[var(--color-panel)] rounded-md shadow-lg overflow-hidden z-10 border border-gray-600">
-              <button type="button"
-                      @click="selectedValue = 'system'; selectedLabel = 'System default'; open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                System default
-              </button>
-              <button type="button"
-                      @click="selectedValue = 'dark'; selectedLabel = 'Dark'; open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                Dark
-              </button>
-              <button type="button"
-                      @click="selectedValue = 'light'; selectedLabel = 'Light'; open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                Light
-              </button>
+              {% for value, preset in theme_presets.items %}
+                <button type="button"
+                        @click="selectedValue = '{{ value }}'; selectedLabel = '{{ preset.label }}'; open = false"
+                        class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
+                  {{ preset.label }}
+                </button>
+              {% endfor %}
             </div>
             <input type="hidden" name="theme" x-bind:value="selectedValue">
           </div>
