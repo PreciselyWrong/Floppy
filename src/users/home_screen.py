@@ -1083,6 +1083,7 @@ def serialize_settings_sections(user) -> list[dict]:
                         media_type,
                         HomeScreenRowTypeChoices.CUSTOM_LIST,
                     ),
+                    HomeScreenRowTypeChoices.UP_NEXT: [],
                 },
                 "filter_fields": build_filter_field_data(
                     user, media_type, precomputed_tags=tag_names
@@ -1099,7 +1100,9 @@ def serialize_settings_sections(user) -> list[dict]:
                         else "",
                         "sort_by": row.sort_by,
                         "direction": row.direction,
-                        "filters": _normalized_filter_payload(row.filters, media_type),
+                        "filters": _normalized_filter_payload(row.filters, media_type)
+                        if row.row_type == HomeScreenRowTypeChoices.LIBRARY_QUERY
+                        else {},
                         "title": row_title(row, user),
                         "custom_title": row.title or "",
                         "summary": row_summary(row, user),
@@ -1122,6 +1125,8 @@ def row_title(row: HomeScreenRow, user) -> str:
         return "List / Smart List"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return RECENTLY_UNRATED_LABEL
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        return "Up Next"
     return describe_library_query(row.filters or {}, user, row.media_type)
 
 
@@ -1133,6 +1138,8 @@ def row_summary(row: HomeScreenRow, user) -> str:
         return "Choose a list or smart list"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return "Recent unrated plays from this library"
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        return "Next ready episode or announced release"
     sort_choices = {
         choice["value"]: choice["label"]
         for choice in get_allowed_sort_choices(row.media_type, row.row_type)
@@ -1281,7 +1288,16 @@ def _row_payload_to_model(
             msg = f"Choose an accessible list for {media_type}."
             raise HomeScreenValidationError(msg)
         sort_choices = get_allowed_sort_choices(media_type, row_type)
-    elif row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    elif row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.UP_NEXT,
+    }:
+        if (
+            row_type == HomeScreenRowTypeChoices.UP_NEXT
+            and media_type not in {MediaTypes.TV.value, MediaTypes.ANIME.value}
+        ):
+            msg = "Up Next is only available for TV and Anime."
+            raise HomeScreenValidationError(msg)
         sort_choices = []
     else:
         filters = validate_library_row_filters(row_payload.get("filters"), media_type)
@@ -1289,7 +1305,10 @@ def _row_payload_to_model(
 
     allowed_sort_values = {choice["value"] for choice in sort_choices}
     sort_by = str(row_payload.get("sort_by") or "").strip()
-    if row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    if row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.UP_NEXT,
+    }:
         sort_by = HomeSortChoices.RECENT
         direction = _default_recent_row_direction()
     else:
@@ -1427,6 +1446,7 @@ def save_home_screen_configuration(user, raw_payload: str) -> None:
     )
     replacement_rows: list[HomeScreenRow] = []
     seen_recent_rows: set[str] = set()
+    seen_up_next = False
     media_type_order: list[str] = []
 
     for section in parsed_payload:
@@ -1455,6 +1475,11 @@ def save_home_screen_configuration(user, raw_payload: str) -> None:
                         msg,
                     )
                 seen_recent_rows.add(media_type)
+            if model_row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+                if seen_up_next:
+                    msg = "Only one 'Up Next' row is allowed."
+                    raise HomeScreenValidationError(msg)
+                seen_up_next = True
             replacement_rows.append(model_row)
 
     with transaction.atomic():
@@ -2048,6 +2073,53 @@ def _apply_stale_filter(
     ]
 
 
+def _up_next_entries(user) -> list[HomeRowEntry]:
+    enabled_types = set(user.get_enabled_media_types())
+    candidates = []
+    for media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
+        if media_type not in enabled_types:
+            continue
+        candidates.extend(
+            BasicMedia.objects.get_media_list(
+                user,
+                media_type,
+                [Status.IN_PROGRESS.value],
+                HomeSortChoices.RECENT,
+                direction=DirectionChoices.DESC,
+            )
+        )
+
+    candidates.sort(
+        key=lambda media: (
+            _coerce_datetime(getattr(media, "progressed_at", None))
+            or datetime.min.replace(tzinfo=UTC)
+        ),
+        reverse=True,
+    )
+    for media in candidates:
+        target = (
+            media.next_episode_target()
+            if hasattr(media, "next_episode_target")
+            else None
+        )
+        if target is not None:
+            season, episode_number = target
+            season_number = getattr(season.item, "season_number", 0) or 0
+            subtitle = f"S{season_number:02d}E{episode_number:02d}"
+        else:
+            subtitle = BasicMedia.objects._next_episode_air_date_value(media)
+            if subtitle is None:
+                continue
+        return [
+            HomeRowEntry(
+                item=media.item,
+                media=media,
+                subtitle_override=subtitle,
+            )
+        ]
+    return []
+
+
 def _sort_numeric(
     entries: list[HomeRowEntry], value_fn, direction: str
 ) -> list[HomeRowEntry]:
@@ -2456,6 +2528,9 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
     custom-list rows open the list itself. Sort, direction, layout and filters are
     encoded in the URL (the media list persists them like any normal navigation).
     """
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        return ""
+
     # Custom-list rows open the list detail page.
     if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST and row.custom_list_id:
         base = row.custom_list.get_absolute_url()
@@ -2519,6 +2594,8 @@ def _build_row_section(
         entries = _custom_list_entries(user, row)
     elif row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         entries = _recently_unrated_entries(user, row)
+    elif row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        entries = _up_next_entries(user)
     else:
         entries = _library_query_entries(
             user, row, collection_context_cache=collection_context_cache,
