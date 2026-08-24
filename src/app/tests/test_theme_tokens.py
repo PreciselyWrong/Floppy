@@ -4,6 +4,9 @@ from pathlib import Path
 from django.conf import settings
 from django.test import SimpleTestCase
 
+from users.appearance import THEME_PRESETS
+from users.models import ThemeChoices
+
 # Tailwind's stock `dark:` variant compiles to `@media (prefers-color-scheme:
 # dark)`. Floppy instead resolves the theme server-side and stamps `light` or
 # `dark` on <html> from user.theme, so the two disagree for anyone whose chosen
@@ -60,3 +63,34 @@ class ThemeTokenContractTests(SimpleTestCase):
             "Replace with text-[var(--color-link)] or "
             f"text-[var(--color-text-muted)]. Found: {offenders}",
         )
+
+    def test_system_light_tokens_exclude_every_explicit_theme(self):
+        """An OS light preference must not override a saved theme preset."""
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+        explicit_themes = [theme for theme in THEME_PRESETS if theme != "system"]
+        selector = ":root" + "".join(
+            f":not(.{theme})" for theme in explicit_themes
+        )
+
+        self.assertIn(selector, css)
+
+    def test_curated_theme_registry_matches_persisted_choices(self):
+        """Every displayed preset must be accepted and persistable."""
+        expected = {
+            "catppuccin_mocha",
+            "dracula",
+            "nord",
+            "gruvbox",
+            "oled",
+            "plex",
+        }
+
+        self.assertLessEqual(expected, set(THEME_PRESETS))
+        self.assertEqual(set(THEME_PRESETS), set(ThemeChoices.values))
+
+    def test_header_toggle_treats_explicit_presets_as_dark(self):
+        """A light OS must not make the toggle misread a dark preset as light."""
+        template = Path(settings.BASE_DIR, "templates", "base.html").read_text()
+
+        self.assertIn("(!hasExplicitTheme && systemPrefersLight)", template)
+        self.assertIn("html.classList.remove(...explicitThemes)", template)

@@ -15,6 +15,12 @@ from users.models import DateFormatChoices, TimeFormatChoices
 register = template.Library()
 
 
+@register.simple_tag
+def explicit_theme_classes():
+    """Return the authoritative set of classes replaced by the theme toggle."""
+    return " ".join(theme for theme in THEME_PRESETS if theme != "system")
+
+
 @register.filter
 def get_attr(obj, attr):
     """Get attribute from object dynamically."""

@@ -74,6 +74,8 @@ docker compose up -d
 - ⛔ Ajouter `celery` aux queues du worker `interactive` — les tâches longues bloqueraient les actions utilisateur.
 - ⛔ Déplacer l'installation du filtre de logs ou élargir son `except` — une panne peut alors exposer des secrets silencieusement.
 - ⛔ Utiliser une classe Tailwind `dark:` — elle suit l'OS et contredit le choix de thème explicite de l'utilisateur.
+- ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
+- ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.
 - ⛔ Lire, afficher ou committer `.env`, clés, jetons ou données de production — ce sont des secrets hors périmètre.
 - ⛔ Prioriser l'i18n ou la traduction française sans réactivation explicite — la parité Home avec Floppy Companion reste prioritaire.
 - ⛔ Ajouter du texte d'interface ou des valeurs par défaut en français — l'interface et les défauts restent en anglais.
