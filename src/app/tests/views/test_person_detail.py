@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -29,11 +29,21 @@ from app.models import (
     Status,
     Studio,
 )
+from app.people_views import _person_age, _select_known_for
 from users.models import DateFormatChoices
 
 
 class PersonDetailViewTests(TestCase):
     """Test cast/crew person profile pages."""
+
+    def test_person_age_and_known_for_prioritize_watched_titles(self):
+        self.assertEqual(_person_age("2000-08-25", today=date(2026, 8, 24)), 25)
+        entries = [
+            {"media_type": "movie", "media_id": "1", "is_watched": False, "vote_average": 10},
+            {"media_type": "movie", "media_id": "2", "is_watched": True, "vote_average": 7},
+            {"media_type": "movie", "media_id": "2", "is_watched": True, "vote_average": 8},
+        ]
+        self.assertEqual([entry["media_id"] for entry in _select_known_for(entries)], ["2", "1"])
 
     def setUp(self):
         self.credentials = {"username": "test", "password": "12345"}

@@ -821,6 +821,25 @@
         </div>
         <div class="preferences-grid preferences-tracking-grid">
 
+        <div class="col-span-full p-3 bg-[var(--color-surface-strong)] rounded-md mb-4">
+          <h4 class="text-[var(--color-text-secondary)] text-sm font-medium mb-2">Series and person details</h4>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {% for field_name, field_label, field_value in season_display_preferences %}
+              <label class="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                <input type="hidden" name="{{ field_name }}" value="0">
+                <input type="checkbox" name="{{ field_name }}" value="1" {% if field_value %}checked{% endif %}>
+                <span>{{ field_label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+          <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Person sections order (comma separated)
+            <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" name="person_sections_order" value="{{ person_sections_order_text }}">
+          </label>
+          <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Hidden person sections (comma separated)
+            <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" name="person_hidden_sections" value="{{ person_hidden_sections_text }}">
+          </label>
+        </div>
+
         <!-- Hide Completed Recommendations -->
         <div class="p-3 bg-[var(--color-surface-strong)] rounded-md mb-4">
           <div class="flex items-center justify-between mb-2">

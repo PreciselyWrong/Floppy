@@ -36,6 +36,44 @@ from users.models import MediaSortChoices
 logger = __import__("logging").getLogger(__name__)
 
 
+def _person_age(birth_date, end_date=None, today=None):
+    """Return age at death or today, or None when the date is incomplete."""
+    from datetime import UTC, date, datetime
+
+    if not birth_date:
+        return None
+    if isinstance(birth_date, str):
+        birth_date = date.fromisoformat(birth_date)
+    if isinstance(end_date, str):
+        end_date = date.fromisoformat(end_date)
+    end_date = end_date or today or datetime.now(UTC).date()
+    age = end_date.year - birth_date.year
+    if (end_date.month, end_date.day) < (birth_date.month, birth_date.day):
+        age -= 1
+    return age if age >= 0 else None
+
+
+def _select_known_for(entries, limit=3):
+    """Select deduplicated works, prioritising watched and well-rated titles."""
+    unique = {}
+    for entry in entries or []:
+        key = (entry.get("media_type"), str(entry.get("media_id")))
+        current = unique.get(key)
+        if current is None or (
+            entry.get("is_watched") and not current.get("is_watched")
+        ):
+            unique[key] = entry
+    return sorted(
+        unique.values(),
+        key=lambda entry: (
+            not entry.get("is_watched"),
+            -(entry.get("vote_average") or 0),
+            -(entry.get("popularity") or 0),
+            -(entry.get("vote_count") or 0),
+        ),
+    )[:limit]
+
+
 @require_GET
 def person_detail(request, source, person_id, name):
     """Render a provider-backed person or author profile page."""
@@ -375,6 +413,11 @@ def person_detail(request, source, person_id, name):
         entry["tracked_item"] = tracked_item_map.get(media_key)
         entry["is_watched"] = media_key in watched_media_keys
 
+    known_for = _select_known_for(filmography)
+    person_data["age"] = _person_age(
+        person_data.get("birth_date"), person_data.get("death_date")
+    )
+
     watched_filmography = []
     if watched_media_keys:
         seen_watched_media = set()
@@ -639,6 +682,14 @@ def person_detail(request, source, person_id, name):
         "watched_show_count": watched_show_count,
         "watched_book_count": watched_book_count,
         "filmography": filmography,
+        "known_for": known_for,
+        "tracked_titles": watched_filmography,
+        "person_sections_order": getattr(
+            request.user,
+            "person_sections_order",
+            ["known_for", "tracked", "cast", "guest", "crew", "biography", "details"],
+        ),
+        "person_hidden_sections": getattr(request.user, "person_hidden_sections", []),
         "history_filter_url": history_filter_url,
         "tracked_plays_count": tracked_plays_count,
         "tracked_hours_count": tracked_hours_count,

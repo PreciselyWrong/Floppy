@@ -342,6 +342,21 @@
       {% if notes_entry or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes %}
         <div class="w-full md:w-3/4"
              style="display: flex; flex-direction: column;">
+        {% if remaining_time_summary and remaining_time_summary.remaining_minutes %}
+          <section class="mb-8 rounded-lg bg-[var(--color-surface)] p-4">
+            <h2 class="mb-2 text-xl font-bold">Time remaining</h2>
+            <p class="text-sm text-[var(--color-text-secondary)]">About {{ remaining_time_summary.remaining_minutes }} minutes left.</p>
+            {% if remaining_time_summary.has_pace %}<p class="text-xs text-[var(--color-text-muted)] mt-1">At your last 28-day pace, finish around {{ remaining_time_summary.estimated_finish|datetime_format:user }}.</p>{% endif %}
+          </section>
+        {% endif %}
+        {% if personal_rating_trend and personal_rating_trend.points|length > 1 %}
+          <section class="mb-8 rounded-lg bg-[var(--color-surface)] p-4">
+            <h2 class="mb-2 text-xl font-bold">Your episode rating trend</h2>
+            <p class="text-sm text-[var(--color-text-secondary)]">
+              {{ personal_rating_trend.direction|title }} across {{ personal_rating_trend.points|length }} rated episode{{ personal_rating_trend.points|length|pluralize }}.
+            </p>
+          </section>
+        {% endif %}
         {% if show_notes|default:False and notes_entry %}
           <div {% detail_section_attrs user detail_family "content" "notes" %}>
             {% include "app/components/detail_notes_section.html" %}
@@ -512,6 +527,9 @@
           <section class="mb-8" {% detail_section_attrs user detail_family "content" "cast" %}>
             {% include "app/components/_scrollable_row.html" with row=cast_row grid_template="app/components/detail_cast_grid.html" collapse_key="detail-cast-open" %}
           </section>
+        {% endif %}
+        {% if guest_row.total %}
+          {% include "app/components/_scrollable_row.html" with row=guest_row grid_template="app/components/detail_cast_grid.html" collapse_key="detail-guest-open" %}
         {% endif %}
 
         {% if crew_row.total %}

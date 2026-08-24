@@ -249,6 +249,7 @@ def _normalize_credit_rows(rows):
                     row.get("role") or row.get("character") or row.get("job") or ""
                 ),
                 "department": _as_text(row.get("department")),
+                "credit_type": _as_text(row.get("credit_type")),
                 "sort_order": _as_int(
                     row["order"]
                     if "order" in row and row["order"] is not None
@@ -320,6 +321,7 @@ def sync_item_credits_from_metadata(item, metadata, person_source=None):
             item=item,
             role_type__in=(
                 CreditRoleType.CAST.value,
+                CreditRoleType.GUEST.value,
                 CreditRoleType.CREW.value,
             ),
         ).delete()
@@ -333,7 +335,11 @@ def sync_item_credits_from_metadata(item, metadata, person_source=None):
                 ItemPersonCredit(
                     item=item,
                     person=person,
-                    role_type=CreditRoleType.CAST.value,
+                    role_type=(
+                        CreditRoleType.GUEST.value
+                        if row.get("credit_type") == CreditRoleType.GUEST.value
+                        else CreditRoleType.CAST.value
+                    ),
                     role=row["role"],
                     department=row["department"],
                     sort_order=row["sort_order"],

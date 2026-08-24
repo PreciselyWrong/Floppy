@@ -21,6 +21,9 @@ from app.detail_builders import (
     _build_series_graph_data,
     _build_series_graph_from_raw,
     _build_trakt_popularity_context,
+    build_personal_rating_trend,
+    build_remaining_time_summary,
+    enrich_episode_rows,
 )
 from app.log_safety import exception_summary
 from app.metadata_sync_views import (
@@ -933,6 +936,26 @@ def season_details(
     )
     episode_load_more = None
     if render_secondary_only and season_metadata.get("episodes"):
+        season_preferences_enabled = bool(
+            public_view
+            or getattr(request.user, "show_season_enrichment", True)
+        )
+        season_metadata["episodes"] = enrich_episode_rows(
+            season_metadata["episodes"],
+            season_number=season_number,
+            show_public_ratings=(
+                public_view
+                or getattr(request.user, "show_episode_public_ratings", True)
+            ),
+            obfuscate_titles=(
+                not public_view
+                and getattr(request.user, "obfuscate_episode_titles", False)
+            ),
+            show_skipped=(
+                season_preferences_enabled
+                and getattr(request.user, "show_skipped_episodes", True)
+            ),
+        )
         season_metadata["episodes"] = _normalize_detail_episode_actions(
             season_metadata["episodes"],
         )
@@ -1001,6 +1024,17 @@ def season_details(
         "display_provider": source,
         "identity_provider": source,
         "episode_load_more": episode_load_more,
+        "personal_rating_trend": (
+            build_personal_rating_trend(episodes_in_db)
+            if not public_view
+            and getattr(request.user, "show_personal_rating_trend", True)
+            else None
+        ),
+        "remaining_time_summary": (
+            build_remaining_time_summary(season_metadata.get("episodes") or [])
+            if not public_view and getattr(request.user, "show_remaining_time", True)
+            else None
+        ),
         "provider_series_graph_data": _build_series_graph_from_raw(
             season_number, _raw_graph_episodes, source
         ),
