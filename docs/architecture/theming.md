@@ -6,9 +6,11 @@ neither failure is visible in the theme the author has open.
 
 ## How a theme is selected
 
-`user.theme` holds `system`, `light`, `dark`, `glass`, `projector`,
-`video_store`, or `custom`. `base.html` writes every explicit choice onto the
-root element:
+`user.theme` holds a key from `users.appearance.THEME_PRESETS`. The collection
+includes the system, light, dark and custom states; Catppuccin Mocha, Dracula,
+Nord and Gruvbox classics; OLED, Glass Cinema and Plex-inspired modern themes;
+plus Projector and Video Store. `base.html` writes every explicit choice onto
+the root element:
 
 ```html
 <html class="{% if user.theme != 'system' %}{{ user.theme }}{% endif %}">
@@ -26,12 +28,21 @@ palette are explicit states. Any token change must be checked in every state.
 | Block | Applies to |
 | --- | --- |
 | `:root` | the dark defaults |
-| `@media (prefers-color-scheme: light) { :root:not(.dark) }` | `system` on a light host |
+| `@media (prefers-color-scheme: light) { :root:not(.[every explicit theme]) }` | `system` on a light host |
 | `html.light` | an explicit light choice |
 | `html.dark` | an explicit dark choice |
 
+The light media selector must exclude every explicit theme class. Otherwise a
+light operating system overrides equally specific preset tokens that appear
+earlier in the stylesheet. `test_system_light_tokens_exclude_every_explicit_theme`
+pins that contract to the preset registry.
+
 Preset classes override the tokens they intentionally change and inherit the
-remaining dark defaults. `html.glass` adds a fixed translucent cinema treatment.
+remaining dark defaults. The classic palettes follow their official colour
+systems: [Catppuccin](https://python.catppuccin.com/docs/catppuccin/palette.html),
+[Dracula](https://github.com/dracula/dracula-theme),
+[Nord](https://www.nordtheme.com/) and
+[Gruvbox](https://github.com/morhetz/gruvbox). `html.glass` adds a fixed translucent cinema treatment.
 `html.custom` inherits the dark defaults; `base.html` adds the six validated
 colours plus bounded radius, blur and surface-opacity values as inline variables.
 `users.appearance` is the allowlist and validation boundary for those values.
@@ -89,8 +100,8 @@ concatenated parts to avoid exactly that.
 
 ## Persisting a theme change
 
-The header toggle removes every explicit theme class, applies `light` or `dark`
-immediately, and posts `theme=<value>` alone to the preferences view. That view
+The header toggle gets every explicit class from `THEME_PRESETS`, removes them,
+applies `light` or `dark` immediately, and posts `theme=<value>` alone to the preferences view. That view
 therefore reads every field with a
 presence check rather than a fallback: a field that defaulted when absent would
 be reset on every toggle. `users.tests.views.test_theme_toggle` pins this.

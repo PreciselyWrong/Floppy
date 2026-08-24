@@ -4,7 +4,8 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from users.appearance import DETAIL_LAYOUT_FAMILIES
+from users.appearance import DETAIL_LAYOUT_FAMILIES, THEME_PRESETS
+from users.models import ThemeChoices
 from users.templatetags.user_tags import detail_section_attrs
 
 
@@ -20,6 +21,12 @@ class AppearanceViewTests(TestCase):
         response = self.client.get(reverse("appearance"))
 
         self.assertContains(response, "Glass cinema")
+        self.assertContains(response, "Catppuccin Mocha")
+        self.assertContains(response, "Dracula")
+        self.assertContains(response, "Nord")
+        self.assertContains(response, "Gruvbox")
+        self.assertContains(response, "OLED")
+        self.assertContains(response, "Plex inspired")
         self.assertContains(response, "Projector")
         self.assertContains(response, "Video store")
         self.assertContains(response, "Custom palette")
@@ -29,6 +36,7 @@ class AppearanceViewTests(TestCase):
             DETAIL_LAYOUT_FAMILIES["episode"]["zones"],
             DETAIL_LAYOUT_FAMILIES["music_album"]["zones"],
         )
+        self.assertEqual(set(THEME_PRESETS), set(ThemeChoices.values))
 
     def test_appearance_serializes_editor_data_once(self):
         response = self.client.get(reverse("appearance"))

@@ -625,12 +625,16 @@
         }
 
         const html = document.documentElement;
+        const explicitThemes = "{% explicit_theme_classes %}".split(" ");
+        const hasExplicitTheme = explicitThemes.some((theme) =>
+          html.classList.contains(theme),
+        );
         const systemPrefersLight = window.matchMedia("(prefers-color-scheme: light)").matches;
         const currentlyLight = html.classList.contains("light")
-          || (!html.classList.contains("dark") && systemPrefersLight);
+          || (!hasExplicitTheme && systemPrefersLight);
         const next = currentlyLight ? "dark" : "light";
 
-        html.classList.remove("light", "dark", "glass", "projector", "video_store", "custom");
+        html.classList.remove(...explicitThemes);
         html.classList.add(next);
 
         fetch("{% url 'preferences' %}", {

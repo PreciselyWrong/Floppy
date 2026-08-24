@@ -41,7 +41,7 @@
 }
 
 @media (prefers-color-scheme: light) {
-  :root:not(.dark) {
+  :root:not(.light):not(.dark):not(.catppuccin_mocha):not(.dracula):not(.nord):not(.gruvbox):not(.oled):not(.glass):not(.plex):not(.projector):not(.video_store):not(.custom) {
     --color-surface: #ffffff;
     --color-surface-strong: #f1f3f5;
     --color-surface-hover: #e9ecef;
@@ -138,6 +138,116 @@ html.dark {
   color-scheme: dark;
 }
 
+html.catppuccin_mocha {
+  --color-page-bg: #1e1e2e;
+  --color-sidebar: #11111b;
+  --color-surface: #313244;
+  --color-surface-strong: #45475a;
+  --color-surface-hover: #585b70;
+  --color-panel: #181825;
+  --color-surface-alt: #363a4f;
+  --color-surface-muted: #45475a;
+  --color-surface-dim: #181825;
+  --color-surface-border: #585b70;
+  --color-border: #45475a;
+  --color-hover-dim: #313244;
+  --color-text: #cdd6f4;
+  --color-text-secondary: #bac2de;
+  --color-text-muted: #a6adc8;
+  --color-accent: #cba6f7;
+  --color-link: #89b4fa;
+  --color-link-hover: #b4befe;
+  color-scheme: dark;
+}
+
+html.dracula {
+  --color-page-bg: #282a36;
+  --color-sidebar: #21222c;
+  --color-surface: #343746;
+  --color-surface-strong: #44475a;
+  --color-surface-hover: #50536a;
+  --color-panel: #21222c;
+  --color-surface-alt: #3b3e50;
+  --color-surface-muted: #44475a;
+  --color-surface-dim: #21222c;
+  --color-surface-border: #6272a4;
+  --color-border: #44475a;
+  --color-hover-dim: #343746;
+  --color-text: #f8f8f2;
+  --color-text-secondary: #e2e2dc;
+  --color-text-muted: #b7bdd5;
+  --color-accent: #bd93f9;
+  --color-link: #8be9fd;
+  --color-link-hover: #c7f5ff;
+  color-scheme: dark;
+}
+
+html.nord {
+  --color-page-bg: #2e3440;
+  --color-sidebar: #242933;
+  --color-surface: #3b4252;
+  --color-surface-strong: #434c5e;
+  --color-surface-hover: #4c566a;
+  --color-panel: #2b303b;
+  --color-surface-alt: #434c5e;
+  --color-surface-muted: #4c566a;
+  --color-surface-dim: #242933;
+  --color-surface-border: #4c566a;
+  --color-border: #3b4252;
+  --color-hover-dim: #343b49;
+  --color-text: #eceff4;
+  --color-text-secondary: #d8dee9;
+  --color-text-muted: #b9c1d0;
+  --color-accent: #88c0d0;
+  --color-link: #81a1c1;
+  --color-link-hover: #8fbcbb;
+  color-scheme: dark;
+}
+
+html.gruvbox {
+  --color-page-bg: #282828;
+  --color-sidebar: #1d2021;
+  --color-surface: #3c3836;
+  --color-surface-strong: #504945;
+  --color-surface-hover: #665c54;
+  --color-panel: #32302f;
+  --color-surface-alt: #504945;
+  --color-surface-muted: #665c54;
+  --color-surface-dim: #1d2021;
+  --color-surface-border: #665c54;
+  --color-border: #3c3836;
+  --color-hover-dim: #3c3836;
+  --color-text: #ebdbb2;
+  --color-text-secondary: #d5c4a1;
+  --color-text-muted: #bdae93;
+  --color-accent: #fabd2f;
+  --color-link: #83a598;
+  --color-link-hover: #8ec07c;
+  color-scheme: dark;
+}
+
+html.oled {
+  --color-page-bg: #000000;
+  --color-sidebar: #030303;
+  --color-surface: #0a0a0a;
+  --color-surface-strong: #171717;
+  --color-surface-hover: #242424;
+  --color-panel: #050505;
+  --color-surface-alt: #141414;
+  --color-surface-muted: #1f1f1f;
+  --color-surface-dim: #000000;
+  --color-surface-border: #303030;
+  --color-border: #171717;
+  --color-hover-dim: #111111;
+  --color-text: #ffffff;
+  --color-text-secondary: #e5e5e5;
+  --color-text-muted: #a3a3a3;
+  --color-accent: #22d3ee;
+  --color-link: #67e8f9;
+  --color-link-hover: #a5f3fc;
+  color-scheme: dark;
+}
+
 html.glass {
   --color-page-bg: transparent;
   --color-sidebar: #0c1020;
@@ -166,6 +276,28 @@ html.glass {
     radial-gradient(circle at 84% 8%, rgb(34 211 238 / 18%), transparent 30rem),
     linear-gradient(145deg, #070a14 0%, #0d1122 52%, #080b16 100%);
   background-attachment: fixed;
+  color-scheme: dark;
+}
+
+html.plex {
+  --color-page-bg: #0f0f0f;
+  --color-sidebar: #090909;
+  --color-surface: #1b1b1b;
+  --color-surface-strong: #282828;
+  --color-surface-hover: #343434;
+  --color-panel: #141414;
+  --color-surface-alt: #242424;
+  --color-surface-muted: #2c2c2c;
+  --color-surface-dim: #0a0a0a;
+  --color-surface-border: #444444;
+  --color-border: #262626;
+  --color-hover-dim: #202020;
+  --color-text: #f4f4f4;
+  --color-text-secondary: #dedede;
+  --color-text-muted: #b6b6b6;
+  --color-accent: #e5a00d;
+  --color-link: #ffc83d;
+  --color-link-hover: #ffdb73;
   color-scheme: dark;
 }
 
@@ -268,7 +400,13 @@ html.glass [class*="bg-[var(--color-sidebar)]"] {
 
 .theme-swatch-light { background: linear-gradient(135deg, #f8f9fa 0 65%, #4f46e5 65%); }
 .theme-swatch-dark { background: linear-gradient(135deg, #212529 0 65%, #4a9eff 65%); }
+.theme-swatch-catppuccin_mocha { background: linear-gradient(135deg, #1e1e2e 0 52%, #cba6f7 52% 76%, #89b4fa 76%); }
+.theme-swatch-dracula { background: linear-gradient(135deg, #282a36 0 52%, #bd93f9 52% 76%, #ff79c6 76%); }
+.theme-swatch-nord { background: linear-gradient(135deg, #2e3440 0 52%, #88c0d0 52% 76%, #eceff4 76%); }
+.theme-swatch-gruvbox { background: linear-gradient(135deg, #282828 0 52%, #fabd2f 52% 76%, #83a598 76%); }
+.theme-swatch-oled { background: linear-gradient(135deg, #000000 0 65%, #22d3ee 65%); }
 .theme-swatch-glass { background: radial-gradient(circle at 30% 25%, #67e8f9, transparent 38%), linear-gradient(135deg, #0d1122 0 55%, #8b7cff 100%); }
+.theme-swatch-plex { background: linear-gradient(135deg, #0f0f0f 0 65%, #e5a00d 65%); }
 .theme-swatch-projector { background: linear-gradient(135deg, #15130f 0 65%, #f2a93b 65%); }
 .theme-swatch-video_store { background: linear-gradient(135deg, #10132b 0 50%, #ff4fa3 50% 75%, #58e1d4 75%); }
 .theme-swatch-custom { background: conic-gradient(#ff4fa3, #58e1d4, #f2a93b, #4f46e5, #ff4fa3); }
@@ -289,11 +427,11 @@ html.light .theme-toggle-icon-moon {
 }
 
 @media (prefers-color-scheme: light) {
-  html:not(.dark):not(.light) .theme-toggle-icon-sun {
+  html:not(.light):not(.dark):not(.catppuccin_mocha):not(.dracula):not(.nord):not(.gruvbox):not(.oled):not(.glass):not(.plex):not(.projector):not(.video_store):not(.custom) .theme-toggle-icon-sun {
     display: block;
   }
 
-  html:not(.dark):not(.light) .theme-toggle-icon-moon {
+  html:not(.light):not(.dark):not(.catppuccin_mocha):not(.dracula):not(.nord):not(.gruvbox):not(.oled):not(.glass):not(.plex):not(.projector):not(.video_store):not(.custom) .theme-toggle-icon-moon {
     display: none;
   }
 }
