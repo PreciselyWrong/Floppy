@@ -12,6 +12,9 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-title" content="Floppy">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Floppy">
     {% comment %}
       Lets base.html's htmx guard recognize an entrance page that arrived as a
       fragment response and navigate instead of swapping it in (#386).
@@ -142,6 +145,13 @@
 
     {% block extra_scripts %}
     {% endblock extra_scripts %}
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/serviceworker.js");
+        });
+      }
+    </script>
   </body>
 </html>
 {# djlint:on #}
