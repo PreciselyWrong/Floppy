@@ -2,7 +2,11 @@
 {% load user_tags %}
 <div x-data="highlightCarousel()" x-init="init()">
   <div x-ref="track"
-       class="stats-highlight-track grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+       class="stats-highlight-track grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3"
+       data-horizontal-scroll="true"
+       tabindex="0"
+       role="region"
+       aria-label="Highlights carousel">
   {% if highlights.first_play %}
     <a href="{{ highlights.first_play.item|media_url }}"
        class="stats-highlight-card media-card bg-[var(--color-surface)] rounded-lg overflow-hidden shadow-lg relative hover:ring-2 hover:ring-indigo-500 transition-all search-result-card-square group{% if request.user.media_card_subtitle_display == 'always' %} media-card-subtitle-always{% endif %} block"

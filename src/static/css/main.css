@@ -64,7 +64,6 @@
     --color-indigo-500: oklch(58.5% 0.233 277.117);
     --color-indigo-600: oklch(51.1% 0.262 276.966);
     --color-indigo-700: oklch(45.7% 0.24 277.023);
-    --color-violet-100: oklch(94.3% 0.029 294.588);
     --color-violet-400: oklch(70.2% 0.183 293.541);
     --color-violet-500: oklch(60.6% 0.25 292.717);
     --color-violet-600: oklch(54.1% 0.281 293.009);
@@ -6294,6 +6293,36 @@ html.light .theme-toggle-icon-moon {
 }
 .home-row-scrollbar-hidden::-webkit-scrollbar {
   display: none;
+}
+[data-horizontal-scroll="true"] {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+  scroll-behavior: smooth;
+  scroll-snap-type: x proximity;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+[data-horizontal-scroll="true"] > * {
+  scroll-snap-align: start;
+}
+[data-horizontal-scroll="true"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+@media (pointer: fine) {
+  [data-horizontal-scroll="true"] {
+    cursor: grab;
+  }
+  [data-horizontal-scroll="true"].is-dragging {
+    cursor: grabbing;
+    scroll-behavior: auto;
+    scroll-snap-type: none;
+    user-select: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-horizontal-scroll="true"] {
+    scroll-behavior: auto;
+  }
 }
 @media (max-width: 768px) {
   .media-card {
