@@ -59,6 +59,7 @@
                 <template x-for="row in section.rows" :key="row.client_id">
                   <article class="relative border-t border-[var(--color-surface-strong)] first:rounded-t-md first:border-t-0 last:rounded-b-md"
                            x-data="{ openMenu: null, filterView: 'root', filterSearch: '', hovering: false, isDesktop: window.matchMedia('(min-width: 1024px)').matches }"
+                           :class="{ 'z-50': openMenu !== null || row.editorOpen }"
                            @mouseenter="hovering = true"
                            @mouseleave="if (openMenu === null && !row.editorOpen) hovering = false"
                            @focusin="hovering = true"
@@ -309,7 +310,9 @@
               </div>
 
               <div class="mt-4 flex flex-wrap items-center gap-2">
-                <div class="relative" @click.outside="section.addRowMenuOpen = false">
+                <div class="relative"
+                     :class="{ 'z-50': section.addRowMenuOpen }"
+                     @click.outside="section.addRowMenuOpen = false">
                   <button type="button"
                           class="inline-flex items-center rounded-md border border-[var(--color-surface-border)] bg-[var(--color-panel)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-muted)] cursor-pointer"
                           @click="section.addRowMenuOpen = !section.addRowMenuOpen">

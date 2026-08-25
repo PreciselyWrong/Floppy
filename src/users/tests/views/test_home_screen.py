@@ -89,6 +89,19 @@ class HomeScreenViewTests(TestCase):
             response,
             'src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"',
         )
+
+    def test_open_row_menus_are_promoted_above_neighboring_controls(self):
+        response = self.client.get(reverse("home_screen"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            ":class=\"{ 'z-50': openMenu !== null || row.editorOpen }\"",
+        )
+        self.assertContains(
+            response,
+            ":class=\"{ 'z-50': section.addRowMenuOpen }\"",
+        )
         self.assertNotContains(response, "section.rows.length === 1")
         self.assertContains(response, "Add Row")
         self.assertContains(response, "Add List")
