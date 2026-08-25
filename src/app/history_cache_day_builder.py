@@ -31,6 +31,7 @@ from app.history_entry_builders import (
     _format_boardgame_plays,
     _format_game_hours,
     _get_music_runtime_minutes,
+    _group_consecutive_episode_entries,
     _serialize_album,
     _serialize_item,
     _serialize_show,
@@ -771,6 +772,7 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
         ),
         reverse=True,
     )
+    entries = _group_consecutive_episode_entries(entries)
     total_minutes = sum(entry["runtime_minutes"] or 0 for entry in entries)
     first_entry_time = entries[0]["played_at_local"]
 
