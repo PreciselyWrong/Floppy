@@ -11,7 +11,7 @@
     {% with entry.item|display_title:user as preferred_entry_title %}
     <a hx-boost="true"
        href="{% if entry.media_type == MediaTypes.MUSIC.value and entry.album %}{{ entry.album|music_album_url }}{% elif entry.media_type == MediaTypes.PODCAST.value and entry.show and entry.show.podcast_uuid %}{% url 'media_details' source='pocketcasts' media_type='podcast' media_id=entry.show.podcast_uuid title=entry.show.slug|default:entry.show.title|slug %}{% else %}{{ entry.item|media_url }}{% endif %}">
-      <img alt="{{ preferred_entry_title|default:entry.display_title|default:entry.title }}"
+      <img alt="{{ entry.group_title|default:preferred_entry_title|default:entry.display_title|default:entry.title }}"
            class="media-card-poster lazyload w-full {% if card_class == 'search-result-card-square' %}aspect-[1/1]{% else %}aspect-[2/3]{% endif %} {% if entry.poster != IMG_NONE %}object-cover{% endif %}"
            data-src="{{ entry.poster|image_url }}"
            src="{{ IMG_NONE }}">
@@ -60,6 +60,7 @@
         <div class="relative z-10 flex items-center justify-center space-x-2.5">
           {% if history_mode != "release" %}
             {# Edit Tracking Button #}
+            {% if not entry.is_episode_group %}
             <button class="p-2.5 bg-indigo-600 text-white rounded-full hover:bg-indigo-500 hover:scale-110 hover:shadow-[0_0_15px_rgba(99,102,241,0.5)] transition-all duration-200 cursor-pointer"
                     title="Edit tracking"
                     hx-get="{% media_view_url 'track_modal' entry.item %}"
@@ -69,6 +70,7 @@
                     @click="trackOpen = true">
               {% include "app/icons/edit.svg" with classes="w-4 h-4" %}
             </button>
+            {% endif %}
 
             {# Lists Button #}
             <button class="p-2.5 bg-emerald-600 text-white rounded-full hover:bg-emerald-500 hover:scale-110 hover:shadow-[0_0_15px_rgba(16,185,129,0.5)] transition-all duration-200 cursor-pointer"
@@ -101,8 +103,8 @@
       <a href="{% if entry.media_type == MediaTypes.MUSIC.value and entry.album %}{{ entry.album|music_album_url }}{% elif entry.media_type == MediaTypes.PODCAST.value and entry.show and entry.show.podcast_uuid %}{% url 'media_details' source='pocketcasts' media_type='podcast' media_id=entry.show.podcast_uuid title=entry.show.slug|default:entry.show.title|slug %}{% else %}{{ entry.item|media_url }}{% endif %}"
          hx-boost="true"
          class="media-card-title text-sm font-semibold text-[var(--color-text)] hover:text-[var(--color-link)] transition duration-300 line-clamp-1 min-w-0"
-         title="{{ preferred_entry_title|default:entry.display_title|default:entry.title }}">
-        {{ preferred_entry_title|default:entry.display_title|default:entry.title }}
+         title="{{ entry.group_title|default:preferred_entry_title|default:entry.display_title|default:entry.title }}">
+        {{ entry.group_title|default:preferred_entry_title|default:entry.display_title|default:entry.title }}
       </a>
       {% if entry_alternative_title %}
         <span class="relative shrink-0"

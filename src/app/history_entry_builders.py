@@ -247,6 +247,73 @@ def _build_episode_entry(episode, episode_title_map=None):
     return entry
 
 
+def _episode_run_key(entry):
+    if entry.get("media_type") != MediaTypes.EPISODE.value:
+        return None
+    item = entry.get("item") or {}
+    season_number = entry.get("season_number")
+    episode_number = entry.get("episode_number")
+    if season_number is None or episode_number is None:
+        return None
+    return (
+        item.get("source"),
+        item.get("media_id"),
+        season_number,
+    )
+
+
+def _merge_episode_run(run):
+    latest = dict(run[0])
+    season_number = latest["season_number"]
+    highest_episode = latest["episode_number"]
+    lowest_episode = run[-1]["episode_number"]
+    runtime_minutes = sum(entry.get("runtime_minutes") or 0 for entry in run)
+    show = latest.get("show") or {}
+
+    latest.update(
+        {
+            "group_title": show.get("title") or latest.get("title"),
+            "episode_label": (
+                f"{season_number}x{lowest_episode:02d}-{highest_episode:02d}"
+            ),
+            "episode_code": (
+                f"S{season_number:02d}E{lowest_episode:02d}-E{highest_episode:02d}"
+            ),
+            "runtime_minutes": runtime_minutes,
+            "runtime_display": helpers.minutes_to_hhmm(runtime_minutes)
+            if runtime_minutes
+            else None,
+            "group_count": len(run),
+            "is_episode_group": True,
+            "entry_key": "episode-group-"
+            + "-".join(str(entry["entry_key"]) for entry in run),
+        }
+    )
+    return latest
+
+
+def _group_consecutive_episode_entries(entries):
+    """Collapse adjacent descending episode runs in one history day."""
+    grouped = []
+    index = 0
+    while index < len(entries):
+        current = entries[index]
+        run = [current]
+        run_key = _episode_run_key(current)
+
+        while run_key is not None and index + len(run) < len(entries):
+            candidate = entries[index + len(run)]
+            if _episode_run_key(candidate) != run_key:
+                break
+            if candidate["episode_number"] != run[-1]["episode_number"] - 1:
+                break
+            run.append(candidate)
+
+        grouped.append(_merge_episode_run(run) if len(run) > 1 else current)
+        index += len(run)
+    return grouped
+
+
 def _build_movie_entry(movie):
     played_at_local = _localize_datetime(
         movie.end_date or movie.start_date or movie.created_at
