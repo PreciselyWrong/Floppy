@@ -194,3 +194,25 @@ class ThemeTokenContractTests(SimpleTestCase):
             )
             self.assertIsNotNone(keyframes, animation)
             self.assertIn("transform: none", keyframes.group("body"), animation)
+
+    def test_fullscreen_overlays_are_portaled_to_the_viewport(self):
+        base = Path(settings.BASE_DIR, "templates", "base.html").read_text(
+            encoding="utf-8"
+        )
+        portal = Path(
+            settings.BASE_DIR, "static", "js", "modalPortal.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("js/modalPortal.js", base)
+        self.assertIn('document.querySelectorAll(".fixed.inset-0")', portal)
+        self.assertIn("document.body.appendChild(overlay)", portal)
+        self.assertIn("htmx:afterSettle", portal)
+
+    def test_home_screen_row_controls_wrap_inside_their_panel(self):
+        template = Path(
+            settings.BASE_DIR, "templates", "users", "home_screen.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("min-h-10", template)
+        self.assertIn("flex-wrap", template)
+        self.assertIn("min-w-0 flex-1 flex-wrap", template)
