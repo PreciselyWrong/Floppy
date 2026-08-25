@@ -321,7 +321,7 @@
                   </button>
                   <div x-show="section.addRowMenuOpen"
                        x-cloak
-                       class="absolute left-0 z-20 mt-2 w-52 overflow-hidden rounded-md border border-[var(--color-surface-hover)] bg-[var(--color-panel)] shadow-lg">
+                       class="absolute left-0 z-20 mt-2 w-56 overflow-hidden rounded-md border border-[var(--color-surface-hover)] bg-[var(--color-panel)] shadow-lg">
                     <button type="button"
                             class="flex w-full items-center px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
                             @click="addRow(section, 'library_query'); section.addRowMenuOpen = false">
@@ -330,6 +330,38 @@
                     </button>
                     <button type="button"
                             x-show="section.media_type !== 'all'"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'shelf_resume'); section.addRowMenuOpen = false">
+                      {% include "app/icons/states/in-progress.svg" with classes="mr-2 h-4 w-4 text-emerald-400" %}
+                      Resume Shelf
+                    </button>
+                    <button type="button"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'shelf_stale'); section.addRowMenuOpen = false">
+                      {% include "app/icons/states/paused.svg" with classes="mr-2 h-4 w-4 text-amber-400" %}
+                      Stale Shelf
+                    </button>
+                    <button type="button"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'shelf_unstarted'); section.addRowMenuOpen = false">
+                      {% include "app/icons/states/planning.svg" with classes="mr-2 h-4 w-4 text-blue-400" %}
+                      Unstarted Shelf
+                    </button>
+                    <button type="button"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'shelf_finished'); section.addRowMenuOpen = false">
+                      {% include "app/icons/states/completed.svg" with classes="mr-2 h-4 w-4 text-purple-400" %}
+                      Finished Shelf
+                    </button>
+                    <button type="button"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'watch_history'); section.addRowMenuOpen = false"
+                            :disabled="section.rows.some(row => row.row_type === 'watch_history')"
+                            :class="{ 'opacity-50 cursor-not-allowed': section.rows.some(row => row.row_type === 'watch_history') }">
+                      {% include "app/icons/history.svg" with classes="mr-2 h-4 w-4" %}
+                      Activity Journal
+                    </button>
+                    <button type="button"
                             class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
                             @click="addRow(section, 'recently_unrated'); section.addRowMenuOpen = false"
                             :disabled="section.rows.some(row => row.row_type === 'recently_unrated')"
@@ -370,17 +402,47 @@
         </template>
       </div>
 
-      <label class="mt-6 flex items-start gap-3 rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-3 cursor-pointer">
-        <input type="checkbox"
-               name="show_media_type_headers"
-               value="1"
-               {% if show_media_type_headers %}checked{% endif %}
-               class="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-500 bg-[var(--color-page-bg)] text-indigo-600 focus:ring-indigo-500">
-        <span class="min-w-0">
-          <span class="block text-sm font-medium text-[var(--color-text-secondary)]">Show media type headers</span>
-          <span class="block text-xs text-[var(--color-text-muted)]">Group rows under a header (icon + media type) on the home screen.</span>
-        </span>
-      </label>
+      <div class="mt-6 space-y-4">
+        <label class="flex items-start gap-3 rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-3 cursor-pointer">
+          <input type="checkbox"
+                 name="show_media_type_headers"
+                 value="1"
+                 {% if show_media_type_headers %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-500 bg-[var(--color-page-bg)] text-indigo-600 focus:ring-indigo-500">
+          <span class="min-w-0">
+            <span class="block text-sm font-medium text-[var(--color-text-secondary)]">Show media type headers</span>
+            <span class="block text-xs text-[var(--color-text-muted)]">Group rows under a header (icon + media type) on the home screen.</span>
+          </span>
+        </label>
+
+        <label class="flex items-start gap-3 rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-3 cursor-pointer">
+          <input type="checkbox"
+                 name="home_binge_grouping_enabled"
+                 value="1"
+                 {% if home_binge_grouping_enabled %}checked{% endif %}
+                 class="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-500 bg-[var(--color-page-bg)] text-indigo-600 focus:ring-indigo-500">
+          <span class="min-w-0">
+            <span class="block text-sm font-medium text-[var(--color-text-secondary)]">Group consecutive episodes in Activity Journal (Binge Grouping)</span>
+            <span class="block text-xs text-[var(--color-text-muted)]">Condense series episodes watched on the same day into a single expandable card (S01E01–E04).</span>
+          </span>
+        </label>
+
+        <div class="rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-3">
+          <label class="block text-sm font-medium text-[var(--color-text-secondary)] mb-1" for="home_stale_days_threshold">
+            Stale in-progress threshold (days)
+          </label>
+          <span class="block text-xs text-[var(--color-text-muted)] mb-2">
+            Number of days without activity before an in-progress title moves from Resume to Stale (default: 21).
+          </span>
+          <input type="number"
+                 id="home_stale_days_threshold"
+                 name="home_stale_days_threshold"
+                 value="{{ home_stale_days_threshold|default:21 }}"
+                 min="1"
+                 max="365"
+                 class="w-32 rounded border border-gray-600 bg-[var(--color-page-bg)] px-3 py-1.5 text-sm text-[var(--color-text)] focus:border-indigo-500 focus:outline-none">
+        </div>
+      </div>
 
       <div class="mt-6 flex items-center justify-end">
         <button type="submit"
@@ -469,9 +531,15 @@
         rowTypeLabel(type) {
           if (type === 'library_query') return 'Library Row';
           if (type === 'custom_list') return 'List / Smart List';
+          if (type === 'recently_unrated') return 'Recently Played';
           if (type === 'up_next') return 'Up Next';
           if (type === 'history') return 'History';
-          return 'Recently Played';
+          if (type === 'shelf_resume') return 'Resume Shelf';
+          if (type === 'shelf_stale') return 'Stale Shelf';
+          if (type === 'shelf_unstarted') return 'Unstarted Shelf';
+          if (type === 'shelf_finished') return 'Finished Shelf';
+          if (type === 'watch_history') return 'Activity Journal';
+          return type;
         },
         rowAutoTitle(section, row) {
           if (row.row_type === 'custom_list') {
@@ -481,8 +549,21 @@
             return 'Recently Played - Not Rated';
           }
           if (row.row_type === 'up_next') return 'Up Next';
-          if (row.row_type === 'history') {
-            return 'History';
+          if (row.row_type === 'history') return 'History';
+          if (row.row_type === 'watch_history') {
+            return 'Activity Journal';
+          }
+          if (row.row_type === 'shelf_resume') {
+            return 'Resume';
+          }
+          if (row.row_type === 'shelf_stale') {
+            return 'Stale';
+          }
+          if (row.row_type === 'shelf_unstarted') {
+            return 'Unstarted';
+          }
+          if (row.row_type === 'shelf_finished') {
+            return 'Finished';
           }
           return this.describeFilters(section, row);
         },
@@ -734,16 +815,22 @@
         },
         sortChoices(section, row) {
           if (row.row_type === 'custom_list') return section.sort_choices.custom_list || [];
+          if (row.row_type === 'shelf_resume') return section.sort_choices.shelf_resume || section.sort_choices.library_query || [];
+          if (row.row_type === 'shelf_stale') return section.sort_choices.shelf_stale || section.sort_choices.library_query || [];
+          if (row.row_type === 'shelf_unstarted') return section.sort_choices.shelf_unstarted || section.sort_choices.library_query || [];
+          if (row.row_type === 'shelf_finished') return section.sort_choices.shelf_finished || section.sort_choices.library_query || [];
+          if (['recently_unrated', 'watch_history'].includes(row.row_type)) return [];
           return section.sort_choices.library_query || [];
         },
         addRow(section, rowType) {
-          if (['recently_unrated', 'history'].includes(rowType) && section.rows.some(row => row.row_type === rowType)) {
+          if (['recently_unrated', 'history', 'watch_history'].includes(rowType) && section.rows.some(row => row.row_type === rowType)) {
             return;
           }
           if (rowType === 'up_next' && this.sections.some(candidate => candidate.rows.some(row => row.row_type === 'up_next'))) {
             return;
           }
           const defaultSort = this.defaultSortValue(section, rowType);
+          const isRecentOnly = ['recently_unrated', 'up_next', 'history', 'watch_history'].includes(rowType);
           const newRow = {
             id: null,
             client_id: `new-row-${this.nextRowId++}`,
@@ -752,8 +839,8 @@
             row_type: rowType,
             custom_list_id: null,
             custom_list_name: '',
-            sort_by: ['recently_unrated', 'up_next', 'history'].includes(rowType) ? 'recent' : defaultSort,
-            direction: ['recently_unrated', 'up_next', 'history'].includes(rowType) ? 'desc' : this.defaultSortDirection(defaultSort),
+            sort_by: isRecentOnly ? 'recent' : defaultSort,
+            direction: isRecentOnly ? 'desc' : this.defaultSortDirection(defaultSort),
             filters: this.defaultFilters(section, rowType),
             editorOpen: rowType === 'custom_list',
             listQuery: '',
@@ -767,9 +854,13 @@
           });
         },
         defaultFilters(section, rowType) {
-          if (rowType !== 'library_query') return {};
+          if (rowType === 'watch_history') return { excluded_families: [] };
+          if (!['library_query', 'shelf_resume', 'shelf_stale', 'shelf_unstarted', 'shelf_finished'].includes(rowType)) return {};
+          let defaultStatus = ['In progress'];
+          if (rowType === 'shelf_unstarted') defaultStatus = ['Planning'];
+          if (rowType === 'shelf_finished') defaultStatus = ['Completed'];
           const defaults = {
-            status: ['In progress'],
+            status: defaultStatus,
             progress: ['tv', 'anime'].includes(section.media_type) ? 'not_caught_up' : 'all',
             rating: 'all',
             collection: 'all',

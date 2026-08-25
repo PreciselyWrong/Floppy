@@ -76,6 +76,7 @@
 
 ## Done
 
+- Parité Home Screen avec Floppy Companion: étagères (Resume, Stale, Unstarted, Finished), journal d'activité chronologique, groupement en rafale (Binge grouping), seuil délaissé paramétrable et All media entièrement ouvert.
 - Listes déroulantes des rangées Home toujours visibles au-dessus des contrôles voisins.
 - Installation PWA guidée sur ordinateur, Android, iPhone et iPad.
 - Glissement direct au doigt, à la souris, au stylet et au clavier sur les listes horizontales.

@@ -144,7 +144,6 @@ class HomeScreenViewTests(TestCase):
                 self.user,
                 duplicate_payload,
             )
-
     def test_home_screen_offers_configurable_all_media_section_first(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
 
@@ -219,7 +218,6 @@ class HomeScreenViewTests(TestCase):
         section = home_screen.serialize_settings_sections(self.user)[0]
 
         self.assertEqual(section["rows"][0]["filters"]["media_types"], [])
-
     def test_all_media_section_respects_saved_position(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
         self.user.home_screen_media_type_order = [
@@ -378,7 +376,6 @@ class HomeScreenViewTests(TestCase):
         groups = home_screen.build_home_page_groups(self.user, items_limit=10)
 
         self.assertNotIn("all", {group["media_type"] for group in groups})
-
     def test_empty_all_media_section_is_not_rendered_on_home(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
 
@@ -1803,6 +1800,70 @@ class HomeScreenViewTests(TestCase):
         row = HomeScreenRow.objects.get(user=self.user, media_type="all")
         self.assertEqual(row.filters["media_types"], [MediaTypes.GAME.value])
 
+    def test_home_screen_post_allows_all_media_row_types(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        custom_list = CustomList.objects.create(name="All List", owner=self.user)
+
+        rows_payload = [
+            {
+                "row_type": HomeScreenRowTypeChoices.CUSTOM_LIST,
+                "custom_list_id": custom_list.id,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.WATCH_HISTORY,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_RESUME,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_STALE,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_UNSTARTED,
+                "sort_by": MediaSortChoices.DATE_ADDED,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_FINISHED,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {
+                "home_screen_sections": json.dumps(
+                    [
+                        {
+                            "media_type": "all",
+                            "rows": rows_payload,
+                        }
+                    ]
+                )
+            },
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        saved_rows = HomeScreenRow.objects.filter(
+            user=self.user,
+            media_type="all",
+        ).order_by("position")
+        self.assertEqual(saved_rows.count(), 7)
+
     def test_home_screen_post_rejects_disabled_all_media_type_selection(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
         payload = [
@@ -1837,39 +1898,6 @@ class HomeScreenViewTests(TestCase):
             str(next(iter(get_messages(response.wsgi_request)))),
         )
 
-    def test_home_screen_post_rejects_non_library_all_media_rows(self):
-        self._set_enabled_media_types(MediaTypes.MOVIE.value)
-
-        for row_type in (
-            HomeScreenRowTypeChoices.CUSTOM_LIST,
-            HomeScreenRowTypeChoices.RECENTLY_UNRATED,
-        ):
-            with self.subTest(row_type=row_type):
-                response = self.client.post(
-                    reverse("home_screen"),
-                    {
-                        "home_screen_sections": json.dumps(
-                            [
-                                {
-                                    "media_type": "all",
-                                    "rows": [{"row_type": row_type}],
-                                }
-                            ]
-                        )
-                    },
-                )
-
-                self.assertRedirects(response, reverse("home_screen"))
-                self.assertFalse(
-                    HomeScreenRow.objects.filter(
-                        user=self.user,
-                        media_type="all",
-                    ).exists()
-                )
-                self.assertIn(
-                    "All media only supports library rows",
-                    str(next(iter(get_messages(response.wsgi_request)))),
-                )
 
     def test_home_screen_post_rejects_invalid_all_media_filter_and_sort(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
@@ -2544,3 +2572,118 @@ class CrossProviderDedupTests(TestCase):
         entries = home_screen._library_query_entries(self.user, row)
 
         self.assertEqual([entry.item.pk for entry in entries], [tvdb_item.pk])
+
+
+class HomeScreenCompanionParityTests(TestCase):
+    """Tests for Floppy Companion parity shelves, Activity Journal and settings."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="parity-user",
+            password="test-password-123",
+            home_binge_grouping_enabled=True,
+            home_stale_days_threshold=21,
+        )
+        self.client.force_login(self.user)
+
+    def test_group_watch_entries_by_binge_groups_consecutive_episodes(self):
+        item = Item.objects.create(
+            title="Breaking Bad",
+            media_id="1396",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+        )
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 4,
+                "episode_title": "Cancer Man",
+                "runtime_minutes": 48,
+            },
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 3,
+                "episode_title": "...And the Bag's in the River",
+                "runtime_minutes": 48,
+            },
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 2,
+                "episode_title": "Cat's in the Bag...",
+                "runtime_minutes": 48,
+            },
+            {
+                "media_type": "movie",
+                "title": "Inception",
+                "runtime_minutes": 148,
+            },
+        ]
+
+        grouped = home_screen.group_watch_entries_by_binge(episodes, enable_binge=True)
+        self.assertEqual(len(grouped), 2)
+        binge_group = grouped[0]
+        self.assertTrue(binge_group["is_group"])
+        self.assertEqual(binge_group["count"], 3)
+        self.assertEqual(binge_group["episode_range"], "S01E02-E04")
+        self.assertEqual(binge_group["total_runtime_minutes"], 144)
+        self.assertEqual(binge_group["series_title"], "Breaking Bad")
+
+        movie_item = grouped[1]
+        self.assertFalse(movie_item["is_group"])
+        self.assertEqual(movie_item["entry"]["title"], "Inception")
+
+    def test_group_watch_entries_by_binge_disabled(self):
+        item = Item.objects.create(
+            title="Breaking Bad",
+            media_id="1396",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+        )
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 2,
+            },
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 1,
+            },
+        ]
+        ungrouped = home_screen.group_watch_entries_by_binge(episodes, enable_binge=False)
+        self.assertEqual(len(ungrouped), 2)
+        self.assertFalse(ungrouped[0]["is_group"])
+        self.assertFalse(ungrouped[1]["is_group"])
+
+    def test_home_screen_settings_saves_binge_and_stale_threshold(self):
+        response = self.client.post(
+            reverse("home_screen"),
+            {
+                "home_screen_sections": json.dumps([]),
+                "home_binge_grouping_enabled": "1",
+                "home_stale_days_threshold": "14",
+            },
+        )
+        self.assertRedirects(response, reverse("home_screen"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.home_binge_grouping_enabled)
+        self.assertEqual(self.user.home_stale_days_threshold, 14)
