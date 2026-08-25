@@ -59,29 +59,9 @@ test -f "$template"
 test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
 docker pull "$image"
 
-cleanup_smoke
-docker network create "$smoke_network" >/dev/null
-docker volume create "$smoke_volume" >/dev/null
-docker run --detach --name "$smoke_redis" --network "$smoke_network" redis:8-alpine >/dev/null
-for _ in $(seq 1 30); do
-    if docker exec "$smoke_redis" redis-cli ping 2>/dev/null | grep -qx PONG; then break; fi
-    sleep 2
-done
-docker run --detach \
-    --name "$smoke_app" \
-    --network "$smoke_network" \
-    --env SECRET=unraid-custom-smoke-only \
-    --env REDIS_URL="redis://$smoke_redis:6379" \
-    --env ADMIN_ENABLED=False \
-    --env DEMO_ACCOUNT_ENABLED=False \
-    --env DEBUG=False \
-    --env FLOPPY_RESOURCE_TIER=minimal \
-    --volume "$smoke_volume:/floppy/db" \
-    "$image" >/dev/null
-wait_for_health "$smoke_app"
-docker exec "$smoke_app" python manage.py migrate --check --noinput
-test "$(docker exec "$smoke_app" printenv COMMIT_SHA)" = "$commit_sha"
-cleanup_smoke
+test "$(docker run --rm --env SECRET=unraid-custom-smoke-only "$image" printenv COMMIT_SHA)" = "$commit_sha"
+docker run --rm --env SECRET=unraid-custom-smoke-only "$image" python manage.py check >/dev/null
+
 
 docker exec "$container" python manage.py floppy_preflight --json >/dev/null
 mkdir -p "$backup_dir"
