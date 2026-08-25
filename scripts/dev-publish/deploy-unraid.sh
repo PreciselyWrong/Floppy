@@ -26,7 +26,7 @@ trap cleanup_smoke EXIT INT TERM
 
 wait_for_health() {
     target=$1
-    for _ in $(seq 1 90); do
+    for _ in $(seq 1 180); do
         health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$target" 2>/dev/null || true)
         if [ "$health" = healthy ]; then return 0; fi
         state=$(docker inspect --format '{{.State.Status}}' "$target" 2>/dev/null || true)
