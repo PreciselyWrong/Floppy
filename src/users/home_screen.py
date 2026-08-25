@@ -130,7 +130,13 @@ HOME_ONLY_SORTS = {
 HOME_SCREEN_FILTER_KEYS = tuple(
     dict.fromkeys(
         key
-        for key in (*smart_rules.SMART_FILTER_KEYS, "progress", "subview", "stale_days")
+        for key in (
+            *smart_rules.SMART_FILTER_KEYS,
+            "progress",
+            "subview",
+            "stale_days",
+            "media_types",
+        )
         if key != "search"
     ),
 )
@@ -308,6 +314,7 @@ SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
     },
 }
 SUPPORTED_FILTERS_BY_MEDIA_TYPE[HOME_ALL_MEDIA_TYPE] = {
+    "media_types",
     "status",
     "rating",
     "collection",
@@ -817,6 +824,17 @@ def build_filter_field_data(
 
     field_definitions = [
         {
+            "key": "media_types",
+            "label": "Media types",
+            "options": [
+                {
+                    "value": value,
+                    "label": _media_type_group_label(value),
+                }
+                for value in get_enabled_home_media_types(user)
+            ],
+        },
+        {
             "key": "subview",
             "label": "Media Type",
             "options": [
@@ -1101,6 +1119,42 @@ def describe_library_query(filters: dict, user, media_type: str) -> str:
     return " • ".join(parts)
 
 
+def _all_media_type_selection(user, filters: dict | None) -> list[str]:
+    """Resolve a row's selected enabled families, preserving legacy all-media rows."""
+    enabled_media_types = get_enabled_home_media_types(user)
+    if not isinstance(filters, dict) or "media_types" not in filters:
+        return enabled_media_types
+    requested = {
+        str(value or "").strip()
+        for value in _as_list(filters.get("media_types"))
+    }
+    return [value for value in enabled_media_types if value in requested]
+
+
+def _serialize_settings_row(user, row: HomeScreenRow, media_type: str) -> dict:
+    filters = (
+        _normalized_filter_payload(row.filters, media_type)
+        if row.row_type == HomeScreenRowTypeChoices.LIBRARY_QUERY
+        else {}
+    )
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        filters["media_types"] = _all_media_type_selection(user, row.filters)
+    return {
+        "id": row.id,
+        "client_id": f"row-{row.id}",
+        "enabled": row.enabled,
+        "row_type": row.row_type,
+        "custom_list_id": row.custom_list_id,
+        "custom_list_name": row.custom_list.name if row.custom_list_id else "",
+        "sort_by": row.sort_by,
+        "direction": row.direction,
+        "filters": filters,
+        "title": row_title(row, user),
+        "custom_title": row.title or "",
+        "summary": row_summary(row, user),
+    }
+
+
 def serialize_settings_sections(user) -> list[dict]:
     """Return Home Screen settings sections for the enabled sidebar media types."""
     rows = ensure_home_screen_rows(user)
@@ -1143,24 +1197,7 @@ def serialize_settings_sections(user) -> list[dict]:
                     user, media_type, precomputed_tags=tag_names
                 ),
                 "rows": [
-                    {
-                        "id": row.id,
-                        "client_id": f"row-{row.id}",
-                        "enabled": row.enabled,
-                        "row_type": row.row_type,
-                        "custom_list_id": row.custom_list_id,
-                        "custom_list_name": row.custom_list.name
-                        if row.custom_list_id
-                        else "",
-                        "sort_by": row.sort_by,
-                        "direction": row.direction,
-                        "filters": _normalized_filter_payload(row.filters, media_type)
-                        if row.row_type == HomeScreenRowTypeChoices.LIBRARY_QUERY
-                        else {},
-                        "title": row_title(row, user),
-                        "custom_title": row.title or "",
-                        "summary": row_summary(row, user),
-                    }
+                    _serialize_settings_row(user, row, media_type)
                     for row in media_rows
                 ],
             },
@@ -1286,6 +1323,7 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     # subview is a music-only dimension, not a smart-rule filter. handling separately
     raw_subview = raw_filters.pop("subview", None)
     raw_stale_days = str(raw_filters.pop("stale_days", "") or "").strip()
+    raw_filters.pop("media_types", None)
     if "status" in raw_filters:
         raw_filters["status"] = _normalize_status_list(raw_filters.get("status"), [])
 
@@ -1309,7 +1347,7 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     payload = {
         key: normalized.get(key, HOME_QUERY_DEFAULT_FILTERS.get(key, ""))
         for key in HOME_SCREEN_FILTER_KEYS
-        if key != "subview"
+        if key not in {"media_types", "subview"}
     }
     if media_type == MediaTypes.MUSIC.value:
         payload["subview"] = _canonical_music_subview(raw_subview)
@@ -1360,7 +1398,11 @@ def _row_payload_to_model(
             raise HomeScreenValidationError(msg)
         sort_choices = []
     else:
-        filters = validate_library_row_filters(row_payload.get("filters"), media_type)
+        filters = validate_library_row_filters(
+            row_payload.get("filters"),
+            media_type,
+            user=user,
+        )
         sort_choices = get_allowed_sort_choices(media_type, row_type)
 
     allowed_sort_values = {choice["value"] for choice in sort_choices}
@@ -1396,7 +1438,12 @@ def _row_payload_to_model(
     )
 
 
-def validate_library_row_filters(raw_filters: dict | None, media_type: str) -> dict:
+def validate_library_row_filters(
+    raw_filters: dict | None,
+    media_type: str,
+    *,
+    user=None,
+) -> dict:
     """Validate one library-query filter payload."""
     if raw_filters is None:
         raw_filters = {}
@@ -1418,6 +1465,26 @@ def validate_library_row_filters(raw_filters: dict | None, media_type: str) -> d
             raise HomeScreenValidationError(msg)
 
     normalized = _normalized_filter_payload(raw_filters, media_type)
+    if media_type == HOME_ALL_MEDIA_TYPE and "media_types" in raw_filters:
+        raw_media_types = raw_filters["media_types"]
+        if not isinstance(raw_media_types, list):
+            msg = "All media types must be a list."
+            raise HomeScreenValidationError(msg)
+        enabled_media_types = (
+            get_enabled_home_media_types(user)
+            if user is not None
+            else list(MediaTypes.values)
+        )
+        requested_media_types = {
+            str(value or "").strip() for value in raw_media_types
+        }
+        unsupported_media_types = requested_media_types - set(enabled_media_types)
+        if unsupported_media_types:
+            msg = "An All media type is not enabled."
+            raise HomeScreenValidationError(msg)
+        normalized["media_types"] = [
+            value for value in enabled_media_types if value in requested_media_types
+        ]
     if "status" in raw_filters:
         for raw_status in _as_list(raw_filters.get("status")):
             canonical_status = _canonical_status_filter(raw_status, None)
@@ -2449,10 +2516,12 @@ def _library_query_entries(
         # MUSIC_SUBVIEW_TRACKS falls through to the standard Music/Item query below.
     status_filter = normalized_filters.get("status") or []
     rule_media_types = (
-        get_enabled_home_media_types(user)
+        _all_media_type_selection(user, row.filters)
         if row.media_type == HOME_ALL_MEDIA_TYPE
         else [row.media_type]
     )
+    if not rule_media_types:
+        return []
     rule_payload = {
         "media_types": rule_media_types,
         **{

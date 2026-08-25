@@ -162,6 +162,51 @@ class HomeScreenViewTests(TestCase):
             [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
         )
 
+    def test_all_media_settings_expose_enabled_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={"status": [Status.IN_PROGRESS.value]},
+        )
+
+        section = home_screen.serialize_settings_sections(self.user)[0]
+        media_types_field = next(
+            field for field in section["filter_fields"] if field["key"] == "media_types"
+        )
+
+        self.assertEqual(
+            [option["value"] for option in media_types_field["options"]],
+            [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
+        )
+        self.assertEqual(
+            section["rows"][0]["filters"]["media_types"],
+            [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
+        )
+
+    def test_all_media_settings_preserve_explicit_empty_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [],
+            },
+        )
+
+        section = home_screen.serialize_settings_sections(self.user)[0]
+
+        self.assertEqual(section["rows"][0]["filters"]["media_types"], [])
+
     def test_all_media_section_respects_saved_position(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
         self.user.home_screen_media_type_order = [
@@ -245,6 +290,81 @@ class HomeScreenViewTests(TestCase):
             [entry.item.title for entry in all_media_group["rows"][0]["items"]],
             ["Current Game", "Current Movie"],
         )
+
+    def test_all_media_row_only_uses_selected_media_types(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        movie_item = Item.objects.create(
+            title="Excluded Movie",
+            media_id="all-media-excluded-movie",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        game_item = Item.objects.create(
+            title="Included Game",
+            media_id="all-media-included-game",
+            media_type=MediaTypes.GAME.value,
+            source=Sources.IGDB.value,
+        )
+        Game.objects.create(
+            item=game_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [MediaTypes.GAME.value],
+            },
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+        all_media_group = next(group for group in groups if group["media_type"] == "all")
+
+        self.assertEqual(
+            [entry.item.title for entry in all_media_group["rows"][0]["items"]],
+            ["Included Game"],
+        )
+
+    def test_empty_all_media_type_selection_hides_row(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        movie_item = Item.objects.create(
+            title="Current Movie",
+            media_id="all-media-empty-selection",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [],
+            },
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+
+        self.assertNotIn("all", {group["media_type"] for group in groups})
 
     def test_empty_all_media_section_is_not_rendered_on_home(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
@@ -1639,6 +1759,69 @@ class HomeScreenViewTests(TestCase):
 
         self.assertFalse(
             HomeScreenRow.objects.filter(user=self.user, media_type="all").exists()
+        )
+
+    def test_home_screen_post_persists_all_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        payload = [
+            {
+                "media_type": "all",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                        "sort_by": HomeSortChoices.RECENT,
+                        "direction": DirectionChoices.DESC,
+                        "filters": {
+                            "status": [Status.IN_PROGRESS.value],
+                            "media_types": [MediaTypes.GAME.value],
+                        },
+                    }
+                ],
+            }
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {"home_screen_sections": json.dumps(payload)},
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        row = HomeScreenRow.objects.get(user=self.user, media_type="all")
+        self.assertEqual(row.filters["media_types"], [MediaTypes.GAME.value])
+
+    def test_home_screen_post_rejects_disabled_all_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        payload = [
+            {
+                "media_type": "all",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                        "sort_by": HomeSortChoices.RECENT,
+                        "direction": DirectionChoices.DESC,
+                        "filters": {
+                            "status": [Status.IN_PROGRESS.value],
+                            "media_types": [MediaTypes.GAME.value],
+                        },
+                    }
+                ],
+            }
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {"home_screen_sections": json.dumps(payload)},
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        self.assertFalse(
+            HomeScreenRow.objects.filter(user=self.user, media_type="all").exists()
+        )
+        self.assertIn(
+            "not enabled",
+            str(next(iter(get_messages(response.wsgi_request)))),
         )
 
     def test_home_screen_post_rejects_non_library_all_media_rows(self):
