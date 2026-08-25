@@ -10,12 +10,12 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 | PWA-001 | Installable app experience | `feat/pwa-install` | `0a810b38` | `sha-2f3741c8d86dc66a0edfe8b08597d5ecb418eddf` | Pending | — | Deployed — installation Chromium, guide iOS, mode standalone et paysage; 14 tests combinés et préflight verts |
 | UI-002 | Direct horizontal carousel gestures | `feat/horizontal-swipe` | `5a5b85fe` | `sha-c7b650655dc08564586be05467d0615be16f4881` | Pending | — | Deployed — Home, casting, recommandations, aperçus, statistiques et titres suivis; 224 tests ciblés et préflight verts |
 | UI-001 | Appearance and detail layouts | `feat/user-appearance` | `f153d7a4` | `sha-ba463cddbc36489cdd809ba70902e4a65bbe0a28` | Pending | — | Deployed — logo centré à 0 px d'écart, typographie réglable; 41 tests combinés, Ruff et préflight verts |
-| HOME-008 | Configurable Home history row | `feat/home-history-row` | — | — | Pending | — | Validated — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
-| HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | — | — | Pending | — | Validated — regroupement par série et saison, 28 tests History et Ruff validés |
+| HOME-008 | Configurable Home history row | `feat/home-history-row` | `9f98baef` | — | Pending | — | On custom — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
+| HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | `ab9821f7` | — | Pending | — | On custom — regroupement par série et saison, 28 tests History et Ruff validés |
 | HOME-006 | Cross-media `In progress` row | `feat/home-all-media-ready` | `971877ff` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — 82 tests ciblés, migration de fusion, Ruff et préflight vert |
 | SERIES-001 | Series, seasons, credits and person details | `feat/home-all-media-in-progress` | `c112032a` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — 82 tests ciblés, migrations, Ruff et préflight vert |
 | HOME-005 | Collapsible Home rows | `feat/home-collapsible-rows` | `c1aebfb9` | `sha-a9e52961` | Works | — | Tested |
-| HOME-004 | `Up Next` row | `feat/home-up-next` | `2685526b` | `sha-a9e52961` | Pending | — | Validated — `SxxExx` conservé pour l’épisode connu; 45 tests Home validés |
+| HOME-004 | `Up Next` row | `feat/home-up-next` | `0dd683ca` | — | Pending | — | On custom — `SxxExx` visible et désactivable; `Now Playing` ouvre l’épisode avec option; 138 tests combinés et Ruff validés |
 | HOME-003 | Stale Home row | `feat/home-stale-row` | `79267e47` | `sha-a9e52961` | Pending | — | Deployed |
 | HOME-002 | Resume next-episode navigation | `feat/home-resume-navigation` | `ab710d19` | `sha-a9e52961` | Pending | — | Deployed |
 | HOME-001 | Pinned Home titles | `feat/home-pins` | `6e5a1d7e` | `sha-a9e52961` | Pending | — | Deployed |
