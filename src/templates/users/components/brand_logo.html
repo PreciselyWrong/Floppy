@@ -7,7 +7,9 @@
     {% if user.logo_style == 'hidden' %}
       <span class="sr-only">Floppy</span>
     {% elif user.logo_style == 'text' %}
-      <span class="brand-wordmark">{{ user.logo_text }}</span>
+      <span class="brand-wordmark"
+            data-brand-font="{{ user.logo_text_font }}"
+            style="--brand-font-size: {{ user.logo_text_size }}px; --brand-font-weight: {{ user.logo_text_weight }}; --brand-letter-spacing: {{ user.logo_text_spacing }}px;">{{ user.logo_text }}</span>
     {% elif user.logo_style == 'custom' and user.custom_logo_data %}
       <img src="{{ user.custom_logo_data }}"
            alt="{{ user.logo_text|default:'Floppy' }}"

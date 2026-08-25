@@ -78,6 +78,7 @@ docker compose up -d
 - ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
 - ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.
 - ⛔ Placer les réglages du logo hors de `Settings > Appearance` ou laisser le logo de la sidebar se contracter — l'identité visuelle doit rester trouvable et lisible.
+- ⛔ Aligner le logo ou le mot-symbole sur un bord du bandeau de sidebar — toutes les variantes restent centrées dans la colonne.
 - ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
 - ⛔ Afficher le switcher soleil/lune avec un thème autre que `System`, `Light` ou `Dark` — il écraserait le thème choisi.
 - ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.

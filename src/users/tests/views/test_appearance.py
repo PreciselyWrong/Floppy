@@ -1,6 +1,8 @@
 import json
 from io import BytesIO
+from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -72,6 +74,77 @@ class AppearanceViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.logo_style, "text")
         self.assertEqual(self.user.logo_text, "Nicolas Floppy")
+
+    def test_appearance_persists_text_typography(self):
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "Floppy Cinema",
+                "logo_text_font": "serif",
+                "logo_text_size": "32",
+                "logo_text_weight": "600",
+                "logo_text_spacing": "3",
+            },
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_text_font, "serif")
+        self.assertEqual(self.user.logo_text_size, 32)
+        self.assertEqual(self.user.logo_text_weight, 600)
+        self.assertEqual(self.user.logo_text_spacing, 3)
+
+        home = self.client.get(reverse("home"))
+        self.assertContains(home, 'data-brand-font="serif"')
+        self.assertContains(home, "--brand-font-size: 32px")
+        self.assertContains(home, "--brand-font-weight: 600")
+        self.assertContains(home, "--brand-letter-spacing: 3px")
+
+    def test_appearance_rejects_invalid_text_typography_without_partial_save(self):
+        self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "glass",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text_font": "remote-font",
+                "logo_text_size": "200",
+                "logo_text_weight": "950",
+                "logo_text_spacing": "20",
+            },
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.theme, "system")
+        self.assertEqual(self.user.logo_text_font, "display")
+        self.assertEqual(self.user.logo_text_size, 23)
+
+    def test_branding_is_centered_and_text_controls_are_conditional(self):
+        response = self.client.get(reverse("appearance"))
+        css = (Path(settings.BASE_DIR) / "static" / "css" / "input.css").read_text(
+            encoding="utf-8"
+        )
+        public_template = (
+            Path(settings.BASE_DIR) / "templates" / "base_public.html"
+        ).read_text(encoding="utf-8")
+
+        for field in (
+            "logo_text_font",
+            "logo_text_size",
+            "logo_text_weight",
+            "logo_text_spacing",
+        ):
+            self.assertContains(response, f'name="{field}"')
+        self.assertContains(response, "logoStyle === 'text'")
+        self.assertContains(response, "sidebar-brand-slot")
+        self.assertNotIn("sidebar-brand-slot", public_template)
+        self.assertIn("justify-content: center;", css)
+        self.assertIn("transform-origin: center;", css)
 
     def test_appearance_normalizes_custom_logo_upload(self):
         source = BytesIO()
