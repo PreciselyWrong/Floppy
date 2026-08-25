@@ -1,0 +1,5 @@
+{% for entry in media_list_items|default:media_list.items %}
+  <div class="home-row-card {{ media_list.card_width_class|default:'w-44' }} shrink-0">
+    {% include "app/components/history_card.html" with entry=entry card_class="search-result-card" history_mode="" user=user %}
+  </div>
+{% endfor %}

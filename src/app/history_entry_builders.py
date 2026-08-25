@@ -218,6 +218,7 @@ def _build_episode_entry(episode, episode_title_map=None):
 
     entry = {
         "media_type": MediaTypes.EPISODE.value,
+        "library_media_type": getattr(tv_item, "media_type", None),
         "item": _serialize_item(entry_item),
         "show": _serialize_show(tv_item),
         "poster": _get_episode_poster(episode),

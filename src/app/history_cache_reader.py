@@ -45,6 +45,7 @@ from app.history_cache_utils import (
     _typed_history_index_key,
     expand_history_media_types,
 )
+from app.models import MediaTypes
 
 logger = logging.getLogger(__name__)
 
@@ -389,6 +390,48 @@ def get_cached_history_window(
         len(history_days),
     )
     return history_days, total_days
+
+
+def _entry_home_media_type(entry):
+    if entry.get("media_type") != MediaTypes.EPISODE.value:
+        return entry.get("media_type")
+    return entry.get("library_media_type")
+
+
+def get_recent_history_entries(user, media_type, *, limit, offset):
+    """Return one recent Home-history entry batch without loading full history."""
+    limit = max(int(limit), 1)
+    offset = max(int(offset), 0)
+    day_offset = 0
+    skipped = 0
+    matches = []
+    days_per_scan = 14
+
+    while True:
+        days, total_days = get_cached_history_window(
+            user,
+            limit=days_per_scan,
+            offset=day_offset,
+        )
+        if not days:
+            break
+
+        for day in days:
+            for entry in day.get("entries", []):
+                if _entry_home_media_type(entry) != media_type:
+                    continue
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                matches.append(entry)
+                if len(matches) > limit:
+                    return matches[:limit], True
+
+        day_offset += days_per_scan
+        if day_offset >= total_days:
+            break
+
+    return matches, False
 
 
 def get_cached_history_page(user, page_number: int = 1, logging_style_override=None):
