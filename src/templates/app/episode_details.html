@@ -87,14 +87,14 @@
                 </span>
               {% endif %}
 
-            <div class="relative w-full md:w-auto"
+            <div class="relative min-w-0 flex-1 md:max-w-xs"
                  x-data="{ open: false }"
                  @click.away="open = false"
                  @keydown.escape.window="open = false">
               <button @click="open = !open"
-                      class="flex h-11 w-full items-center justify-center space-x-2 px-4 border border-[var(--color-surface-border)] bg-[var(--color-surface)] text-[var(--color-text)] shadow-sm hover:bg-[var(--color-surface-muted)] rounded-xl transition-colors duration-200 cursor-pointer md:w-auto md:justify-start">
-                <span class="text-sm font-medium">{{ episode.display_episode_number|default:episode_number }}. {{ episode_title }}</span>
-                <div class="w-4 h-4" :class="{ 'rotate-180': open }">{% include "app/icons/chevron-down.svg" with classes="w-full h-full" %}</div>
+                      class="flex h-11 w-full min-w-0 items-center justify-center gap-2 px-4 border border-[var(--color-surface-border)] bg-[var(--color-surface)] text-[var(--color-text)] shadow-sm hover:bg-[var(--color-surface-muted)] rounded-xl transition-colors duration-200 cursor-pointer md:justify-start">
+                <span class="block min-w-0 flex-1 truncate text-sm font-medium">{{ episode.display_episode_number|default:episode_number }}. {{ episode_title }}</span>
+                <div class="h-4 w-4 shrink-0" :class="{ 'rotate-180': open }">{% include "app/icons/chevron-down.svg" with classes="w-full h-full" %}</div>
               </button>
               <div x-show="open"
                    x-transition:enter="transition ease-out duration-200"

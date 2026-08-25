@@ -205,6 +205,8 @@ class ThemeTokenContractTests(SimpleTestCase):
 
         self.assertIn("js/modalPortal.js", base)
         self.assertIn('document.querySelectorAll(".fixed.inset-0")', portal)
+        self.assertIn("Alpine.closestDataStack(overlay)", portal)
+        self.assertIn("overlay._x_dataStack", portal)
         self.assertIn("document.body.appendChild(overlay)", portal)
         self.assertIn("htmx:afterSettle", portal)
 
@@ -216,3 +218,11 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("min-h-10", template)
         self.assertIn("flex-wrap", template)
         self.assertIn("min-w-0 flex-1 flex-wrap", template)
+
+    def test_episode_picker_truncates_long_titles(self):
+        template = Path(
+            settings.BASE_DIR, "templates", "app", "episode_details.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('class="relative min-w-0 flex-1 md:max-w-xs"', template)
+        self.assertIn('class="block min-w-0 flex-1 truncate text-sm font-medium"', template)

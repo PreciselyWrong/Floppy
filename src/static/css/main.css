@@ -5318,6 +5318,11 @@
       max-width: 250px;
     }
   }
+  .md\:max-w-xs {
+    @media (width >= 48rem) {
+      max-width: var(--container-xs);
+    }
+  }
   .md\:shrink-0 {
     @media (width >= 48rem) {
       flex-shrink: 0;

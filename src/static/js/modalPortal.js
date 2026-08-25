@@ -2,7 +2,10 @@
   const portalFullscreenOverlays = () => {
     document.querySelectorAll(".fixed.inset-0").forEach((overlay) => {
       if (overlay.parentElement !== document.body) {
-        document.body.appendChild(overlay);
+        overlay._x_dataStack = Alpine.closestDataStack(overlay);
+        Alpine.mutateDom(() => {
+          document.body.appendChild(overlay);
+        });
       }
     });
   };

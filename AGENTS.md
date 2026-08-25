@@ -83,6 +83,8 @@ docker compose up -d
 - ⛔ Dessiner le liseré hover d’une carte hors de ses limites — il doit rester interne pour ne rogner ni le bord gauche ni la progression.
 - ⛔ Laisser un `transform` final sur un conteneur animé qui contient une modale fixe — la modale doit rester liée au viewport.
 - ⛔ Laisser un overlay plein écran imbriqué dans son déclencheur — le porter sous `<body>` et valider sa géométrie réelle dans le navigateur.
+- ⛔ Porter un overlay sans conserver son scope Alpine — les actions internes, notamment la croix de fermeture, doivent encore piloter l’état du déclencheur.
+- ⛔ Laisser un long titre forcer la navigation d’épisode sur plusieurs lignes — le tronquer dans une zone flexible entre les flèches.
 - ⛔ Garder les contrôles d’une rangée de réglages sur une ligne rigide — ils doivent revenir à la ligne sans sortir du panneau.
 - ⛔ Mettre en cache les pages, fragments ou données authentifiés dans la PWA — le service worker reste limité aux fichiers statiques publics.
 - ⛔ Supposer que toutes les fiches exposent le même champ de titre — épisodes, numéros et autres variantes doivent conserver leurs replis propres.
