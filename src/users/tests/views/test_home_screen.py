@@ -2687,3 +2687,18 @@ class HomeScreenCompanionParityTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.home_binge_grouping_enabled)
         self.assertEqual(self.user.home_stale_days_threshold, 14)
+
+    def test_toggle_home_row_direction_works_on_shelf_rows(self):
+        shelf_row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_STALE,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+        updated = home_screen.toggle_home_row_direction(self.user, shelf_row.id)
+        self.assertEqual(updated.direction, DirectionChoices.ASC)
+
+        shelf_row.refresh_from_db()
+        self.assertEqual(shelf_row.direction, DirectionChoices.ASC)

@@ -1330,12 +1330,11 @@ def home_row_header_title_parts(row: HomeScreenRow, user) -> tuple[str, str | No
 
 
 def toggle_home_row_direction(user, row_id: int) -> HomeScreenRow:
-    """Flip a library Home row's direction and persist it."""
+    """Flip a Home row's direction and persist it."""
     row = (
         HomeScreenRow.objects.filter(
             user=user,
             id=row_id,
-            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
         )
         .select_related("custom_list")
         .first()
