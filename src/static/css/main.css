@@ -6078,7 +6078,7 @@ html :where( .rounded, .rounded-sm, .rounded-md, .rounded-lg, .rounded-xl, .roun
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 @keyframes theme-soft-pop {
@@ -6088,7 +6088,7 @@ html :where( .rounded, .rounded-sm, .rounded-md, .rounded-lg, .rounded-xl, .roun
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: none;
   }
 }
 main > .container, .preferences-page {
@@ -6109,6 +6109,18 @@ main > .container, .preferences-page {
 }
 .media-grid > :nth-child(3n), .detail-media-grid > :nth-child(3n) {
   animation-delay: 70ms;
+}
+.media-card-hover-outline::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  border: 2px solid transparent;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.media-card-hover-outline:hover::after {
+  border-color: rgb(99 102 241);
 }
 @media (hover: hover) {
   :where(.media-card, .search-result-card, .search-result-card-square):hover {
@@ -6949,7 +6961,6 @@ html.light .theme-toggle-icon-moon {
   -ms-overflow-style: none;
   scrollbar-width: none;
   margin-top: calc(var(--home-row-hover-clearance) * -1);
-  padding-inline: var(--home-row-hover-clearance);
   padding-top: var(--home-row-hover-clearance);
 }
 .home-row-scrollbar-hidden::-webkit-scrollbar {

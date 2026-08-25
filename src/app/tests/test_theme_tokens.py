@@ -157,8 +157,40 @@ class ThemeTokenContractTests(SimpleTestCase):
             "padding-top: var(--home-row-hover-clearance)",
             row_rule.group("body"),
         )
-        self.assertIn(
-            "padding-inline: var(--home-row-hover-clearance)",
-            row_rule.group("body"),
-        )
+        self.assertNotIn("padding-left:", row_rule.group("body"))
+        self.assertNotIn("padding-inline:", row_rule.group("body"))
+        self.assertNotIn("margin-left:", row_rule.group("body"))
         self.assertNotIn("margin-inline:", row_rule.group("body"))
+
+    def test_media_card_hover_outline_stays_inside_above_progress(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        template = Path(
+            settings.BASE_DIR, "templates", "app", "components", "media_card.html"
+        ).read_text(encoding="utf-8")
+        outline_rule = re.search(
+            r"\.media-card-hover-outline::after\s*\{(?P<body>.*?)\n\}",
+            css,
+            re.DOTALL,
+        )
+
+        self.assertIn("media-card-hover-outline", template)
+        self.assertNotIn("hover:ring-2 hover:ring-indigo-500", template)
+        self.assertIsNotNone(outline_rule)
+        self.assertIn("inset: 0", outline_rule.group("body"))
+        self.assertIn("z-index: 30", outline_rule.group("body"))
+
+    def test_completed_appearance_animations_release_fixed_modals(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+
+        for animation in ("theme-reveal", "theme-soft-pop"):
+            keyframes = re.search(
+                rf"@keyframes {animation}\s*\{{(?P<body>.*?)\n\}}",
+                css,
+                re.DOTALL,
+            )
+            self.assertIsNotNone(keyframes, animation)
+            self.assertIn("transform: none", keyframes.group("body"), animation)
