@@ -1131,7 +1131,11 @@ def describe_library_query(filters: dict, user, media_type: str) -> str:
 
 def _all_media_type_selection(user, filters: dict | None) -> list[str]:
     """Resolve a row's selected enabled families, preserving legacy all-media rows."""
-    enabled_media_types = get_enabled_home_media_types(user)
+    enabled_media_types = [
+        media_type
+        for media_type in get_enabled_home_media_types(user)
+        if media_type != MediaTypes.SEASON.value
+    ]
     if not isinstance(filters, dict) or "media_types" not in filters:
         return enabled_media_types
     requested = {
@@ -1704,7 +1708,7 @@ def search_home_screen_lists(user, query: str, media_type: str) -> list[dict]:
 
 def _item_matches_home_media_type(item: Item, media_type: str) -> bool:
     if media_type == HOME_ALL_MEDIA_TYPE:
-        return True
+        return item.media_type != MediaTypes.SEASON.value
     library_media_type = getattr(item, "library_media_type", "") or ""
     return media_type in (library_media_type, item.media_type)
 
