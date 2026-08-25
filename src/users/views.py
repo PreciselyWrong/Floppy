@@ -1071,6 +1071,8 @@ def preferences(request):
         remaining_time_raw = request.POST.get("show_remaining_time")
         person_sections_order_raw = request.POST.get("person_sections_order")
         person_hidden_sections_raw = request.POST.get("person_hidden_sections")
+        show_up_next_episode_code_raw = request.POST.get("show_up_next_episode_code")
+        now_playing_open_episode_raw = request.POST.get("now_playing_open_episode")
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1186,6 +1188,18 @@ def preferences(request):
         ):
             request.user.media_card_subtitle_display = media_card_subtitle_display
             fields_to_update.append("media_card_subtitle_display")
+
+        if show_up_next_episode_code_raw is not None:
+            show_up_next_episode_code = show_up_next_episode_code_raw == "1"
+            if request.user.show_up_next_episode_code != show_up_next_episode_code:
+                request.user.show_up_next_episode_code = show_up_next_episode_code
+                fields_to_update.append("show_up_next_episode_code")
+
+        if now_playing_open_episode_raw is not None:
+            now_playing_open_episode = now_playing_open_episode_raw == "1"
+            if request.user.now_playing_open_episode != now_playing_open_episode:
+                request.user.now_playing_open_episode = now_playing_open_episode
+                fields_to_update.append("now_playing_open_episode")
 
         if (
             title_display_preference

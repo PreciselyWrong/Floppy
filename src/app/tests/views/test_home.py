@@ -601,6 +601,7 @@ class HomeViewTests(TestCase):
         self.assertIsNotNone(card)
         self.assertEqual(card["title"], "Test TV Show")
         self.assertEqual(card["episode_code"], "S01E03")
+        self.assertIn("/episode/3", card["details_url"])
         self.assertIn(" / ", card["progress_display"])
         self.assertContains(response, "Now Playing")
         self.assertContains(response, "data-active-playback-card")

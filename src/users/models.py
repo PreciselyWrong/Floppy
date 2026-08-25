@@ -785,6 +785,14 @@ class User(AbstractUser):
         choices=MediaCardSubtitleDisplayChoices.choices,
         help_text="Control when media card subtitles are visible",
     )
+    show_up_next_episode_code = models.BooleanField(
+        default=True,
+        help_text="Show the season and episode code in the Up Next row",
+    )
+    now_playing_open_episode = models.BooleanField(
+        default=True,
+        help_text="Open the playing episode instead of its season",
+    )
     title_display_preference = models.CharField(
         max_length=20,
         default=TitleDisplayPreferenceChoices.LOCALIZED,

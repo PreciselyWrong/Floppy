@@ -746,6 +746,8 @@ def active_playback_fragment(request):
         "app/components/active_playback_card.html",
         {
             "active_playback_card": card,
+            "user": request.user,
+            "IMG_NONE": settings.IMG_NONE,
         },
     )
 

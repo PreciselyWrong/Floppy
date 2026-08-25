@@ -645,7 +645,12 @@ def _slugify_title(title: str, media_id: str | None = None) -> str:
     return cleaned
 
 
-def _build_details_url(state: dict, library_media_type: str | None = None) -> str:
+def _build_details_url(
+    state: dict,
+    library_media_type: str | None = None,
+    *,
+    open_episode: bool = False,
+) -> str:
     """Build a URL to the media details page for the playing item."""
     media_id = state.get("media_id")
     source = state.get("source") or Sources.TMDB.value
@@ -657,6 +662,24 @@ def _build_details_url(state: dict, library_media_type: str | None = None) -> st
     slug_title = _slugify_title(title, media_id)
 
     if playback_media_type == MediaTypes.EPISODE.value:
+        season_number = _coerce_int(state.get("season_number"))
+        episode_number = _coerce_int(state.get("episode_number"))
+        if open_episode and season_number is not None and episode_number is not None:
+            route_name = (
+                "anime_episode_details"
+                if library_media_type == MediaTypes.ANIME.value
+                else "episode_details"
+            )
+            return reverse(
+                route_name,
+                kwargs={
+                    "source": source,
+                    "media_id": media_id,
+                    "title": slug_title,
+                    "season_number": season_number,
+                    "episode_number": episode_number,
+                },
+            )
         if library_media_type == MediaTypes.ANIME.value:
             return reverse(
                 "media_details",
@@ -667,7 +690,6 @@ def _build_details_url(state: dict, library_media_type: str | None = None) -> st
                     "title": slug_title,
                 },
             )
-        season_number = _coerce_int(state.get("season_number"))
         if season_number is not None:
             return reverse(
                 "season_details",
@@ -994,7 +1016,11 @@ def build_home_playback_card(user) -> dict | None:
             if status in (PLAYBACK_STATUS_PAUSED, PLAYBACK_STATUS_STOPPED)
             else "Playing"
         ),
-        "details_url": _build_details_url(state, library_media_type=library_media_type),
+        "details_url": _build_details_url(
+            state,
+            library_media_type=library_media_type,
+            open_episode=getattr(user, "now_playing_open_episode", True),
+        ),
         "progress_display": progress_display,
         "progress_percent": progress_percent,
         "offset_seconds": max(0, _coerce_int(state.get("view_offset_seconds"), 0)),

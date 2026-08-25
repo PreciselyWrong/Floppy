@@ -95,6 +95,55 @@ class ScrobbleProgressFloorTests(TestCase):
         self.assertEqual(state["view_offset_seconds"], 600)
 
 
+class PlaybackDetailsUrlTests(TestCase):
+    def test_episode_url_can_open_the_episode_directly(self):
+        state = {
+            "media_type": MediaTypes.EPISODE.value,
+            "media_id": "1396",
+            "source": Sources.TMDB.value,
+            "series_title": "Breaking Bad",
+            "season_number": 1,
+            "episode_number": 3,
+        }
+
+        self.assertEqual(
+            live_playback._build_details_url(state, open_episode=True),
+            reverse(
+                "episode_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "1396",
+                    "title": "breaking-bad",
+                    "season_number": 1,
+                    "episode_number": 3,
+                },
+            ),
+        )
+
+    def test_episode_url_keeps_the_season_fallback_when_disabled(self):
+        state = {
+            "media_type": MediaTypes.EPISODE.value,
+            "media_id": "1396",
+            "source": Sources.TMDB.value,
+            "series_title": "Breaking Bad",
+            "season_number": 1,
+            "episode_number": 3,
+        }
+
+        self.assertEqual(
+            live_playback._build_details_url(state, open_episode=False),
+            reverse(
+                "season_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "1396",
+                    "title": "breaking-bad",
+                    "season_number": 1,
+                },
+            ),
+        )
+
+
 class ApplyPlaybackEventImageTests(TestCase):
     """Image resolution happens when webhook events are applied."""
 

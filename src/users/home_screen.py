@@ -341,6 +341,7 @@ class HomeRowEntry:
     podcast_show: object | None = None
     show_progress_controls: bool = True
     subtitle_override: object | None = None
+    subtitle_always_visible: bool = False
     resume_navigation: bool = False
     title_item_override: Item | None = None
 
@@ -2216,7 +2217,7 @@ def _apply_stale_filter(
     ]
 
 
-def _resolve_up_next_entry(media) -> HomeRowEntry | None:
+def _resolve_up_next_entry(media, user=None) -> HomeRowEntry | None:
     target = (
         media.next_episode_target()
         if hasattr(media, "next_episode_target")
@@ -2225,15 +2226,23 @@ def _resolve_up_next_entry(media) -> HomeRowEntry | None:
     if target is not None:
         season, episode_number = target
         season_number = getattr(season.item, "season_number", 0) or 0
-        subtitle = f"S{season_number:02d}E{episode_number:02d}"
+        show_episode_code = getattr(user, "show_up_next_episode_code", True)
+        subtitle = (
+            f"S{season_number:02d}E{episode_number:02d}"
+            if show_episode_code
+            else None
+        )
+        subtitle_always_visible = bool(subtitle)
     else:
         subtitle = BasicMedia.objects._next_episode_air_date_value(media)
         if subtitle is None:
             return None
+        subtitle_always_visible = False
     return HomeRowEntry(
         item=media.item,
         media=media,
         subtitle_override=subtitle,
+        subtitle_always_visible=subtitle_always_visible,
         resume_navigation=True,
         title_item_override=media.item,
     )
@@ -2270,7 +2279,7 @@ def _up_next_entries(user) -> list[HomeRowEntry]:
         media = media_by_item_id.get(item_id)
         if media is None:
             continue
-        entry = _resolve_up_next_entry(media)
+        entry = _resolve_up_next_entry(media, user)
         if entry is not None:
             entries.append(entry)
 
@@ -2280,7 +2289,7 @@ def _up_next_entries(user) -> list[HomeRowEntry]:
             continue
         if getattr(media, "status", Status.IN_PROGRESS.value) != Status.IN_PROGRESS.value:
             continue
-        entry = _resolve_up_next_entry(media)
+        entry = _resolve_up_next_entry(media, user)
         if entry is not None:
             entries.append(entry)
             break

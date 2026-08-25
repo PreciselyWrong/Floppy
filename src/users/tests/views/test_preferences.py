@@ -40,6 +40,26 @@ class PreferencesViewTests(TestCase):
         self.assertContains(response, 'data-brand-mode="hidden"')
         self.assertContains(response, 'aria-label="Floppy home"')
 
+    def test_preferences_post_persists_home_playback_display_options(self):
+        response = self.client.post(
+            reverse("preferences"),
+            {
+                "show_up_next_episode_code": "0",
+                "now_playing_open_episode": "0",
+            },
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.show_up_next_episode_code)
+        self.assertFalse(self.user.now_playing_open_episode)
+
+    def test_preferences_render_home_playback_display_options(self):
+        response = self.client.get(reverse("preferences"))
+
+        self.assertContains(response, 'name="show_up_next_episode_code"')
+        self.assertContains(response, 'name="now_playing_open_episode"')
+
     def test_preferences_post_rejects_invalid_theme(self):
         """POSTing an invalid theme value should be ignored, not persisted."""
         response = self.client.post(reverse("preferences"), {"theme": "solarized"})
