@@ -23,6 +23,9 @@
 <div x-data="{ open: localStorage.getItem('{{ collapse_key }}') !== '{{ collapse_default|default:'false' }}' }"
      x-init="$watch('open', v => localStorage.setItem('{{ collapse_key }}', v))">
 {% endif %}
+{% if row.is_journal %}
+  {% include "app/components/home_activity_journal.html" with row=row %}
+{% else %}
 {% comment %}
   Artwork polling is coalesced into a single shared poller (see
   home_artwork_poller.html); rows just carry a stable id so the poller's
@@ -157,6 +160,7 @@
     <p class="text-xs text-[var(--color-text-muted)] mt-1">Refreshing artwork...</p>
   {% endif %}
 </div>
+{% endif %}
 {% if collapse_key %}
 </div>
 {% endif %}

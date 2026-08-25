@@ -547,10 +547,18 @@ def _row_signature(
 ) -> dict:
     filters = {}
     custom_list_id = None
-    if row.row_type == HomeScreenRowTypeChoices.LIBRARY_QUERY:
+    if row.row_type in {
+        HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        HomeScreenRowTypeChoices.SHELF_RESUME,
+        HomeScreenRowTypeChoices.SHELF_STALE,
+        HomeScreenRowTypeChoices.SHELF_UNSTARTED,
+        HomeScreenRowTypeChoices.SHELF_FINISHED,
+    }:
         filters = _normalized_filter_payload(row.filters or {}, media_type)
     elif row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST:
         custom_list_id = row.custom_list_id
+    elif row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        filters = dict(row.filters or {})
 
     return {
         "enabled": row.enabled,
@@ -1098,6 +1106,22 @@ def serialize_settings_sections(user) -> list[dict]:
                         media_type,
                         HomeScreenRowTypeChoices.CUSTOM_LIST,
                     ),
+                    HomeScreenRowTypeChoices.SHELF_RESUME: get_allowed_sort_choices(
+                        media_type,
+                        HomeScreenRowTypeChoices.SHELF_RESUME,
+                    ),
+                    HomeScreenRowTypeChoices.SHELF_STALE: get_allowed_sort_choices(
+                        media_type,
+                        HomeScreenRowTypeChoices.SHELF_STALE,
+                    ),
+                    HomeScreenRowTypeChoices.SHELF_UNSTARTED: get_allowed_sort_choices(
+                        media_type,
+                        HomeScreenRowTypeChoices.SHELF_UNSTARTED,
+                    ),
+                    HomeScreenRowTypeChoices.SHELF_FINISHED: get_allowed_sort_choices(
+                        media_type,
+                        HomeScreenRowTypeChoices.SHELF_FINISHED,
+                    ),
                 },
                 "filter_fields": build_filter_field_data(
                     user, media_type, precomputed_tags=tag_names
@@ -1114,7 +1138,9 @@ def serialize_settings_sections(user) -> list[dict]:
                         else "",
                         "sort_by": row.sort_by,
                         "direction": row.direction,
-                        "filters": _normalized_filter_payload(row.filters, media_type),
+                        "filters": _normalized_filter_payload(row.filters, media_type)
+                        if row.row_type != HomeScreenRowTypeChoices.WATCH_HISTORY
+                        else (row.filters or {}),
                         "title": row_title(row, user),
                         "custom_title": row.title or "",
                         "summary": row_summary(row, user),
@@ -1137,6 +1163,16 @@ def row_title(row: HomeScreenRow, user) -> str:
         return "List / Smart List"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return RECENTLY_UNRATED_LABEL
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return "Activity Journal"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_RESUME:
+        return "Resume"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_STALE:
+        return "Stale"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_UNSTARTED:
+        return "Unstarted"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_FINISHED:
+        return "Finished"
     return describe_library_query(row.filters or {}, user, row.media_type)
 
 
@@ -1148,6 +1184,16 @@ def row_summary(row: HomeScreenRow, user) -> str:
         return "Choose a list or smart list"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return "Recent unrated plays from this library"
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return "Recent activity log grouped by day"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_RESUME:
+        return "Active in-progress titles"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_STALE:
+        return "Inactive in-progress titles"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_UNSTARTED:
+        return "Planned and unstarted titles"
+    if row.row_type == HomeScreenRowTypeChoices.SHELF_FINISHED:
+        return "Completed and caught up titles"
     sort_choices = {
         choice["value"]: choice["label"]
         for choice in get_allowed_sort_choices(row.media_type, row.row_type)
@@ -1161,7 +1207,10 @@ def row_summary(row: HomeScreenRow, user) -> str:
 
 def home_row_inline_summary(row: HomeScreenRow, user) -> str | None:
     """Return the inline sort label for the Home row header."""
-    if row.row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY:
+    if row.row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.WATCH_HISTORY,
+    }:
         return None
 
     sort_choices = {
@@ -1276,12 +1325,6 @@ def _row_payload_to_model(
     if row_type not in HomeScreenRowTypeChoices.values:
         msg = f"Unsupported row type for {media_type}."
         raise HomeScreenValidationError(msg)
-    if (
-        media_type == HOME_ALL_MEDIA_TYPE
-        and row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY
-    ):
-        msg = "All media only supports library rows."
-        raise HomeScreenValidationError(msg)
 
     enabled = bool(row_payload.get("enabled", True))
     custom_list = None
@@ -1299,15 +1342,23 @@ def _row_payload_to_model(
             msg = f"Choose an accessible list for {media_type}."
             raise HomeScreenValidationError(msg)
         sort_choices = get_allowed_sort_choices(media_type, row_type)
-    elif row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    elif row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.WATCH_HISTORY,
+    }:
         sort_choices = []
+        if row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+            filters = dict(row_payload.get("filters") or {})
     else:
         filters = validate_library_row_filters(row_payload.get("filters"), media_type)
         sort_choices = get_allowed_sort_choices(media_type, row_type)
 
     allowed_sort_values = {choice["value"] for choice in sort_choices}
     sort_by = str(row_payload.get("sort_by") or "").strip()
-    if row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    if row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.WATCH_HISTORY,
+    }:
         sort_by = HomeSortChoices.RECENT
         direction = _default_recent_row_direction()
     else:
@@ -1947,6 +1998,24 @@ def _entry_recent_timestamp(entry: HomeRowEntry):
     return dt_value.timestamp() if dt_value else None
 
 
+def _entry_activity_timestamp(entry: HomeRowEntry):
+    media = _entry_media(entry)
+    if not media:
+        return None
+    candidate = (
+        getattr(media, "last_played_at", None)
+        or getattr(media, "progressed_at", None)
+        or getattr(media, "aggregated_end_date", None)
+        or getattr(media, "end_date", None)
+        or getattr(media, "aggregated_start_date", None)
+        or getattr(media, "start_date", None)
+        or getattr(media, "updated_at", None)
+        or getattr(media, "created_at", None)
+    )
+    dt_value = _coerce_datetime(candidate)
+    return dt_value.timestamp() if dt_value else None
+
+
 def _entry_start_timestamp(entry: HomeRowEntry):
     media = _entry_media(entry)
     if not media:
@@ -2461,6 +2530,9 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
             return f"{base}?{query}"
         return base
 
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return reverse("history")
+
     # Library-query / recently-unrated rows open the media list.
     if row.media_type == HOME_ALL_MEDIA_TYPE:
         return ""
@@ -2474,6 +2546,15 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         query_pairs.append(("rating", "not_rated"))
         query_pairs.append(("status", MediaStatusChoices.ALL.value))
+    elif row.row_type in {
+        HomeScreenRowTypeChoices.SHELF_RESUME,
+        HomeScreenRowTypeChoices.SHELF_STALE,
+    }:
+        query_pairs.append(("status", Status.IN_PROGRESS.value))
+    elif row.row_type == HomeScreenRowTypeChoices.SHELF_UNSTARTED:
+        query_pairs.append(("status", Status.PLANNING.value))
+    elif row.row_type == HomeScreenRowTypeChoices.SHELF_FINISHED:
+        query_pairs.append(("status", Status.COMPLETED.value))
     else:
         normalized = _normalized_filter_payload(row.filters or {}, row.media_type)
         status_values = [value for value in (normalized.get("status") or []) if value]
@@ -2501,6 +2582,292 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
     return f"{base}?{urlencode(query_pairs)}"
 
 
+def _shelf_resume_entries(
+    user, row: HomeScreenRow, collection_context_cache: dict | None = None
+) -> list[HomeRowEntry]:
+    stale_days = getattr(user, "home_stale_days_threshold", 21) or 21
+    cutoff = timezone.now() - timedelta(days=stale_days)
+    cutoff_ts = cutoff.timestamp()
+
+    filters = dict(row.filters or {})
+    filters["status"] = [Status.IN_PROGRESS.value]
+    row_copy = HomeScreenRow(
+        id=row.id,
+        user=user,
+        media_type=row.media_type,
+        position=row.position,
+        enabled=row.enabled,
+        title=row.title,
+        row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        sort_by=row.sort_by or HomeSortChoices.RECENT,
+        direction=row.direction,
+        filters=filters,
+    )
+    entries = _library_query_entries(
+        user, row_copy, collection_context_cache=collection_context_cache
+    )
+    resume_entries = []
+    for entry in entries:
+        ts = _entry_activity_timestamp(entry)
+        if ts is not None and ts >= cutoff_ts:
+            resume_entries.append(entry)
+    return resume_entries
+
+
+def _shelf_stale_entries(
+    user, row: HomeScreenRow, collection_context_cache: dict | None = None
+) -> list[HomeRowEntry]:
+    stale_days = getattr(user, "home_stale_days_threshold", 21) or 21
+    cutoff = timezone.now() - timedelta(days=stale_days)
+    cutoff_ts = cutoff.timestamp()
+
+    filters = dict(row.filters or {})
+    filters["status"] = [Status.IN_PROGRESS.value]
+    row_copy = HomeScreenRow(
+        id=row.id,
+        user=user,
+        media_type=row.media_type,
+        position=row.position,
+        enabled=row.enabled,
+        title=row.title,
+        row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        sort_by=row.sort_by or HomeSortChoices.RECENT,
+        direction=row.direction,
+        filters=filters,
+    )
+    entries = _library_query_entries(
+        user, row_copy, collection_context_cache=collection_context_cache
+    )
+    stale_entries = []
+    for entry in entries:
+        ts = _entry_activity_timestamp(entry)
+        if ts is None or ts < cutoff_ts:
+            stale_entries.append(entry)
+    return stale_entries
+
+
+def _shelf_unstarted_entries(
+    user, row: HomeScreenRow, collection_context_cache: dict | None = None
+) -> list[HomeRowEntry]:
+    filters = dict(row.filters or {})
+    filters["status"] = [Status.PLANNING.value]
+    row_copy = HomeScreenRow(
+        id=row.id,
+        user=user,
+        media_type=row.media_type,
+        position=row.position,
+        enabled=row.enabled,
+        title=row.title,
+        row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        sort_by=row.sort_by or MediaSortChoices.DATE_ADDED,
+        direction=row.direction,
+        filters=filters,
+    )
+    return _library_query_entries(
+        user, row_copy, collection_context_cache=collection_context_cache
+    )
+
+
+def _shelf_finished_entries(
+    user, row: HomeScreenRow, collection_context_cache: dict | None = None
+) -> list[HomeRowEntry]:
+    filters = dict(row.filters or {})
+    filters["status"] = [Status.COMPLETED.value]
+    row_copy = HomeScreenRow(
+        id=row.id,
+        user=user,
+        media_type=row.media_type,
+        position=row.position,
+        enabled=row.enabled,
+        title=row.title,
+        row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        sort_by=row.sort_by or HomeSortChoices.RECENT,
+        direction=row.direction,
+        filters=filters,
+    )
+    return _library_query_entries(
+        user, row_copy, collection_context_cache=collection_context_cache
+    )
+
+
+MIN_BINGE_EPISODES = 2
+
+
+def group_watch_entries_by_binge(
+    entries: list[dict], enable_binge: bool = True
+) -> list[dict]:
+    """Group consecutive same-day episodes of the same series into binge cards."""
+    if not entries:
+        return []
+    if not enable_binge:
+        return [{"is_group": False, "entry": e} for e in entries]
+
+    result = []
+    i = 0
+    n = len(entries)
+    while i < n:
+        curr = entries[i]
+        curr_is_ep = (
+            curr.get("media_type") == MediaTypes.EPISODE.value
+            or curr.get("media_type") == "episode"
+        )
+        if not curr_is_ep:
+            result.append({"is_group": False, "entry": curr})
+            i += 1
+            continue
+
+        curr_item = curr.get("item")
+        curr_media_id = (
+            getattr(curr_item, "media_id", None)
+            if curr_item
+            else curr.get("media_id")
+        )
+        curr_source = (
+            getattr(curr_item, "source", None)
+            if curr_item
+            else curr.get("source")
+        )
+
+        j = i + 1
+        while j < n:
+            next_e = entries[j]
+            next_is_ep = (
+                next_e.get("media_type") == MediaTypes.EPISODE.value
+                or next_e.get("media_type") == "episode"
+            )
+            if not next_is_ep:
+                break
+            next_item = next_e.get("item")
+            next_media_id = (
+                getattr(next_item, "media_id", None)
+                if next_item
+                else next_e.get("media_id")
+            )
+            next_source = (
+                getattr(next_item, "source", None)
+                if next_item
+                else next_e.get("source")
+            )
+            if (
+                curr_media_id is not None
+                and next_media_id is not None
+                and curr_media_id == next_media_id
+                and curr_source == next_source
+            ):
+                j += 1
+            else:
+                break
+
+        run = entries[i:j]
+        if len(run) >= MIN_BINGE_EPISODES:
+            latest = run[0]
+            seasons = {
+                e.get("season_number")
+                for e in run
+                if e.get("season_number") is not None
+            }
+            ep_nums = [
+                e.get("episode_number")
+                for e in run
+                if e.get("episode_number") is not None
+            ]
+            episode_range = None
+            if len(seasons) == 1 and len(ep_nums) == len(run):
+                season = next(iter(seasons))
+                episode_range = f"S{season:02d}E{min(ep_nums):02d}-E{max(ep_nums):02d}"
+
+            total_runtime = sum(e.get("runtime_minutes") or 0 for e in run)
+            series_title = latest.get("series_title") or (
+                getattr(latest.get("item"), "title", None)
+                if latest.get("item")
+                else latest.get("title")
+            )
+
+            result.append(
+                {
+                    "is_group": True,
+                    "latest": latest,
+                    "series_title": series_title,
+                    "episode_range": episode_range,
+                    "count": len(run),
+                    "total_runtime_minutes": total_runtime,
+                    "episodes": run,
+                    "group_id": f"binge-{curr_media_id}-{i}",
+                }
+            )
+        else:
+            result.append({"is_group": False, "entry": curr})
+        i = j
+    return result
+
+
+def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
+    from app import history_cache
+
+    days = history_cache.get_history_days(user, max_days=14)
+    if not days:
+        return None
+
+    excluded_families = set(row.filters.get("excluded_families") or [])
+    if row.media_type != HOME_ALL_MEDIA_TYPE:
+        target_media_types = {row.media_type}
+    else:
+        target_media_types = (
+            set(get_enabled_home_media_types(user)) - excluded_families
+        )
+
+    processed_days = []
+    enable_binge = row.filters.get(
+        "binge_grouping",
+        getattr(user, "home_binge_grouping_enabled", True),
+    )
+
+    for day in days:
+        raw_entries = [
+            e
+            for e in day.get("entries", [])
+            if e.get("media_type") in target_media_types
+            or (
+                e.get("media_type") == "episode"
+                and ("tv" in target_media_types or "anime" in target_media_types)
+            )
+        ]
+        if not raw_entries:
+            continue
+
+        grouped_items = group_watch_entries_by_binge(raw_entries, enable_binge)
+        processed_days.append(
+            {
+                "day_key": day.get("day_key"),
+                "date": day.get("date"),
+                "date_display": day.get("date_display"),
+                "weekday": day.get("weekday"),
+                "entry_count": len(raw_entries),
+                "total_runtime_display": day.get("total_runtime_display"),
+                "items": grouped_items,
+            }
+        )
+
+    if not processed_days:
+        return None
+
+    title_main, title_detail = home_row_header_title_parts(row, user)
+    return {
+        "row_id": row.id,
+        "is_journal": True,
+        "title": row_title(row, user),
+        "title_main": title_main,
+        "title_detail": title_detail,
+        "url": reverse("history"),
+        "summary": row_summary(row, user),
+        "summary_inline": None,
+        "days": processed_days,
+        "total": sum(len(d["items"]) for d in processed_days),
+        "loaded_count": sum(len(d["items"]) for d in processed_days),
+        "grid_class": "journal-grid",
+    }
+
+
 _HOME_ROW_EMPTY_SENTINEL = "__home_row_empty__"
 
 
@@ -2517,6 +2884,24 @@ def _build_row_section(
         entries = _custom_list_entries(user, row)
     elif row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         entries = _recently_unrated_entries(user, row)
+    elif row.row_type == HomeScreenRowTypeChoices.SHELF_RESUME:
+        entries = _shelf_resume_entries(
+            user, row, collection_context_cache=collection_context_cache
+        )
+    elif row.row_type == HomeScreenRowTypeChoices.SHELF_STALE:
+        entries = _shelf_stale_entries(
+            user, row, collection_context_cache=collection_context_cache
+        )
+    elif row.row_type == HomeScreenRowTypeChoices.SHELF_UNSTARTED:
+        entries = _shelf_unstarted_entries(
+            user, row, collection_context_cache=collection_context_cache
+        )
+    elif row.row_type == HomeScreenRowTypeChoices.SHELF_FINISHED:
+        entries = _shelf_finished_entries(
+            user, row, collection_context_cache=collection_context_cache
+        )
+    elif row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return _watch_history_section(user, row)
     else:
         entries = _library_query_entries(
             user, row, collection_context_cache=collection_context_cache,

@@ -388,6 +388,11 @@ class HomeScreenRowTypeChoices(models.TextChoices):
     LIBRARY_QUERY = "library_query", "Library Row"
     CUSTOM_LIST = "custom_list", "List / Smart List"
     RECENTLY_UNRATED = "recently_unrated", "Recently Played - Not Rated"
+    WATCH_HISTORY = "watch_history", "Activity Journal"
+    SHELF_RESUME = "shelf_resume", "Resume"
+    SHELF_STALE = "shelf_stale", "Stale"
+    SHELF_UNSTARTED = "shelf_unstarted", "Unstarted"
+    SHELF_FINISHED = "shelf_finished", "Finished"
 
 
 # kept: unrenamed model field/class names and help_text below (avoids a migration; see plan)
@@ -1184,6 +1189,14 @@ class User(AbstractUser):
     home_show_media_type_headers = models.BooleanField(
         default=False,
         help_text="Show a media-type header (icon + name) above each group of home screen rows",
+    )
+    home_binge_grouping_enabled = models.BooleanField(
+        default=True,
+        help_text="Group consecutive episodes of the same series into a single expandable card in the home activity journal",
+    )
+    home_stale_days_threshold = models.PositiveIntegerField(
+        default=21,
+        help_text="Number of inactive days before an in-progress title is considered stale",
     )
     home_screen_media_type_order = models.JSONField(
         default=list,
