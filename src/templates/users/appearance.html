@@ -119,6 +119,8 @@
           <span x-show="logoStyle === 'text'"
                 x-cloak
                 class="brand-wordmark"
+                :data-brand-font="logoTextFont"
+                :style="{ '--brand-font-size': logoTextSize + 'px', '--brand-font-weight': logoTextWeight, '--brand-letter-spacing': logoTextSpacing + 'px' }"
                 x-text="logoText || 'Floppy'"></span>
           {% if user.custom_logo_data %}
             <img x-show="logoStyle === 'custom'"
@@ -147,6 +149,54 @@
                    x-model="logoText"
                    class="w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[var(--color-text)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30">
           </label>
+          <div x-show="logoStyle === 'text'"
+               x-cloak
+               class="grid gap-4 sm:grid-cols-2">
+            <label class="block">
+              <span class="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Font</span>
+              <select name="logo_text_font"
+                      x-model="logoTextFont"
+                      class="w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[var(--color-text)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30">
+                {% for value, label in logo_text_font_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label class="block">
+              <span class="mb-2 flex items-center justify-between gap-3 text-sm font-medium text-[var(--color-text-secondary)]">
+                <span>Size</span>
+                <output class="font-mono text-xs text-[var(--color-text-muted)]"
+                        x-text="logoTextSize + 'px'"></output>
+              </span>
+              <input type="range"
+                     name="logo_text_size"
+                     min="16"
+                     max="40"
+                     step="1"
+                     x-model.number="logoTextSize"
+                     class="w-full accent-[var(--color-accent)]">
+            </label>
+            <label class="block">
+              <span class="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Weight</span>
+              <select name="logo_text_weight"
+                      x-model.number="logoTextWeight"
+                      class="w-full rounded-lg border border-[var(--color-surface-border)] bg-[var(--color-surface)] px-3 py-2.5 text-[var(--color-text)] focus:border-[var(--color-accent)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30">
+                {% for value, label in logo_text_weight_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+              </select>
+            </label>
+            <label class="block">
+              <span class="mb-2 flex items-center justify-between gap-3 text-sm font-medium text-[var(--color-text-secondary)]">
+                <span>Letter spacing</span>
+                <output class="font-mono text-xs text-[var(--color-text-muted)]"
+                        x-text="logoTextSpacing + 'px'"></output>
+              </span>
+              <input type="range"
+                     name="logo_text_spacing"
+                     min="-2"
+                     max="6"
+                     step="1"
+                     x-model.number="logoTextSpacing"
+                     class="w-full accent-[var(--color-accent)]">
+            </label>
+          </div>
           <label x-show="logoStyle === 'custom'" x-cloak class="block">
             <span class="mb-2 block text-sm font-medium text-[var(--color-text-secondary)]">Custom image</span>
             <input type="file"
@@ -254,6 +304,10 @@
         theme: '{{ appearance_theme|escapejs }}',
         logoStyle: '{{ user.logo_style|escapejs }}',
         logoText: '{{ user.logo_text|escapejs }}',
+        logoTextFont: '{{ user.logo_text_font|escapejs }}',
+        logoTextSize: {{ user.logo_text_size }},
+        logoTextWeight: {{ user.logo_text_weight }},
+        logoTextSpacing: {{ user.logo_text_spacing }},
         palette: {},
         families: {},
         layouts: {},

@@ -4,6 +4,13 @@ from io import BytesIO
 from django.core.exceptions import ValidationError
 from PIL import Image, UnidentifiedImageError
 
+from users.models import (
+    LOGO_TEXT_SIZES,
+    LOGO_TEXT_SPACINGS,
+    LogoTextFontChoices,
+    LogoTextWeightChoices,
+)
+
 MAX_LOGO_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_LOGO_DATA_URL_LENGTH = 40_000
 MAX_LOGO_SIZE = (256, 64)
@@ -14,6 +21,7 @@ UNSUPPORTED_IMAGE_MESSAGE = "Use a PNG, JPEG, or WebP logo image."
 INVALID_IMAGE_MESSAGE = "Use a valid PNG, JPEG, or WebP logo image."
 COMPLEX_IMAGE_MESSAGE = "The normalized logo image is still too complex."
 LONG_TEXT_MESSAGE = "Logo text must be 32 characters or fewer."
+INVALID_TEXT_STYLE_MESSAGE = "Choose valid text logo typography settings."
 
 
 def normalize_logo_upload(upload):
@@ -52,3 +60,20 @@ def normalize_logo_text(value):
     if len(cleaned) > MAX_LOGO_TEXT_LENGTH:
         raise ValidationError(LONG_TEXT_MESSAGE)
     return cleaned
+
+
+def normalize_logo_text_style(font, size, weight, spacing):
+    """Return bounded typography values safe to expose as CSS variables."""
+    try:
+        normalized = (font, int(size), int(weight), int(spacing))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(INVALID_TEXT_STYLE_MESSAGE) from exc
+
+    if (
+        normalized[0] not in LogoTextFontChoices.values
+        or normalized[1] not in LOGO_TEXT_SIZES
+        or normalized[2] not in LogoTextWeightChoices.values
+        or normalized[3] not in LOGO_TEXT_SPACINGS
+    ):
+        raise ValidationError(INVALID_TEXT_STYLE_MESSAGE)
+    return normalized

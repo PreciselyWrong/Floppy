@@ -235,6 +235,30 @@ class LogoStyleChoices(models.TextChoices):
     HIDDEN = "hidden", "Hidden"
 
 
+class LogoTextFontChoices(models.TextChoices):
+    """Safe local font stacks available to text wordmarks."""
+
+    DISPLAY = "display", "Floppy display"
+    SANS = "sans", "Clean sans"
+    SERIF = "serif", "Editorial serif"
+    MONO = "mono", "Technical mono"
+
+
+class LogoTextWeightChoices(models.IntegerChoices):
+    """Font weights available to text wordmarks."""
+
+    REGULAR = 400, "Regular"
+    MEDIUM = 500, "Medium"
+    SEMIBOLD = 600, "Semibold"
+    BOLD = 700, "Bold"
+    EXTRABOLD = 800, "Extra bold"
+    BLACK = 900, "Black"
+
+
+LOGO_TEXT_SIZES = tuple(range(16, 41))
+LOGO_TEXT_SPACINGS = tuple(range(-2, 7))
+
+
 class TimeFormatChoices(models.TextChoices):
     """Choices for time format preferences."""
 
@@ -1080,6 +1104,31 @@ class User(AbstractUser):
         max_length=32,
         default="Floppy",
         help_text="Short navigation wordmark",
+    )
+
+    logo_text_font = models.CharField(
+        max_length=12,
+        default=LogoTextFontChoices.DISPLAY,
+        choices=LogoTextFontChoices.choices,
+        help_text="Font family used by the navigation wordmark",
+    )
+
+    logo_text_size = models.PositiveSmallIntegerField(
+        default=23,
+        choices=[(value, f"{value}px") for value in LOGO_TEXT_SIZES],
+        help_text="Font size used by the navigation wordmark",
+    )
+
+    logo_text_weight = models.PositiveSmallIntegerField(
+        default=LogoTextWeightChoices.EXTRABOLD,
+        choices=LogoTextWeightChoices.choices,
+        help_text="Font weight used by the navigation wordmark",
+    )
+
+    logo_text_spacing = models.SmallIntegerField(
+        default=-1,
+        choices=[(value, f"{value}px") for value in LOGO_TEXT_SPACINGS],
+        help_text="Letter spacing used by the navigation wordmark",
     )
 
     custom_logo_data = models.TextField(

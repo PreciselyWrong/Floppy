@@ -68,6 +68,8 @@ from users.models import (
     ImportFrequencyChoices,
     ImportModeChoices,
     LogoStyleChoices,
+    LogoTextFontChoices,
+    LogoTextWeightChoices,
     MediaCardSubtitleDisplayChoices,
     MetadataSourceDefaultChoices,
     MobileGridLayoutChoices,
@@ -914,6 +916,17 @@ def appearance(request):
             logo_text = branding.normalize_logo_text(
                 request.POST.get("logo_text", request.user.logo_text)
             )
+            (
+                logo_text_font,
+                logo_text_size,
+                logo_text_weight,
+                logo_text_spacing,
+            ) = branding.normalize_logo_text_style(
+                request.POST.get("logo_text_font", request.user.logo_text_font),
+                request.POST.get("logo_text_size", request.user.logo_text_size),
+                request.POST.get("logo_text_weight", request.user.logo_text_weight),
+                request.POST.get("logo_text_spacing", request.user.logo_text_spacing),
+            )
             custom_logo_data = request.user.custom_logo_data
             if logo_style == LogoStyleChoices.CUSTOM and logo_upload is not None:
                 custom_logo_data = branding.normalize_logo_upload(logo_upload)
@@ -926,6 +939,10 @@ def appearance(request):
         request.user.detail_page_layouts = detail_layouts
         request.user.logo_style = logo_style
         request.user.logo_text = logo_text
+        request.user.logo_text_font = logo_text_font
+        request.user.logo_text_size = logo_text_size
+        request.user.logo_text_weight = logo_text_weight
+        request.user.logo_text_spacing = logo_text_spacing
         request.user.custom_logo_data = custom_logo_data
         request.user.save(
             update_fields=[
@@ -934,6 +951,10 @@ def appearance(request):
                 "detail_page_layouts",
                 "logo_style",
                 "logo_text",
+                "logo_text_font",
+                "logo_text_size",
+                "logo_text_weight",
+                "logo_text_spacing",
                 "custom_logo_data",
             ]
         )
@@ -961,6 +982,8 @@ def appearance(request):
         "custom_theme_effects": appearance_config.CUSTOM_THEME_EFFECTS,
         "appearance_theme": request.user.theme,
         "logo_style_choices": LogoStyleChoices.choices,
+        "logo_text_font_choices": LogoTextFontChoices.choices,
+        "logo_text_weight_choices": LogoTextWeightChoices.choices,
         "custom_theme_json": palette,
         "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
         "detail_layouts_json": appearance_config.resolved_detail_layouts(

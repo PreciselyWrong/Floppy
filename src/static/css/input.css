@@ -4,6 +4,14 @@
   --breakpoint-xs: 30rem;
 }
 
+@font-face {
+  font-family: "Floppy Display";
+  src: url("/static/fonts/roboto-flex.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 100 1000;
+}
+
 :root {
   --color-surface: #2a2f35;
   --color-surface-strong: #39404b;
@@ -489,10 +497,15 @@ main > .container,
   flex-shrink: 0;
   min-width: 0;
   align-items: center;
-  transform-origin: left center;
+  transform-origin: center;
   transition:
     transform var(--motion-duration) var(--motion-ease),
     filter var(--motion-duration) var(--motion-ease);
+}
+
+.sidebar-brand-slot .brand-link {
+  width: 100%;
+  justify-content: center;
 }
 
 .brand-link:active {
@@ -523,20 +536,35 @@ main > .container,
 
 .brand-wordmark {
   overflow: hidden;
+  min-width: 0;
   max-width: 11rem;
   color: var(--color-text);
-  font-size: 1.45rem;
-  font-weight: 800;
-  letter-spacing: -0.055em;
+  font-family: "Floppy Display", ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--brand-font-size, 23px);
+  font-weight: var(--brand-font-weight, 800);
+  letter-spacing: var(--brand-letter-spacing, -1px);
   line-height: 1;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
   text-shadow: 0 1px 0 color-mix(in srgb, var(--color-page-bg) 55%, transparent);
 }
 
+.brand-wordmark[data-brand-font="sans"] {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.brand-wordmark[data-brand-font="serif"] {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+}
+
+.brand-wordmark[data-brand-font="mono"] {
+  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+}
+
 .brand-link-large .brand-wordmark {
   max-width: 18rem;
-  font-size: 2.4rem;
+  font-size: calc(var(--brand-font-size, 23px) * 1.4);
 }
 
 html.glass .brand-wordmark {
