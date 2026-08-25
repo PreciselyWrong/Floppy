@@ -374,6 +374,46 @@
           </div>
         </div>
 
+        <!-- Home Playback Links -->
+        <div class="p-3 bg-[var(--color-surface-strong)] rounded-md mt-4">
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-[var(--color-text-secondary)] text-sm font-medium">Home Playback</label>
+            <span class="text-[var(--color-text-muted)] text-xs">Episode details and links.</span>
+          </div>
+          <div class="space-y-3">
+            <label class="flex items-center justify-between gap-3 cursor-pointer">
+              <span>
+                <span class="block text-[var(--color-text-secondary)] text-sm">Show SxxExx in Up Next</span>
+                <span class="block text-[var(--color-text-muted)] text-xs mt-1">Keep the season and episode code visible on the card.</span>
+              </span>
+              <span class="relative inline-flex items-center shrink-0">
+                <input type="hidden" name="show_up_next_episode_code" value="0">
+                <input class="sr-only peer"
+                       type="checkbox"
+                       name="show_up_next_episode_code"
+                       value="1"
+                       {% if user.show_up_next_episode_code %}checked{% endif %}>
+                <span class="w-9 h-5 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-px after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4.5 after:w-4.5 after:transition-all peer-checked:bg-indigo-600"></span>
+              </span>
+            </label>
+            <label class="flex items-center justify-between gap-3 cursor-pointer">
+              <span>
+                <span class="block text-[var(--color-text-secondary)] text-sm">Open Now Playing episode</span>
+                <span class="block text-[var(--color-text-muted)] text-xs mt-1">Open the episode page instead of its season.</span>
+              </span>
+              <span class="relative inline-flex items-center shrink-0">
+                <input type="hidden" name="now_playing_open_episode" value="0">
+                <input class="sr-only peer"
+                       type="checkbox"
+                       name="now_playing_open_episode"
+                       value="1"
+                       {% if user.now_playing_open_episode %}checked{% endif %}>
+                <span class="w-9 h-5 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-px after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4.5 after:w-4.5 after:transition-all peer-checked:bg-indigo-600"></span>
+              </span>
+            </label>
+          </div>
+        </div>
+
         <!-- Media Card Progress Bar -->
         <div class="p-3 bg-[var(--color-surface-strong)] rounded-md mt-4">
           <div class="flex items-center justify-between">

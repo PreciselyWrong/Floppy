@@ -319,6 +319,7 @@ class HomeRowEntry:
     podcast_show: object | None = None
     show_progress_controls: bool = True
     subtitle_override: object | None = None
+    subtitle_always_visible: bool = False
 
 
 def resolve_home_row_direction(sort_by: str, direction: str | None = None) -> str:
@@ -2057,16 +2058,24 @@ def _up_next_entries(user) -> list[HomeRowEntry]:
         if target is not None:
             season, episode_number = target
             season_number = getattr(season.item, "season_number", 0) or 0
-            subtitle = f"S{season_number:02d}E{episode_number:02d}"
+            show_episode_code = getattr(user, "show_up_next_episode_code", True)
+            subtitle = (
+                f"S{season_number:02d}E{episode_number:02d}"
+                if show_episode_code
+                else None
+            )
+            subtitle_always_visible = bool(subtitle)
         else:
             subtitle = BasicMedia.objects._next_episode_air_date_value(media)
             if subtitle is None:
                 continue
+            subtitle_always_visible = False
         return [
             HomeRowEntry(
                 item=media.item,
                 media=media,
                 subtitle_override=subtitle,
+                subtitle_always_visible=subtitle_always_visible,
             )
         ]
     return []

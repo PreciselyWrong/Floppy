@@ -15,7 +15,8 @@ class HomeUpNextTests(SimpleTestCase):
             get_enabled_media_types=lambda: [
                 MediaTypes.TV.value,
                 MediaTypes.ANIME.value,
-            ]
+            ],
+            show_up_next_episode_code=True,
         )
 
     def test_ready_episode_is_selected_from_latest_active_title(self):
@@ -40,6 +41,29 @@ class HomeUpNextTests(SimpleTestCase):
         self.assertIs(entries[0].item, item)
         self.assertIs(entries[0].media, media)
         self.assertEqual(entries[0].subtitle_override, "S01E03")
+        self.assertTrue(entries[0].subtitle_always_visible)
+
+    def test_episode_code_can_be_hidden(self):
+        self.user.show_up_next_episode_code = False
+        season = SimpleNamespace(item=SimpleNamespace(season_number=1))
+        item = SimpleNamespace(media_type=MediaTypes.TV.value, title="The Show")
+        media = SimpleNamespace(
+            item=item,
+            progressed_at=timezone.now(),
+            next_episode_target=lambda: (season, 3),
+        )
+
+        with patch.object(
+            home_screen.BasicMedia.objects,
+            "get_media_list",
+            side_effect=lambda _user, media_type, *_args, **_kwargs: (
+                [media] if media_type == MediaTypes.TV.value else []
+            ),
+        ):
+            entries = home_screen._up_next_entries(self.user)
+
+        self.assertEqual(entries[0].subtitle_override, None)
+        self.assertFalse(entries[0].subtitle_always_visible)
 
     def test_announced_release_is_used_when_no_episode_is_ready(self):
         release = timezone.now() + timedelta(days=2)
