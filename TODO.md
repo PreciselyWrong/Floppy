@@ -5,11 +5,13 @@
 - [ ] Committer, intégrer dans `custom`, puis déployer et tester la section configurable `All media` avec sa rangée `In progress` transversale.
   - Validation locale terminée : 50 tests Home, Ruff, contrôle Django et génération Tailwind stable.
   - Inclure uniquement la migration 0128; la migration 0129 appartient à l’autre feature active dans ce worktree partagé.
+  - Chaque rangée `All media` doit permettre d’activer ou désactiver séparément les familles disponibles, notamment la musique, les jeux, les livres, les films et les séries.
   - Tests à faire avant `Done` :
     - [ ] Ajouter, supprimer et réordonner une rangée `All media`.
     - [ ] Afficher `In progress` avec plusieurs types activés et vérifier le mélange des résultats.
     - [ ] Vérifier les filtres, la position sauvegardée et la migration d’un profil existant.
     - [ ] Tester l’absence de rangée quand aucun résultat ne correspond.
+    - [ ] Vérifier la sélection, la persistance et la validation des familles incluses dans chaque rangée.
 
 ## Next
 
@@ -90,5 +92,6 @@
 - Rangée d’historique configurable sur Home avec chargement progressif.
 - Rapprochement de la Home Web avec Floppy Companion grâce à cinq améliorations configurables.
 - Recherche des sorties du calendrier par titre.
+- Options Home pour afficher `SxxExx` dans `Up Next` et ouvrir directement l’épisode depuis `Now Playing` (138 tests combinés, migration et Ruff validés).
 
 ## Dropped
