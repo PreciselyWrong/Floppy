@@ -6,12 +6,12 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
-| HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `4cb73773` | `sha-95affae96d503dd020bcda6d1e6d486625772c2c` | Pending | — | Deployed — 64 tests Home Screen, migrations 0130/0139/0140, preflight vert |
+| HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `4cb73773` | `sha-3d7a2b965ccca86aeb32dde0c806490214e306e6` | Pending | — | Deployed — 64 tests Home Screen, performance max-progress, étagères configurables, direction toggle, preflight vert |
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — calcul, affichage, options et préflight vert |
 | PWA-001 | Installable app experience | `feat/pwa-install` | `0a810b38` | `sha-2f3741c8d86dc66a0edfe8b08597d5ecb418eddf` | Changes requested | — | Development — installation non fonctionnelle rapportée par Nicolas |
 | UI-002 | Direct horizontal carousel gestures | `feat/horizontal-swipe` | `5a5b85fe` | `sha-c7b650655dc08564586be05467d0615be16f4881` | Works | — | Tested — gestes carrousels validés par Nicolas |
 | UI-003 | Home dropdown stacking | `fix/home-dropdown-stacking` | `01376542` | `sha-3e50935263dea21f97635e7cf269ce1d4d71513b` | Pending | — | Deployed — menus au-dessus des rangées voisines; 50 tests Home Screen, 9 tests de migrations, Ruff et préflight verts |
-| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `b6a1c25b` | `sha-36db84bc47a2d5eff6cb40bb2c80888e25dbe796` | Pending | — | Deployed — première carte alignée et hover entièrement visible, 38 tests ciblés, Ruff, Tailwind et préflight verts |
+| UI-001 | Appearance and detail layouts | `feat/user-appearance` | `eaf2f2d4` | Pending | Pending | — | Development — liseré interne et modales de suivi corrigés; validation et redéploiement en cours |
 | HOME-008 | Configurable Home history row | `feat/home-history-row` | `9f98baef` | `sha-a6762b17070dd7e56c0cfa23fcea3ad455558334` | Pending | — | Deployed — chargement progressif par lots de 14, 49 tests Home, migration `users` et Ruff validés |
 | HISTORY-001 | Consecutive episode grouping | `feat/history-consecutive` | `ab9821f7` | `sha-a6762b17070dd7e56c0cfa23fcea3ad455558334` | Pending | — | Deployed — regroupement par série et saison, 28 tests History et Ruff validés |
 | HOME-006 | Cross-media `In progress` row | `feat/home-all-media-ready` | `971877ff` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — 82 tests ciblés, migration de fusion, Ruff et préflight vert |
