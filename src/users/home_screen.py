@@ -18,6 +18,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from app.helpers import is_caught_up_media
+from app.history_cache_reader import get_recent_history_entries
 from app.models import (
     BasicMedia,
     Episode,
@@ -1100,6 +1101,8 @@ def row_title(row: HomeScreenRow, user) -> str:
         return "List / Smart List"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return RECENTLY_UNRATED_LABEL
+    if row.row_type == HomeScreenRowTypeChoices.HISTORY:
+        return "History"
     return describe_library_query(row.filters or {}, user, row.media_type)
 
 
@@ -1111,6 +1114,8 @@ def row_summary(row: HomeScreenRow, user) -> str:
         return "Choose a list or smart list"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return "Recent unrated plays from this library"
+    if row.row_type == HomeScreenRowTypeChoices.HISTORY:
+        return "Recent activity from this library"
     sort_choices = {
         choice["value"]: choice["label"]
         for choice in get_allowed_sort_choices(row.media_type, row.row_type)
@@ -1256,7 +1261,10 @@ def _row_payload_to_model(
             msg = f"Choose an accessible list for {media_type}."
             raise HomeScreenValidationError(msg)
         sort_choices = get_allowed_sort_choices(media_type, row_type)
-    elif row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    elif row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.HISTORY,
+    }:
         sort_choices = []
     else:
         filters = validate_library_row_filters(row_payload.get("filters"), media_type)
@@ -1264,7 +1272,10 @@ def _row_payload_to_model(
 
     allowed_sort_values = {choice["value"] for choice in sort_choices}
     sort_by = str(row_payload.get("sort_by") or "").strip()
-    if row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    if row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.HISTORY,
+    }:
         sort_by = HomeSortChoices.RECENT
         direction = _default_recent_row_direction()
     else:
@@ -1396,6 +1407,7 @@ def save_home_screen_configuration(user, raw_payload: str) -> None:
     )
     replacement_rows: list[HomeScreenRow] = []
     seen_recent_rows: set[str] = set()
+    seen_history_rows: set[str] = set()
     media_type_order: list[str] = []
 
     for section in parsed_payload:
@@ -1424,6 +1436,11 @@ def save_home_screen_configuration(user, raw_payload: str) -> None:
                         msg,
                     )
                 seen_recent_rows.add(media_type)
+            if model_row.row_type == HomeScreenRowTypeChoices.HISTORY:
+                if media_type in seen_history_rows:
+                    msg = f"Only one 'History' row is allowed for {media_type}."
+                    raise HomeScreenValidationError(msg)
+                seen_history_rows.add(media_type)
             replacement_rows.append(model_row)
 
     with transaction.atomic():
@@ -2403,6 +2420,9 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
     custom-list rows open the list itself. Sort, direction, layout and filters are
     encoded in the URL (the media list persists them like any normal navigation).
     """
+    if row.row_type == HomeScreenRowTypeChoices.HISTORY:
+        return f"{reverse('history')}?{urlencode({'media_type': row.media_type})}"
+
     # Custom-list rows open the list detail page.
     if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST and row.custom_list_id:
         base = row.custom_list.get_absolute_url()
@@ -2460,6 +2480,35 @@ def _build_row_section(
     collection_context_cache: dict | None = None,
 ) -> dict | None:
     """Build a single home-row section dict, or None when the row is empty."""
+    if row.row_type == HomeScreenRowTypeChoices.HISTORY:
+        entries, has_more = get_recent_history_entries(
+            user,
+            media_type,
+            limit=items_limit,
+            offset=batch_start,
+        )
+        if not entries and batch_start == 0:
+            return None
+        loaded_count = batch_start + len(entries)
+        title_main, title_detail = home_row_header_title_parts(row, user)
+        return {
+            "row_id": row.id,
+            "title": row_title(row, user),
+            "title_main": title_main,
+            "title_detail": title_detail,
+            "url": home_row_destination_url(row, user),
+            "summary": row_summary(row, user),
+            "summary_inline": None,
+            "direction": row.direction,
+            "items": entries,
+            "total": loaded_count + (1 if has_more else 0),
+            "loaded_count": loaded_count,
+            "show_played_chip": False,
+            "card_width_class": "w-44",
+            "grid_class": "media-grid",
+            "grid_template": "app/components/home_history_grid.html",
+            "poll_for_covers": False,
+        }
     if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST:
         entries = _custom_list_entries(user, row)
     elif row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
@@ -2525,6 +2574,15 @@ def _cached_row_section(
     Empty rows are cached with a sentinel so their (potentially expensive)
     smart-rule scans are also skipped on warm loads.
     """
+    if row.row_type == HomeScreenRowTypeChoices.HISTORY:
+        return _build_row_section(
+            user,
+            row,
+            media_type,
+            items_limit,
+            collection_context_cache=collection_context_cache,
+        )
+
     from django.core.cache import cache
 
     from app import cache_utils

@@ -448,7 +448,10 @@ def home(request):
                 return HttpResponse("")
             response = render(
                 request,
-                "app/components/home_grid.html",
+                target_row.get(
+                    "grid_template",
+                    "app/components/home_grid.html",
+                ),
                 {
                     "media_list": target_row,
                     "user": request.user,

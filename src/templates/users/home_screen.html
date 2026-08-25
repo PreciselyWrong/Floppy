@@ -252,6 +252,12 @@
                             </div>
                           </template>
 
+                          <template x-if="row.row_type === 'history'">
+                            <div class="px-2 py-2 text-sm text-slate-300">
+                              Recent activity
+                            </div>
+                          </template>
+
                           <button type="button"
                                   class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-400 hover:text-red-400 hover:bg-red-400/10 transition-opacity duration-200 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 cursor-pointer"
                                   @click.stop="removeRow(section, row.client_id)">
@@ -320,6 +326,14 @@
                             :class="{ 'opacity-50 cursor-not-allowed': section.rows.some(row => row.row_type === 'recently_unrated') }">
                       {% include "app/icons/history.svg" with classes="mr-2 h-4 w-4" %}
                       Recently Played Row
+                    </button>
+                    <button type="button"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'history'); section.addRowMenuOpen = false"
+                            :disabled="section.rows.some(row => row.row_type === 'history')"
+                            :class="{ 'opacity-50 cursor-not-allowed': section.rows.some(row => row.row_type === 'history') }">
+                      {% include "app/icons/history.svg" with classes="mr-2 h-4 w-4" %}
+                      History Row
                     </button>
                   </div>
                 </div>
@@ -435,6 +449,7 @@
         rowTypeLabel(type) {
           if (type === 'library_query') return 'Library Row';
           if (type === 'custom_list') return 'List / Smart List';
+          if (type === 'history') return 'History';
           return 'Recently Played';
         },
         rowAutoTitle(section, row) {
@@ -443,6 +458,9 @@
           }
           if (row.row_type === 'recently_unrated') {
             return 'Recently Played - Not Rated';
+          }
+          if (row.row_type === 'history') {
+            return 'History';
           }
           return this.describeFilters(section, row);
         },
@@ -584,7 +602,7 @@
           return statusField?.options || [];
         },
         defaultSortValue(section, rowType) {
-          if (rowType === 'recently_unrated') return 'recent';
+          if (rowType === 'recently_unrated' || rowType === 'history') return 'recent';
           const defaultSortChoices = rowType === 'custom_list'
             ? (section.sort_choices.custom_list || [])
             : (section.sort_choices.library_query || []);
@@ -663,7 +681,7 @@
           return section.sort_choices.library_query || [];
         },
         addRow(section, rowType) {
-          if (rowType === 'recently_unrated' && section.rows.some(row => row.row_type === 'recently_unrated')) {
+          if (['recently_unrated', 'history'].includes(rowType) && section.rows.some(row => row.row_type === rowType)) {
             return;
           }
           const defaultSort = this.defaultSortValue(section, rowType);
@@ -675,8 +693,8 @@
             row_type: rowType,
             custom_list_id: null,
             custom_list_name: '',
-            sort_by: rowType === 'recently_unrated' ? 'recent' : defaultSort,
-            direction: rowType === 'recently_unrated' ? 'desc' : this.defaultSortDirection(defaultSort),
+            sort_by: ['recently_unrated', 'history'].includes(rowType) ? 'recent' : defaultSort,
+            direction: ['recently_unrated', 'history'].includes(rowType) ? 'desc' : this.defaultSortDirection(defaultSort),
             filters: this.defaultFilters(section, rowType),
             editorOpen: rowType === 'custom_list',
             listQuery: '',
