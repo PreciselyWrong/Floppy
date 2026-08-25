@@ -40,7 +40,8 @@ from integrations.models import (
     PlexWebhookShare,
 )
 from integrations.plex_watchlist import WATCHLIST_TASK_NAME
-from users import cache_management
+from users import appearance as appearance_config
+from users import branding, cache_management
 from users.forms import (
     AuthenticatorSetupForm,
     NotificationSettingsForm,
@@ -66,6 +67,8 @@ from users.models import (
     ImportFrequencyChoices,
     ImportModeChoices,
     LogoStyleChoices,
+    LogoTextFontChoices,
+    LogoTextWeightChoices,
     MediaCardSubtitleDisplayChoices,
     MetadataSourceDefaultChoices,
     MobileGridLayoutChoices,
@@ -845,8 +848,119 @@ def toggle_obfuscate_episodes(request):
 
 @require_GET
 def ui_preferences(request):
-    """Redirect to sidebar page (UI preferences renamed to Sidebar)."""
-    return redirect("sidebar")
+    """Redirect the legacy UI settings URL to Appearance."""
+    return redirect("appearance")
+
+
+@require_http_methods(["GET", "POST"])
+def appearance(request):
+    """Configure branding, application colors, and detail page composition."""
+    if request.method == "POST":
+        if request.user.is_demo:
+            messages.error(request, "This section is view-only for demo accounts.")
+            return redirect("appearance")
+
+        theme = request.POST.get("theme")
+        if theme not in ThemeChoices.values:
+            messages.error(request, "Unsupported theme.")
+            return redirect("appearance")
+        logo_style = request.POST.get("logo_style", request.user.logo_style)
+        if logo_style not in LogoStyleChoices.values:
+            messages.error(request, "Unsupported logo style.")
+            return redirect("appearance")
+        logo_upload = request.FILES.get("logo_upload")
+        if (
+            logo_style == LogoStyleChoices.CUSTOM
+            and logo_upload is None
+            and not request.user.custom_logo_data
+        ):
+            messages.error(request, "Choose an image for the custom logo.")
+            return redirect("appearance")
+        try:
+            custom_theme = appearance_config.parse_custom_theme(
+                request.POST.get("custom_theme")
+            )
+            detail_layouts = appearance_config.parse_detail_layouts(
+                request.POST.get("detail_layouts")
+            )
+            logo_text = branding.normalize_logo_text(
+                request.POST.get("logo_text", request.user.logo_text)
+            )
+            (
+                logo_text_font,
+                logo_text_size,
+                logo_text_weight,
+                logo_text_spacing,
+            ) = branding.normalize_logo_text_style(
+                request.POST.get("logo_text_font", request.user.logo_text_font),
+                request.POST.get("logo_text_size", request.user.logo_text_size),
+                request.POST.get("logo_text_weight", request.user.logo_text_weight),
+                request.POST.get("logo_text_spacing", request.user.logo_text_spacing),
+            )
+            custom_logo_data = request.user.custom_logo_data
+            if logo_style == LogoStyleChoices.CUSTOM and logo_upload is not None:
+                custom_logo_data = branding.normalize_logo_upload(logo_upload)
+        except ValidationError as exc:
+            messages.error(request, exc.messages[0])
+            return redirect("appearance")
+
+        request.user.theme = theme
+        request.user.custom_theme = custom_theme
+        request.user.detail_page_layouts = detail_layouts
+        request.user.logo_style = logo_style
+        request.user.logo_text = logo_text
+        request.user.logo_text_font = logo_text_font
+        request.user.logo_text_size = logo_text_size
+        request.user.logo_text_weight = logo_text_weight
+        request.user.logo_text_spacing = logo_text_spacing
+        request.user.custom_logo_data = custom_logo_data
+        request.user.save(
+            update_fields=[
+                "theme",
+                "custom_theme",
+                "detail_page_layouts",
+                "logo_style",
+                "logo_text",
+                "logo_text_font",
+                "logo_text_size",
+                "logo_text_weight",
+                "logo_text_spacing",
+                "custom_logo_data",
+            ]
+        )
+        messages.success(request, "Appearance updated")
+        return redirect("appearance")
+
+    saved_palette = (
+        request.user.custom_theme
+        if isinstance(request.user.custom_theme, dict)
+        else {}
+    )
+    palette = {
+        key: saved_palette.get(key, definition["default"])
+        for key, definition in appearance_config.CUSTOM_THEME_COLORS.items()
+    }
+    palette.update(
+        {
+            key: saved_palette.get(key, definition["default"])
+            for key, definition in appearance_config.CUSTOM_THEME_EFFECTS.items()
+        }
+    )
+    context = {
+        "theme_presets": appearance_config.THEME_PRESETS,
+        "custom_theme_colors": appearance_config.CUSTOM_THEME_COLORS,
+        "custom_theme_effects": appearance_config.CUSTOM_THEME_EFFECTS,
+        "appearance_theme": request.user.theme,
+        "logo_style_choices": LogoStyleChoices.choices,
+        "logo_text_font_choices": LogoTextFontChoices.choices,
+        "logo_text_weight_choices": LogoTextWeightChoices.choices,
+        "custom_theme_json": palette,
+        "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
+        "detail_layouts_json": appearance_config.resolved_detail_layouts(
+            request.user.detail_page_layouts
+        ),
+    }
+    return render(request, "users/appearance.html", context)
 
 
 @require_http_methods(["GET", "POST"])
@@ -901,7 +1015,6 @@ def preferences(request):
         selected_media_types = request.POST.getlist("media_types_checkboxes")
         date_format = request.POST.get("date_format")
         theme = request.POST.get("theme")
-        logo_style = request.POST.get("logo_style")
         time_format = request.POST.get("time_format")
         activity_history_view = request.POST.get("activity_history_view")
         game_logging_style = request.POST.get("game_logging_style")
@@ -972,14 +1085,6 @@ def preferences(request):
         ):
             request.user.theme = theme
             fields_to_update.append("theme")
-
-        if (
-            logo_style
-            and logo_style in LogoStyleChoices.values
-            and request.user.logo_style != logo_style
-        ):
-            request.user.logo_style = logo_style
-            fields_to_update.append("logo_style")
 
         if (
             time_format
