@@ -88,6 +88,7 @@
 - Logo centré, masquable ou personnalisable, avec typographie du mot-symbole réglable.
 - Moyenne publique pondérée configurable avec détail des sources et des votes.
 - Thèmes classiques et modernes distincts, avec mise en page configurable des fiches.
+- Modales de suivi toujours centrées dans la fenêtre après les animations d’apparence.
 - Affichage de `SxxExx` pour le prochain épisode connu dans `Up Next`.
 - Regroupement des épisodes consécutifs dans l'historique.
 - Rangée d'historique configurable sur Home avec chargement progressif.
