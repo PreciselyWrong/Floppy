@@ -94,6 +94,7 @@ docker compose up -d
 - ⛔ Coder une rangée Home hors de la configuration existante — chaque rangée doit rester ajoutable, supprimable et ordonnable.
 - ⛔ Remplacer le besoin « In progress » transversal par une rangée par média — un seul endroit doit couvrir toutes les familles activées.
 - ⛔ Remplacer l'identité d'un prochain épisode par sa seule date — conserver `SxxExx` quand les numéros sont connus.
+- ⛔ Ajouter un menu dans une rangée configurable sans promouvoir la rangée ouverte au-dessus de ses sœurs — leurs bordures et contrôles peuvent recouvrir la liste déroulante.
 
 ## Pièges
 
