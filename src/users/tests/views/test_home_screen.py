@@ -2744,4 +2744,3 @@ class HomeScreenCompanionParityTests(TestCase):
         item_ids = [entry.item.id for entry in entries]
         self.assertIn(show_item.id, item_ids)
         self.assertNotIn(season_item.id, item_ids)
-
