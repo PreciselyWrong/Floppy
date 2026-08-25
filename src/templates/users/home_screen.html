@@ -94,7 +94,7 @@
                              x-transition:leave-start="opacity-100"
                              x-transition:leave-end="opacity-0"
                              class="flex shrink-0 items-center gap-1 whitespace-nowrap">
-                          <template x-if="row.row_type === 'library_query'">
+                          <template x-if="['library_query', 'shelf_resume', 'shelf_stale', 'shelf_unstarted', 'shelf_finished', 'watch_history'].includes(row.row_type)">
                             <div class="relative filter-control"
                                  @click.outside="if (openMenu === 'filter') { openMenu = null; filterView = 'root'; filterSearch = ''; }">
                               <button type="button"
@@ -198,7 +198,7 @@
                             </div>
                           </template>
 
-                          <template x-if="['library_query', 'custom_list'].includes(row.row_type)">
+                          <template x-if="['library_query', 'custom_list', 'shelf_resume', 'shelf_stale', 'shelf_unstarted', 'shelf_finished'].includes(row.row_type)">
                             <div class="relative filter-control" @click.outside="if (openMenu === 'sort') openMenu = null">
                               <button type="button"
                                       class="flex items-center px-2 py-2 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors cursor-pointer"
@@ -854,7 +854,14 @@
           });
         },
         defaultFilters(section, rowType) {
-          if (rowType === 'watch_history') return { excluded_families: [] };
+          if (rowType === 'watch_history') {
+            const defaults = { binge_grouping: true };
+            if (section.media_type === 'all') {
+              const mediaTypeField = this.fieldDefinition(section, 'media_types');
+              defaults.media_types = (mediaTypeField?.options || []).map(option => option.value);
+            }
+            return defaults;
+          }
           if (!['library_query', 'shelf_resume', 'shelf_stale', 'shelf_unstarted', 'shelf_finished'].includes(rowType)) return {};
           let defaultStatus = ['In progress'];
           if (rowType === 'shelf_unstarted') defaultStatus = ['Planning'];

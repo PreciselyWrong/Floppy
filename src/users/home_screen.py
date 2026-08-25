@@ -1142,11 +1142,17 @@ def _all_media_type_selection(user, filters: dict | None) -> list[str]:
 
 
 def _serialize_settings_row(user, row: HomeScreenRow, media_type: str) -> dict:
-    filters = (
-        _normalized_filter_payload(row.filters, media_type)
-        if row.row_type == HomeScreenRowTypeChoices.LIBRARY_QUERY
-        else {}
-    )
+    if row.row_type in {
+        HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        HomeScreenRowTypeChoices.SHELF_RESUME,
+        HomeScreenRowTypeChoices.SHELF_STALE,
+        HomeScreenRowTypeChoices.SHELF_UNSTARTED,
+        HomeScreenRowTypeChoices.SHELF_FINISHED,
+        HomeScreenRowTypeChoices.WATCH_HISTORY,
+    }:
+        filters = _normalized_filter_payload(row.filters, media_type)
+    else:
+        filters = {}
     if media_type == HOME_ALL_MEDIA_TYPE:
         filters["media_types"] = _all_media_type_selection(user, row.filters)
     return {
@@ -2580,6 +2586,9 @@ def sort_home_entries(
     )
 
 
+MAX_HOME_ROW_TOTAL_ENTRIES = 60
+
+
 def _library_query_entries(
     user, row: HomeScreenRow, collection_context_cache: dict | None = None,
 ) -> list[HomeRowEntry]:
@@ -2592,14 +2601,14 @@ def _library_query_entries(
                 normalized_filters,
                 row.sort_by,
                 row.direction,
-            )
+            )[:MAX_HOME_ROW_TOTAL_ENTRIES]
         if subview == MUSIC_SUBVIEW_ARTISTS:
             return _build_artist_home_entries(
                 user,
                 normalized_filters,
                 row.sort_by,
                 row.direction,
-            )
+            )[:MAX_HOME_ROW_TOTAL_ENTRIES]
         # MUSIC_SUBVIEW_TRACKS falls through to the standard Music/Item query below.
     status_filter = normalized_filters.get("status") or []
     rule_media_types = (
@@ -2666,7 +2675,7 @@ def _library_query_entries(
         entries, row.media_type, normalized_filters.get("progress", "all")
     )
     entries = _apply_stale_filter(entries, normalized_filters.get("stale_days", ""))
-    return sort_home_entries(entries, row.sort_by, row.direction)
+    return sort_home_entries(entries, row.sort_by, row.direction)[:MAX_HOME_ROW_TOTAL_ENTRIES]
 
 
 def _custom_list_entries(user, row: HomeScreenRow) -> list[HomeRowEntry]:
@@ -2880,7 +2889,7 @@ def _shelf_resume_entries(
         ts = _entry_activity_timestamp(entry)
         if ts is not None and ts >= cutoff_ts:
             resume_entries.append(entry)
-    return resume_entries
+    return resume_entries[:MAX_HOME_ROW_TOTAL_ENTRIES]
 
 
 def _shelf_stale_entries(
@@ -2912,7 +2921,7 @@ def _shelf_stale_entries(
         ts = _entry_activity_timestamp(entry)
         if ts is None or ts < cutoff_ts:
             stale_entries.append(entry)
-    return stale_entries
+    return stale_entries[:MAX_HOME_ROW_TOTAL_ENTRIES]
 
 
 def _shelf_unstarted_entries(
@@ -3077,13 +3086,12 @@ def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
     if not days:
         return None
 
-    excluded_families = set(row.filters.get("excluded_families") or [])
     if row.media_type != HOME_ALL_MEDIA_TYPE:
         target_media_types = {row.media_type}
     else:
-        target_media_types = (
-            set(get_enabled_home_media_types(user)) - excluded_families
-        )
+        target_media_types = set(get_enabled_home_media_types(user))
+        if "media_types" in (row.filters or {}):
+            target_media_types = set(_all_media_type_selection(user, row.filters))
 
     processed_days = []
     enable_binge = row.filters.get(
