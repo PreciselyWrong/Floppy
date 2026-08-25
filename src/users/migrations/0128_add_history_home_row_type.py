@@ -19,6 +19,7 @@ class Migration(migrations.Migration):
                     ("library_query", "Library Row"),
                     ("custom_list", "List / Smart List"),
                     ("recently_unrated", "Recently Played - Not Rated"),
+                    ("up_next", "Up Next"),
                     ("history", "History"),
                 ],
                 default="library_query",
@@ -33,6 +34,7 @@ class Migration(migrations.Migration):
                         "library_query",
                         "custom_list",
                         "recently_unrated",
+                        "up_next",
                         "history",
                     ]
                 ),

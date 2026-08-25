@@ -14,6 +14,9 @@ migration_0067 = import_module(
 migration_0090 = import_module(
     "users.migrations.0090_homescreenrow",
 )
+migration_0128_history = import_module(
+    "users.migrations.0128_add_history_home_row_type",
+)
 
 
 class _FakeCursor:
@@ -32,6 +35,18 @@ class _FakeCursor:
 
     def fetchall(self):
         return self.fetchall_results.pop(0)
+
+
+class Migration0128HistoryConstraintTests(SimpleTestCase):
+    def test_preserves_up_next_while_adding_history(self):
+        alter_field = migration_0128_history.Migration.operations[1]
+        add_constraint = migration_0128_history.Migration.operations[2]
+
+        field_choices = {value for value, _label in alter_field.field.choices}
+        allowed_row_types = set(add_constraint.constraint.condition.children[0][1])
+
+        self.assertIn("up_next", field_choices)
+        self.assertIn("up_next", allowed_row_types)
 
 
 class Migration0067NormalizationTests(SimpleTestCase):
