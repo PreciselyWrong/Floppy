@@ -1,14 +1,17 @@
 import json
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from PIL import Image
 
+from users import branding
 from users.appearance import DETAIL_LAYOUT_FAMILIES, THEME_PRESETS
 from users.models import LogoStyleChoices, ThemeChoices
 from users.templatetags.user_tags import detail_section_attrs
@@ -339,3 +342,29 @@ class AppearanceViewTests(TestCase):
             'data-detail-section="cast" hidden',
             str(detail_section_attrs(self.user, "episode", "content", "cast")),
         )
+
+    def test_comic_publishers_are_visible_by_default(self):
+        attributes = str(
+            detail_section_attrs(self.user, "comic", "sidebar", "studios")
+        )
+
+        self.assertIn('data-detail-section="studios" style="order:', attributes)
+        self.assertNotIn("hidden", attributes)
+
+
+class BrandingValidationTests(SimpleTestCase):
+    def test_logo_dimensions_are_rejected_before_pixel_data_is_loaded(self):
+        upload = SimpleUploadedFile("brand.png", b"png", content_type="image/png")
+        source = MagicMock(format="PNG", width=8192, height=8192)
+        source.__enter__.return_value = source
+
+        with (
+            patch.object(branding.Image, "open", return_value=source),
+            self.assertRaisesMessage(
+                ValidationError,
+                "Logo image dimensions are too large.",
+            ),
+        ):
+            branding.normalize_logo_upload(upload)
+
+        source.load.assert_not_called()

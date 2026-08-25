@@ -70,6 +70,7 @@ docker compose up -d
 - ⛔ Demander une confirmation pour committer ou intégrer dans `custom` après un milestone validé sans secret — Nicolas autorise ces deux étapes automatiquement.
 - ⛔ Amender un commit que Nicolas n'a pas vu — corriger avec un nouveau commit.
 - ⛔ Modifier `.github/workflows/**` dans une PR ordinaire — les gardes CI rejettent ces changements.
+- ⛔ Inclure `TODO.md` dans une PR upstream — la feuille de route est interne au fork et doit toujours rester hors du diff proposé au projet source.
 - ⛔ Copier une migration du projet source ou son étape intermédiaire — le graphe et les données du fork divergent.
 - ⛔ Mettre SQLite sur NFS, SMB/CIFS ou un partage réseau — le mode WAL ne le supporte pas.
 - ⛔ Ajouter `celery` aux queues du worker `interactive` — les tâches longues bloqueraient les actions utilisateur.
@@ -77,6 +78,7 @@ docker compose up -d
 - ⛔ Utiliser une classe Tailwind `dark:` — elle suit l'OS et contredit le choix de thème explicite de l'utilisateur.
 - ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
 - ⛔ Créer une liste horizontale de cartes sans le geste partagé `data-horizontal-scroll` — le doigt, la souris, le stylet et le clavier doivent tous pouvoir la parcourir.
+- ⛔ Laisser un effet de survol dépasser du scrollport sans réserver sa marge — le haut des affiches ne doit jamais être découpé au hover.
 - ⛔ Mettre en cache les pages, fragments ou données authentifiés dans la PWA — le service worker reste limité aux fichiers statiques publics.
 - ⛔ Supposer que toutes les fiches exposent le même champ de titre — épisodes, numéros et autres variantes doivent conserver leurs replis propres.
 - ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.

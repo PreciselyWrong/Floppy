@@ -159,6 +159,7 @@ DETAIL_LAYOUT_FAMILIES = {
                 ("history", "Your history"),
                 ("details", "Details"),
                 ("genres", "Genres"),
+                ("studios", "Studios"),
                 ("collection", "Collection"),
             ),
             "content": _zone(

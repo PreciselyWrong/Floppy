@@ -37,7 +37,9 @@ class ThemeTokenContractTests(SimpleTestCase):
         """`dark:` tracks the OS, not the user's chosen theme, so it must not appear."""
         offenders = []
         for path in _template_files():
-            for number, line in enumerate(path.read_text().splitlines(), start=1):
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
                 if DARK_VARIANT.search(line):
                     offenders.append(f"{path.name}:{number}")
 
@@ -52,7 +54,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         """Link and muted-copy colours must resolve through --color-* tokens."""
         offenders = []
         for path in _template_files():
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             for utility in BANNED_TEXT_UTILITIES:
                 if re.search(rf"(?<![\w:.-]){re.escape(utility)}(?![\w-])", content):
                     offenders.append(f"{path.name}: {utility}")
@@ -66,7 +68,9 @@ class ThemeTokenContractTests(SimpleTestCase):
 
     def test_system_light_tokens_exclude_every_explicit_theme(self):
         """An OS light preference must not override a saved theme preset."""
-        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
         explicit_themes = [theme for theme in THEME_PRESETS if theme != "system"]
         selector = ":root" + "".join(
             f":not(.{theme})" for theme in explicit_themes
@@ -90,14 +94,18 @@ class ThemeTokenContractTests(SimpleTestCase):
 
     def test_header_toggle_treats_explicit_presets_as_dark(self):
         """A light OS must not make the toggle misread a dark preset as light."""
-        template = Path(settings.BASE_DIR, "templates", "base.html").read_text()
+        template = Path(settings.BASE_DIR, "templates", "base.html").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("(!hasExplicitTheme && systemPrefersLight)", template)
         self.assertIn("html.classList.remove(...explicitThemes)", template)
 
     def test_every_explicit_theme_defines_shape_and_motion(self):
         """Radius and movement are part of each preset's identity."""
-        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
 
         for theme in (theme for theme in THEME_PRESETS if theme != "system"):
             block = re.search(rf"html\.{theme}\s*\{{(?P<body>.*?)\n\}}", css, re.DOTALL)
@@ -111,13 +119,17 @@ class ThemeTokenContractTests(SimpleTestCase):
                 self.assertIn(token, block.group("body"), f"{theme}: {token}")
 
     def test_motion_has_an_accessibility_killswitch(self):
-        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertIn("animation-duration: 0.01ms", css)
 
     def test_sidebar_logo_keeps_its_full_brand_dimensions(self):
-        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text()
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
         logo_rule = re.search(
             r"\.brand-built-in-image\s*\{(?P<body>.*?)\n\}",
             css,
@@ -128,3 +140,20 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("width: 9.875rem", logo_rule.group("body"))
         self.assertIn("height: 3rem", logo_rule.group("body"))
         self.assertIn("flex-shrink: 0", logo_rule.group("body"))
+
+    def test_home_rows_reserve_hover_lift_clearance(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        row_rule = re.search(
+            r"\.home-row-scrollbar-hidden\s*\{(?P<body>.*?)\n\}",
+            css,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(row_rule)
+        self.assertIn("var(--motion-distance)", row_rule.group("body"))
+        self.assertIn(
+            "padding-top: var(--home-row-hover-clearance)",
+            row_rule.group("body"),
+        )
