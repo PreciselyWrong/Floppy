@@ -6935,7 +6935,6 @@ html.light .theme-toggle-icon-moon {
   --home-row-hover-clearance: calc(max(0.25rem, var(--motion-distance)) + 0.25rem);
   -ms-overflow-style: none;
   scrollbar-width: none;
-  margin-inline: calc(var(--home-row-hover-clearance) * -1);
   margin-top: calc(var(--home-row-hover-clearance) * -1);
   padding-inline: var(--home-row-hover-clearance);
   padding-top: var(--home-row-hover-clearance);

@@ -79,6 +79,7 @@ docker compose up -d
 - ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
 - ⛔ Créer une liste horizontale de cartes sans le geste partagé `data-horizontal-scroll` — le doigt, la souris, le stylet et le clavier doivent tous pouvoir la parcourir.
 - ⛔ Laisser un effet de survol dépasser du scrollport sans réserver sa marge — le haut des affiches ne doit jamais être découpé au hover.
+- ⛔ Décaler horizontalement une rangée pour compenser son hover — la première carte doit rester alignée avec le titre.
 - ⛔ Mettre en cache les pages, fragments ou données authentifiés dans la PWA — le service worker reste limité aux fichiers statiques publics.
 - ⛔ Supposer que toutes les fiches exposent le même champ de titre — épisodes, numéros et autres variantes doivent conserver leurs replis propres.
 - ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.

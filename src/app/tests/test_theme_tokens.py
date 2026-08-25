@@ -161,7 +161,4 @@ class ThemeTokenContractTests(SimpleTestCase):
             "padding-inline: var(--home-row-hover-clearance)",
             row_rule.group("body"),
         )
-        self.assertIn(
-            "margin-inline: calc(var(--home-row-hover-clearance) * -1)",
-            row_rule.group("body"),
-        )
+        self.assertNotIn("margin-inline:", row_rule.group("body"))
