@@ -110,4 +110,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- L'installation PWA est déployée sur `unraid-server` avec l'image `sha-2f3741c8`; attendre le verdict de Nicolas avant toute proposition de PR.
+- Le centrage et la typographie réglable du logo sont intégrés dans `custom`; les déployer sur `unraid-server`, puis attendre le verdict de Nicolas avant toute proposition de PR.
