@@ -97,6 +97,7 @@ HOME_PROGRESS_MEDIA_TYPES = {
     MediaTypes.TV.value,
     MediaTypes.ANIME.value,
 }
+HOME_PROGRESS_FILTER_MEDIA_TYPES = {*HOME_PROGRESS_MEDIA_TYPES, HOME_ALL_MEDIA_TYPE}
 CRITIC_RATING_MEDIA_TYPES = {
     MediaTypes.TV.value,
     MediaTypes.SEASON.value,
@@ -318,6 +319,7 @@ SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
 SUPPORTED_FILTERS_BY_MEDIA_TYPE[HOME_ALL_MEDIA_TYPE] = {
     "media_types",
     "status",
+    "progress",
     "rating",
     "collection",
     "release",
@@ -530,7 +532,7 @@ def _preferred_default_library_sort(user, media_type: str) -> str:
 
 def _home_default_library_sort(media_type: str, user) -> str:
     """Return the desired default sort for a Home library row."""
-    if media_type in HOME_PROGRESS_MEDIA_TYPES:
+    if media_type in HOME_PROGRESS_FILTER_MEDIA_TYPES:
         return MediaSortChoices.NEXT_EPISODE_AIR_DATE
     return _preferred_default_library_sort(user, media_type)
 
@@ -827,7 +829,7 @@ def build_filter_field_data(
     )
     media_types_fingerprint = "-".join(filter_media_types)
     cache_key = (
-        f"home_filter_fields_v3_{user.id}_{media_type}_"
+        f"home_filter_fields_v4_{user.id}_{media_type}_"
         f"{media_types_fingerprint}_{tags_fingerprint}"
     )
     cached = cache.get(cache_key)
@@ -884,7 +886,7 @@ def build_filter_field_data(
                 {"value": "caught_up", "label": "Caught Up"},
                 {"value": "not_caught_up", "label": "Not Caught Up"},
             ],
-            "visible": media_type in HOME_PROGRESS_MEDIA_TYPES,
+            "visible": media_type in HOME_PROGRESS_FILTER_MEDIA_TYPES,
         },
         {
             "key": "stale_days",
@@ -1593,7 +1595,7 @@ def validate_library_row_filters(
     if (
         raw_progress
         and raw_progress != "all"
-        and media_type not in HOME_PROGRESS_MEDIA_TYPES
+        and media_type not in HOME_PROGRESS_FILTER_MEDIA_TYPES
     ):
         msg = f"Filter 'progress' is not available for {media_type}."
         raise HomeScreenValidationError(msg)
@@ -2263,7 +2265,7 @@ def _apply_progress_filter(
     entries: list[HomeRowEntry], media_type: str, progress_filter: str
 ) -> list[HomeRowEntry]:
     normalized_progress = _canonical_progress_filter(progress_filter, "all")
-    if normalized_progress == "all" or media_type not in HOME_PROGRESS_MEDIA_TYPES:
+    if normalized_progress == "all" or media_type not in HOME_PROGRESS_FILTER_MEDIA_TYPES:
         return entries
 
     # media entries here always come from _media_lookup_for_items, which

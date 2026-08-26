@@ -907,7 +907,7 @@
           if (rowType === 'shelf_finished') defaultStatus = ['Completed'];
           const defaults = {
             status: defaultStatus,
-            progress: ['tv', 'anime'].includes(section.media_type) ? 'not_caught_up' : 'all',
+            progress: ['all', 'tv', 'anime'].includes(section.media_type) ? 'not_caught_up' : 'all',
             rating: 'all',
             collection: 'all',
             genre: '',
