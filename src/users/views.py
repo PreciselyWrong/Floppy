@@ -758,9 +758,6 @@ def home_screen(request):
             request.user.home_show_media_type_headers = bool(
                 request.POST.get("show_media_type_headers"),
             )
-            request.user.home_binge_grouping_enabled = bool(
-                request.POST.get("home_binge_grouping_enabled"),
-            )
             try:
                 stale_days = int(request.POST.get("home_stale_days_threshold", 21))
             except (TypeError, ValueError):
@@ -769,7 +766,6 @@ def home_screen(request):
             request.user.save(
                 update_fields=[
                     "home_show_media_type_headers",
-                    "home_binge_grouping_enabled",
                     "home_stale_days_threshold",
                 ]
             )
@@ -781,7 +777,6 @@ def home_screen(request):
             serialize_settings_sections(request.user)
         ),
         "show_media_type_headers": request.user.home_show_media_type_headers,
-        "home_binge_grouping_enabled": request.user.home_binge_grouping_enabled,
         "home_stale_days_threshold": request.user.home_stale_days_threshold,
         "home_screen_list_search_url": reverse("home_screen_list_search"),
         "direction_choices_json": json.dumps(

@@ -19,6 +19,7 @@ from django.utils import timezone
 
 from app.helpers import is_caught_up_media
 from app.history_cache_reader import get_recent_history_entries
+from app.media_list_filters import next_episode_for_media
 from app.models import (
     BasicMedia,
     Episode,
@@ -2922,7 +2923,18 @@ def _shelf_stale_entries(
     stale_entries = []
     for entry in entries:
         ts = _entry_activity_timestamp(entry)
-        if ts is None or ts < cutoff_ts:
+        is_stale = ts is None or ts < cutoff_ts
+        is_episode_based = entry.item.media_type in {
+            MediaTypes.TV.value,
+            MediaTypes.SEASON.value,
+            MediaTypes.ANIME.value,
+        }
+        has_unwatched_aired_episode = (
+            next_episode_for_media(entry.media) is not None
+            if is_episode_based
+            else True
+        )
+        if is_stale and has_unwatched_aired_episode:
             stale_entries.append(entry)
     return stale_entries[:MAX_HOME_ROW_TOTAL_ENTRIES]
 
@@ -2969,6 +2981,25 @@ def _shelf_finished_entries(
     return _library_query_entries(
         user, row_copy, collection_context_cache=collection_context_cache
     )
+
+
+def _show_media_type_chip(row: HomeScreenRow, media_type: str) -> bool:
+    """Use the poster corner for identity when an active/completed row mixes media."""
+    if media_type != HOME_ALL_MEDIA_TYPE:
+        return False
+    if row.row_type in {
+        HomeScreenRowTypeChoices.SHELF_RESUME,
+        HomeScreenRowTypeChoices.SHELF_FINISHED,
+    }:
+        return True
+    if row.row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY:
+        return False
+
+    statuses = _normalize_status_list((row.filters or {}).get("status"), [])
+    return len(statuses) == 1 and statuses[0] in {
+        Status.IN_PROGRESS.value,
+        Status.COMPLETED.value,
+    }
 
 
 MIN_BINGE_EPISODES = 2
@@ -3085,10 +3116,6 @@ def group_watch_entries_by_binge(
 def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
     from app import history_cache
 
-    days = history_cache.get_history_days(user, max_days=14)
-    if not days:
-        return None
-
     if row.media_type != HOME_ALL_MEDIA_TYPE:
         target_media_types = {row.media_type}
     else:
@@ -3098,11 +3125,17 @@ def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
             if selected:
                 target_media_types = set(selected)
 
-    processed_days = []
-    enable_binge = row.filters.get(
-        "binge_grouping",
-        getattr(user, "home_binge_grouping_enabled", True),
+    days, _total_days = history_cache.get_cached_history_window(
+        user,
+        limit=14,
+        offset=0,
+        filters={"media_type": sorted(target_media_types)},
     )
+    if not days:
+        return None
+
+    processed_days = []
+    enable_binge = row.filters.get("binge_grouping", True)
 
     for day in days:
         raw_entries = [
@@ -3255,6 +3288,7 @@ def _build_row_section(
         "total": len(entries),
         "loaded_count": loaded_count,
         "show_played_chip": row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        "show_media_type_chip": _show_media_type_chip(row, media_type),
         "card_width_class": "w-44",
         "grid_class": "media-grid media-grid-square"
         if media_type in SQUARE_HOME_MEDIA_TYPES
