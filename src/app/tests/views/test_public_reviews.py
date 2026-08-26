@@ -76,6 +76,27 @@ class PublicReviewViewTests(TestCase):
         self.assertContains(response, "Lowest rated")
 
     @patch("app.public_review_views.collect_reviews")
+    def test_full_screen_contains_long_book_reviews_on_mobile(self, collect):
+        collect.return_value = ReviewFeed(
+            reviews=[
+                PublicReview(
+                    "Hardcover",
+                    "A-reader-name-without-breaks" * 5,
+                    "Averylongwordwithoutanybreaks" * 20,
+                    score=10,
+                )
+            ],
+            problems=[],
+            any_provider_active=True,
+        )
+
+        response = self.client.get(reverse("public_reviews", kwargs=self.kwargs))
+
+        self.assertContains(response, 'class="min-w-0 max-w-full overflow-hidden')
+        self.assertContains(response, "[overflow-wrap:anywhere]")
+        self.assertContains(response, "overflow-x-hidden")
+
+    @patch("app.public_review_views.collect_reviews")
     def test_full_screen_sort_links_preserve_episode_identity(self, collect):
         collect.return_value = ReviewFeed(
             reviews=[

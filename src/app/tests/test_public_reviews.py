@@ -176,6 +176,36 @@ class TmdbPublicReviewTests(SimpleTestCase):
         self.assertEqual(result, cached)
         api_request.assert_called_once()
 
+    @override_settings(TMDB_API="tmdb-key", TMDB_LANG="en-US")
+    @patch("app.providers.tmdb.services.api_request")
+    def test_empty_localized_reviews_fall_back_to_all_languages(self, api_request):
+        api_request.side_effect = [
+            {"results": [], "total_results": 0, "total_pages": 0},
+            {
+                "results": [
+                    {
+                        "author": "Alice",
+                        "content": "Available without a language filter.",
+                        "author_details": {"rating": 8},
+                    }
+                ],
+                "total_results": 1,
+                "total_pages": 1,
+            },
+        ]
+
+        result = tmdb.public_reviews(
+            "movie",
+            "123",
+            page=1,
+            page_size=20,
+            language="fr-FR",
+        )
+
+        self.assertEqual(["Alice"], [item["author"] for item in result.reviews])
+        self.assertEqual("fr-FR", api_request.call_args_list[0].kwargs["params"]["language"])
+        self.assertNotIn("language", api_request.call_args_list[1].kwargs["params"])
+
     @override_settings(TMDB_API="tmdb-key", BETASERIES_API_KEY="")
     @patch("app.providers.tmdb.public_reviews")
     def test_provider_uses_the_authenticated_users_metadata_language(self, fetch):

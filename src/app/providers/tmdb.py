@@ -84,6 +84,13 @@ def public_reviews(media_type, media_id, *, page=1, page_size=20, language=None)
             f"{base_url}/{tmdb_type}/{media_id}/reviews",
             params=params,
         )
+        if not response.get("results") and language:
+            response = services.api_request(
+                Sources.TMDB.value,
+                "GET",
+                f"{base_url}/{tmdb_type}/{media_id}/reviews",
+                params={"api_key": settings.TMDB_API, "page": page},
+            )
         data = {
             "reviews": [
                 {
