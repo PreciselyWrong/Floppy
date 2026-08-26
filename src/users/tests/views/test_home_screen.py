@@ -2790,6 +2790,20 @@ class HomeScreenCompanionParityTests(TestCase):
         self.assertContains(response, 'data-media-type-chip="tv"')
         self.assertContains(response, ">TV Show</span>", html=False)
 
+    def test_all_media_stale_row_shows_media_type_chips(self):
+        self.user.home_media_type_chips_enabled = True
+        self.user.save(update_fields=["home_media_type_chips_enabled"])
+        row = HomeScreenRow(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_STALE,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        self.assertTrue(home_screen._show_media_type_chip(self.user, row, "all"))
+
     def test_all_media_type_chips_follow_user_appearance_preferences(self):
         self.user.movie_enabled = True
         self.user.home_media_type_chips_enabled = True

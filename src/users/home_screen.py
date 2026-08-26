@@ -2707,11 +2707,12 @@ def _shelf_finished_entries(
 
 
 def _show_media_type_chip(user, row: HomeScreenRow, media_type: str) -> bool:
-    """Use the poster corner for identity when an active/completed row mixes media."""
+    """Use the poster corner for identity when a status row mixes media."""
     if media_type != HOME_ALL_MEDIA_TYPE or not user.home_media_type_chips_enabled:
         return False
     if row.row_type in {
         HomeScreenRowTypeChoices.SHELF_RESUME,
+        HomeScreenRowTypeChoices.SHELF_STALE,
         HomeScreenRowTypeChoices.SHELF_FINISHED,
     }:
         return True
