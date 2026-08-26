@@ -3,6 +3,7 @@
     document.querySelectorAll(".fixed.inset-0").forEach((overlay) => {
       if (overlay.parentElement !== document.body) {
         const dataStack = Alpine.closestDataStack(overlay);
+        overlay._modalOriginParent = overlay.parentElement;
         let stateHost = overlay.parentElement;
         while (stateHost && !stateHost.hasAttribute("x-data")) {
           stateHost = stateHost.parentElement;
