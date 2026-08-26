@@ -38,6 +38,7 @@
   --color-link-hover: #c7d2fe;
   --color-status-clean: #10b981;
   --color-status-dirty: #f59e0b;
+  --color-history-acid: #c7f43d;
   --color-genre-badge-bg: rgba(139, 92, 246, 0.07);
   --color-genre-badge-border: rgba(167, 139, 250, 0.18);
   --color-genre-badge-text: #ede9fe;
@@ -79,6 +80,7 @@
     --color-link-hover: #4338ca;
     --color-status-clean: #047857;
     --color-status-dirty: #b45309;
+    --color-history-acid: #577600;
     --color-genre-badge-bg: rgba(139, 92, 246, 0.08);
     --color-genre-badge-border: rgba(124, 58, 237, 0.25);
     --color-genre-badge-text: #5b21b6;
@@ -115,6 +117,7 @@ html.light {
   --color-link-hover: #4338ca;
   --color-status-clean: #047857;
   --color-status-dirty: #b45309;
+  --color-history-acid: #577600;
   --color-genre-badge-bg: rgba(139, 92, 246, 0.08);
   --color-genre-badge-border: rgba(124, 58, 237, 0.25);
   --color-genre-badge-text: #5b21b6;
@@ -150,6 +153,7 @@ html.dark {
   --color-link-hover: #c7d2fe;
   --color-status-clean: #10b981;
   --color-status-dirty: #f59e0b;
+  --color-history-acid: #c7f43d;
   --color-genre-badge-bg: rgba(139, 92, 246, 0.07);
   --color-genre-badge-border: rgba(167, 139, 250, 0.18);
   --color-genre-badge-text: #ede9fe;
@@ -678,6 +682,62 @@ html.light .theme-toggle-icon-moon {
 
 [x-cloak] {
   display: none !important;
+}
+
+.history-timeline-chip {
+  border: 1px solid var(--color-surface-border);
+  border-radius: 9999px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.history-timeline-chip:hover,
+.history-timeline-chip:focus-visible {
+  border-color: var(--color-history-acid);
+  outline: none;
+}
+
+.history-timeline-chip-active {
+  border-color: var(--color-history-acid);
+  background: var(--color-history-acid);
+  color: var(--color-page-bg);
+}
+
+.history-timeline-date {
+  color: var(--color-history-acid);
+  font-size: 1.125rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.history-timeline-card {
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.history-timeline-badge {
+  width: max-content;
+  border-radius: 0.25rem;
+  background: var(--color-surface-strong);
+  color: var(--color-text-muted);
+  padding: 0.2rem 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.history-timeline-acid {
+  color: var(--color-history-acid);
 }
 
 /* Navigation progress for boosted links.

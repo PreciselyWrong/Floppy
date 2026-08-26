@@ -95,6 +95,8 @@ def _serialize_show(show):
         return show
     return {
         "id": getattr(show, "id", None),
+        "media_id": getattr(show, "media_id", None),
+        "source": getattr(show, "source", None),
         "title": getattr(show, "title", "") or "",
         "slug": getattr(show, "slug", "") or "",
         "podcast_uuid": getattr(show, "podcast_uuid", None),

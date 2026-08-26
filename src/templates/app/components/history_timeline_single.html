@@ -1,0 +1,68 @@
+{% load app_tags %}
+{% load user_tags %}
+
+<article class="history-timeline-card relative"
+         data-timeline-family="{{ family|default:'other' }}"
+         x-data="{ trackOpen: false }"
+         {% if history_mode != "release" %}x-show="timelineFamily === 'all' || timelineFamily === '{{ family|default:'other' }}'"{% endif %}>
+  {% with entry.item|display_title:user as preferred_title %}
+    <a href="{{ entry.item|media_url }}"
+       hx-boost="true"
+       class="flex min-w-0 gap-3 p-3 pr-12 transition-colors hover:bg-[var(--color-surface-strong)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-history-acid)] sm:gap-4">
+      <img alt="{{ preferred_title|default:entry.display_title|default:entry.title }}"
+           class="lazyload h-[7.5rem] w-20 shrink-0 rounded-md object-cover sm:h-[8.25rem] sm:w-[5.5rem]"
+           data-src="{{ entry.poster|image_url }}"
+           src="{{ IMG_NONE }}">
+      <div class="min-w-0 self-center">
+        <div class="history-timeline-badge flex items-center gap-1.5">
+          {% if entry.media_type == MediaTypes.BOOK.value or entry.media_type == MediaTypes.COMIC.value or entry.media_type == MediaTypes.MANGA.value %}
+            {% include "app/icons/book-open.svg" with classes="h-3 w-3" %}
+          {% else %}
+            {% include "app/icons/eye.svg" with classes="h-3 w-3" %}
+          {% endif %}
+          <span>{{ entry.media_type }}</span>
+        </div>
+        <h3 class="mt-1.5 line-clamp-2 text-base font-bold leading-tight text-[var(--color-text)]">
+          {{ preferred_title|default:entry.display_title|default:entry.title }}
+        </h3>
+        {% if entry.media_type == MediaTypes.EPISODE.value and entry.episode_code %}
+          <p class="history-timeline-acid mt-0.5 line-clamp-2 text-sm font-semibold">
+            {% if entry.show.title %}{{ entry.show.title }} &middot; {% endif %}{{ entry.episode_code }}
+          </p>
+        {% endif %}
+        <p class="mt-1 text-sm text-[var(--color-text-muted)]">
+          {{ entry.played_at_local|user_time_format:user }}
+          {% if entry.runtime_minutes %}<span aria-hidden="true"> &bull; </span>{{ entry.runtime_minutes }} min{% endif %}
+        </p>
+        {% if entry.score|show_media_score:user %}
+          <p class="history-timeline-acid mt-1 text-base font-bold">{{ entry.score|score_display:user }}</p>
+        {% endif %}
+      </div>
+    </a>
+  {% endwith %}
+
+  {% if entry.item and entry.item.media_type and history_mode != "release" %}
+    <button type="button"
+            class="absolute right-2 top-2 rounded-full bg-[var(--color-surface-strong)] p-2 text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-history-acid)] focus-visible:outline-2 focus-visible:outline-[var(--color-history-acid)]"
+            title="Edit tracking"
+            aria-label="Edit tracking for {{ entry.display_title|default:entry.title }}"
+            hx-get="{% media_view_url 'track_modal' entry.item %}"
+            hx-vals='{"return_url": "{{ request.get_full_path|urlencode }}"{% if entry.instance_id %}, "instance_id": "{{ entry.instance_id }}"{% endif %}, "standard_modal": "1"}'
+            hx-target="#{% component_id 'track' entry.item entry.entry_key %}"
+            hx-trigger="click once"
+            @click="trackOpen = true">
+      {% include "app/icons/edit.svg" with classes="h-4 w-4" %}
+    </button>
+
+    <div x-show="trackOpen"
+         x-cloak
+         @keydown.escape.window="trackOpen = false"
+         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div class="modal-max-height relative z-60 w-full overflow-y-auto px-4 md:px-0"
+           style="width: min(96vw, 72rem);"
+           @click.outside="trackOpen = false">
+        <div id="{% component_id 'track' entry.item entry.entry_key %}"></div>
+      </div>
+    </div>
+  {% endif %}
+</article>

@@ -1,0 +1,62 @@
+{% load app_tags %}
+{% load user_tags %}
+
+<article class="history-timeline-card"
+         data-timeline-family="series"
+         x-data="{ expanded: false }"
+         x-show="timelineFamily === 'all' || timelineFamily === 'series'">
+  <button type="button"
+          class="flex w-full min-w-0 items-center gap-3 p-3 text-left transition-colors hover:bg-[var(--color-surface-strong)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-history-acid)] sm:gap-4"
+          @click="expanded = !expanded"
+          :aria-expanded="expanded"
+          aria-label="Toggle {{ binge.title }} episode details">
+    <img alt="{{ binge.title }}"
+         class="lazyload h-[7.5rem] w-20 shrink-0 rounded-md object-cover sm:h-[8.25rem] sm:w-[5.5rem]"
+         data-src="{{ binge.poster|image_url }}"
+         src="{{ IMG_NONE }}">
+    <div class="min-w-0 flex-1 self-center">
+      <div class="history-timeline-badge flex items-center gap-1.5">
+        {% include "app/icons/eye.svg" with classes="h-3 w-3" %}
+        <span>Episode</span>
+      </div>
+      <h3 class="mt-1.5 line-clamp-2 text-base font-bold leading-tight text-[var(--color-text)]">{{ binge.title }}</h3>
+      {% if binge.episode_range %}
+        <p class="history-timeline-acid mt-0.5 text-sm font-bold">{{ binge.episode_range }}</p>
+      {% endif %}
+      <p class="mt-1 text-sm text-[var(--color-text-muted)]">
+        {{ binge.played_at_local|user_time_format:user }}
+        {% if binge.runtime_minutes %}<span aria-hidden="true"> &bull; </span>{{ binge.runtime_minutes }} min{% endif %}
+      </p>
+      <p class="mt-0.5 text-sm text-[var(--color-text-muted)]">{{ binge.count }} episodes watched</p>
+    </div>
+    <span class="shrink-0 text-[var(--color-text-muted)]" aria-hidden="true">
+      <span x-show="!expanded">{% include "app/icons/chevron-down.svg" with classes="h-5 w-5" %}</span>
+      <span x-show="expanded" x-cloak>{% include "app/icons/chevron-up.svg" with classes="h-5 w-5" %}</span>
+    </span>
+  </button>
+
+  <div x-show="expanded" x-cloak>
+    <div class="mx-3 border-t border-[var(--color-border)]"></div>
+    <div class="py-1">
+      {% for entry in binge.entries %}
+        <a href="{{ entry.item|media_url }}"
+           hx-boost="true"
+           class="flex items-center gap-3 px-3 py-2.5 transition-colors hover:bg-[var(--color-surface-strong)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-history-acid)]">
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm text-[var(--color-text)]">
+              {% if entry.episode_code %}<span class="history-timeline-acid font-bold">{{ entry.episode_code }}</span>{% endif %}
+              <span class="font-semibold">{{ entry.display_title|default:entry.title }}</span>
+            </p>
+            <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
+              {{ entry.played_at_local|user_time_format:user }}
+              {% if entry.runtime_minutes %}<span aria-hidden="true"> &bull; </span>{{ entry.runtime_minutes }} min{% endif %}
+            </p>
+          </div>
+          {% if entry.score|show_media_score:user %}
+            <span class="history-timeline-acid shrink-0 font-bold">{{ entry.score|score_display:user }}</span>
+          {% endif %}
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</article>
