@@ -921,6 +921,8 @@ def preferences(request):
             "hide_completed_recommendations"
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
+        show_public_reviews_raw = request.POST.get("show_public_reviews")
+        public_reviews_position = request.POST.get("public_reviews_position")
         progress_bar_raw = request.POST.get("progress_bar")
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
@@ -1146,6 +1148,19 @@ def preferences(request):
                     book_comic_manga_progress_percentage
                 )
                 fields_to_update.append("book_comic_manga_progress_percentage")
+
+        if show_public_reviews_raw is not None:
+            show_public_reviews = show_public_reviews_raw == "1"
+            if request.user.show_public_reviews != show_public_reviews:
+                request.user.show_public_reviews = show_public_reviews
+                fields_to_update.append("show_public_reviews")
+
+        if (
+            public_reviews_position in {"top", "bottom"}
+            and request.user.public_reviews_position != public_reviews_position
+        ):
+            request.user.public_reviews_position = public_reviews_position
+            fields_to_update.append("public_reviews_position")
 
         provider_region = request.POST.get("watch_provider_region", "")
         if provider_region in [region[0] for region in watch_provider_regions]:

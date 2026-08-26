@@ -282,6 +282,7 @@ from app.providers import (
     services,
     tmdb,
 )
+from app.public_reviews import ReviewTarget, providers_for_target
 from app.save_views import (
     episode_bulk_save,
     episode_drop,
@@ -999,6 +1000,50 @@ def episode_details(
         or f"Episode {episode_number}",
         "detail_return_url": request.build_absolute_uri(),
     }
+    review_external_ids = dict(
+        tv_with_seasons_metadata.get("provider_external_ids") or {}
+    )
+    if source == Sources.TVDB.value:
+        review_external_ids.setdefault("tvdb_id", str(media_id))
+    review_target = ReviewTarget(
+        media_type=MediaTypes.EPISODE.value,
+        source=source,
+        media_id=str(media_id),
+        external_ids=review_external_ids,
+        season_number=season_number,
+        episode_number=episode_number,
+    )
+    review_user = request.user if request.user.is_authenticated else None
+    if (
+        (not request.user.is_authenticated or request.user.show_public_reviews)
+        and providers_for_target(review_target, review_user)
+    ):
+        review_url = reverse(
+            "public_reviews_preview",
+            kwargs={
+                "source": source,
+                "media_type": MediaTypes.EPISODE.value,
+                "media_id": media_id,
+                "title": title,
+            },
+        )
+        review_query = urlencode(
+            {
+                "season": season_number,
+                "episode": episode_number,
+                **{
+                    key: review_external_ids[key]
+                    for key in ("tvdb_id", "imdb_id")
+                    if review_external_ids.get(key)
+                },
+            }
+        )
+        context["public_reviews_preview_url"] = f"{review_url}?{review_query}"
+        context["public_reviews_position"] = (
+            request.user.public_reviews_position
+            if request.user.is_authenticated
+            else "bottom"
+        )
     return render(request, "app/episode_details.html", context)
 
 

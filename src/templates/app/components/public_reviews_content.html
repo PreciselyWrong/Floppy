@@ -1,0 +1,26 @@
+{% load static %}
+<section id="public-review-feed" class="mt-6" aria-label="Public reviews">
+  <div class="mb-6 flex flex-col gap-3">
+    <nav class="flex flex-wrap gap-2" aria-label="Review providers">
+      <a href="{{ all_provider_url }}" class="rounded-full border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] {% if not selected_provider %}border-[var(--color-link)] bg-[var(--color-surface)]{% else %}border-[var(--color-border)]{% endif %}">All ({{ all_provider_count }})</a>
+      {% for provider in provider_filters %}<a href="{{ provider.url }}" class="rounded-full border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] {% if provider.selected %}border-[var(--color-link)] bg-[var(--color-surface)]{% else %}border-[var(--color-border)]{% endif %}">{{ provider.name }} ({{ provider.count }})</a>{% endfor %}
+    </nav>
+    {% if feed.reviews|length > 1 %}
+      <nav class="flex flex-wrap gap-2" aria-label="Review sorting">
+        {% for option in sort_options %}<a href="{{ option.url }}" class="rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] {% if selected_sort == option.value %}bg-[var(--color-accent)] text-white{% else %}bg-[var(--color-surface)]{% endif %}">{{ option.label }}</a>{% endfor %}
+      </nav>
+    {% endif %}
+  </div>
+  {% if reviews %}<div class="grid gap-4">{% for review in reviews %}{% include "app/components/public_review_card.html" %}{% endfor %}</div>
+  {% elif not feed.problems %}<p class="text-[var(--color-text-muted)]">No public reviews yet.</p>{% endif %}
+  {% if feed.problems %}
+    <div class="mt-4 flex flex-wrap items-center gap-3">{% for problem in feed.problems %}<p class="text-[var(--color-warning-text)]">{{ problem.provider }} reviews couldn't load.</p>{% endfor %}<button type="button" hx-get="{{ retry_url }}" hx-target="#public-review-feed" hx-swap="outerHTML" class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]">Retry</button></div>
+  {% endif %}
+  {% if next_page_url %}
+    <div class="mt-6 flex justify-center"><button type="button" hx-get="{{ next_page_url }}" hx-target="#public-review-feed" hx-swap="outerHTML" hx-push-url="true" class="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2">Load more</button></div>
+  {% endif %}
+  <footer class="mt-8 flex flex-wrap items-center gap-4 border-t border-[var(--color-border)] pt-4 text-xs text-[var(--color-text-muted)]">
+    <span>Reviews provided by</span>
+    {% for provider in attributions %}<a href="{{ provider.homepage }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 hover:text-[var(--color-text)]">{% if provider.logo %}<img src="{% static provider.logo %}" alt="" class="h-5 w-auto" loading="lazy">{% else %}<span class="flex h-5 w-5 items-center justify-center rounded bg-[var(--color-surface)] font-bold">{{ provider.name|slice:":1" }}</span>{% endif %}<span>{{ provider.name }}</span></a>{% endfor %}
+  </footer>
+</section>

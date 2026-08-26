@@ -1056,6 +1056,10 @@ TMDB_API = config(
 )
 TMDB_NSFW = config("TMDB_NSFW", default=False, cast=bool)
 TMDB_LANG = config("TMDB_LANG", default="en")
+BETASERIES_API_KEY = config(
+    "BETASERIES_API_KEY",
+    default=secret("BETASERIES_API_KEY_FILE", ""),
+)
 
 SEERR_GLOBAL_WEBHOOK_SECRET = config(
     "SEERR_GLOBAL_WEBHOOK_SECRET",

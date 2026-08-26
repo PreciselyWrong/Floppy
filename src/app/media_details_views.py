@@ -2,12 +2,14 @@ import json
 import logging
 import time
 from datetime import UTC
+from urllib.parse import urlencode
 
 from django.apps import apps
 from django.conf import settings
 from django.contrib.auth.decorators import login_not_required
 from django.core.cache import cache
 from django.shortcuts import render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
@@ -62,6 +64,7 @@ from app.models import (
 )
 from app.models.episode_runtimes import build_season_runtime_index
 from app.providers import services, tmdb
+from app.public_reviews import ReviewTarget, providers_for_target
 from app.services import metadata_resolution
 from app.services.metadata_fallback import stored_metadata_fallback
 from app.tag_views import (
@@ -2023,6 +2026,42 @@ def media_details(
             media_metadata["episodes"],
         )
 
+    review_external_ids = dict(
+        (getattr(detail_item, "provider_external_ids", None) if detail_item else None)
+        or media_metadata.get("provider_external_ids")
+        or {}
+    )
+    review_target = ReviewTarget(
+        media_type=media_type,
+        source=source,
+        media_id=str(media_id),
+        external_ids=review_external_ids,
+    )
+    review_user = request.user if request.user.is_authenticated else None
+    public_reviews_preview_url = None
+    if (
+        (not request.user.is_authenticated or request.user.show_public_reviews)
+        and providers_for_target(review_target, review_user)
+    ):
+        public_reviews_preview_url = reverse(
+            "public_reviews_preview",
+            kwargs={
+                "source": source,
+                "media_type": media_type,
+                "media_id": media_id,
+                "title": title,
+            },
+        )
+        review_query = urlencode(
+            {
+                key: review_external_ids[key]
+                for key in ("tvdb_id", "imdb_id")
+                if review_external_ids.get(key)
+            }
+        )
+        if review_query:
+            public_reviews_preview_url = f"{public_reviews_preview_url}?{review_query}"
+
     context = {
         "user": request.user,
         "media": media_metadata,
@@ -2130,6 +2169,12 @@ def media_details(
         "render_secondary_only": render_secondary_only,
         "carousel_supported": carousel_supported,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
+        "public_reviews_preview_url": public_reviews_preview_url,
+        "public_reviews_position": (
+            request.user.public_reviews_position
+            if request.user.is_authenticated
+            else "bottom"
+        ),
         **_build_detail_person_rows(media_metadata, item=detail_item),
     }
     logger.info(

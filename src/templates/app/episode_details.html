@@ -296,6 +296,9 @@
 </div>
 
 {# Your Notes — same component the movie/season pages use, pointed at the watch that carries the note. #}
+{% if public_reviews_preview_url and public_reviews_position == "top" %}
+  {% include "app/components/public_reviews_loader.html" %}
+{% endif %}
 {% if show_notes and notes_entry %}
   {% include "app/components/detail_notes_section.html" with notes_entry=notes_entry detail_notes_target_id=episode_notes_modal_target_id detail_notes_modal_url=episode_notes_modal_url detail_return_url=detail_return_url public_notes_view=public_notes_view %}
 {% endif %}
@@ -439,6 +442,10 @@
       </button>
     </section>
   {% endif %}
+{% endif %}
+
+{% if public_reviews_preview_url and public_reviews_position == "bottom" %}
+  {% include "app/components/public_reviews_loader.html" %}
 {% endif %}
 
 <script>

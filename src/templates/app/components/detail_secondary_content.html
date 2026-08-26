@@ -327,8 +327,11 @@
 
     {# Related Media #}
     {% if media_type != MediaTypes.PODCAST.value %}
-      {% if notes_entry or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes %}
+      {% if notes_entry or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes or public_reviews_preview_url %}
         <div class="w-full md:w-3/4">
+        {% if public_reviews_preview_url and public_reviews_position == "top" %}
+          {% include "app/components/public_reviews_loader.html" %}
+        {% endif %}
         {% if show_notes|default:False and notes_entry %}
           {% include "app/components/detail_notes_section.html" %}
         {% endif %}
@@ -507,6 +510,10 @@
 
         {% if media_type == MediaTypes.GAME.value %}
           {% include "app/components/game_lengths_section.html" %}
+        {% endif %}
+
+        {% if public_reviews_preview_url and public_reviews_position == "bottom" %}
+          {% include "app/components/public_reviews_loader.html" %}
         {% endif %}
 
         </div>

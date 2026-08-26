@@ -34,7 +34,10 @@ class ThemeTokenContractTests(SimpleTestCase):
         """`dark:` tracks the OS, not the user's chosen theme, so it must not appear."""
         offenders = []
         for path in _template_files():
-            for number, line in enumerate(path.read_text().splitlines(), start=1):
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(),
+                start=1,
+            ):
                 if DARK_VARIANT.search(line):
                     offenders.append(f"{path.name}:{number}")
 
@@ -49,7 +52,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         """Link and muted-copy colours must resolve through --color-* tokens."""
         offenders = []
         for path in _template_files():
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             for utility in BANNED_TEXT_UTILITIES:
                 if re.search(rf"(?<![\w:.-]){re.escape(utility)}(?![\w-])", content):
                     offenders.append(f"{path.name}: {utility}")

@@ -696,6 +696,12 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 5;
   }
+  .line-clamp-6 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+  }
   .block {
     display: block;
   }
@@ -805,6 +811,9 @@
   }
   .h-24 {
     height: calc(var(--spacing) * 24);
+  }
+  .h-36 {
+    height: calc(var(--spacing) * 36);
   }
   .h-40 {
     height: calc(var(--spacing) * 40);
@@ -2979,6 +2988,9 @@
   .whitespace-pre {
     white-space: pre;
   }
+  .whitespace-pre-line {
+    white-space: pre-line;
+  }
   .whitespace-pre-wrap {
     white-space: pre-wrap;
   }
@@ -3641,6 +3653,13 @@
         --tw-scale-y: 110%;
         --tw-scale-z: 110%;
         scale: var(--tw-scale-x) var(--tw-scale-y);
+      }
+    }
+  }
+  .hover\:border-\[var\(--color-link\)\] {
+    &:hover {
+      @media (hover: hover) {
+        border-color: var(--color-link);
       }
     }
   }

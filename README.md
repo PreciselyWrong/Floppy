@@ -383,6 +383,7 @@ The only universally required variable is `SECRET`. For Docker installs you shou
 **Optional but recommended:**
 
 - `TMDB_API` - movie and TV metadata from [TMDB](https://www.themoviedb.org/settings/api)
+- `BETASERIES_API_KEY` - public movie, show, anime, and episode reviews from [BetaSeries](https://www.betaseries.com/api/)
 - `TVDB_API_KEY` / `TVDB_PIN` - TVDB-backed metadata and grouped anime support (`TVDB_PIN` is your **Subscriber PIN**, only required for user-supported API keys)
 - `MAL_API` - MyAnimeList **Client ID** for anime metadata ([register here](https://myanimelist.net/apiconfig))
 - `IGDB_ID` / `IGDB_SECRET` - game metadata from [IGDB](https://www.igdb.com/api)
@@ -415,6 +416,7 @@ Example `.env` file:
 
 ```bash
 TMDB_API=API_KEY
+BETASERIES_API_KEY=API_KEY
 TVDB_API_KEY=TVDB_API_KEY
 TVDB_PIN=SUBSCRIBER_PIN (Optional, only for user-supported keys)
 MAL_API=CLIENT_ID
