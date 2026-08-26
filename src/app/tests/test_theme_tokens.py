@@ -211,6 +211,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("document.body.appendChild(overlay)", portal)
         self.assertIn("htmx:afterSettle", portal)
         self.assertIn("node._x_dataStack", modal_handler)
+        self.assertIn("stateKey in data", modal_handler)
         self.assertIn("stateTarget.data[stateTarget.stateKey] = isOpen", modal_handler)
 
     def test_home_screen_row_controls_wrap_inside_their_panel(self):
