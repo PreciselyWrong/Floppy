@@ -153,8 +153,8 @@ function trackModalFindStateTarget(target) {
         node.getAttribute("x-show"),
       );
       if (stateKey) {
-        const stackData = node._x_dataStack?.find((data) =>
-          Object.prototype.hasOwnProperty.call(data, stateKey),
+        const stackData = node._x_dataStack?.find(
+          (data) => data && stateKey in data,
         );
         if (stackData) {
           return { data: stackData, stateKey };
