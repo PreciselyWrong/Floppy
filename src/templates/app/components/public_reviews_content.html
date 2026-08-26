@@ -1,5 +1,5 @@
 {% load static %}
-<section id="public-review-feed" class="mt-6" aria-label="Public reviews">
+<section id="public-review-feed" class="mt-6 min-w-0 max-w-full overflow-hidden" aria-label="Public reviews">
   <div class="mb-6 flex flex-col gap-3">
     <nav class="flex flex-wrap gap-2" aria-label="Review providers">
       <a href="{{ all_provider_url }}" class="rounded-full border px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] {% if not selected_provider %}border-[var(--color-link)] bg-[var(--color-surface)]{% else %}border-[var(--color-border)]{% endif %}">All ({{ all_provider_count }})</a>
@@ -11,7 +11,7 @@
       </nav>
     {% endif %}
   </div>
-  {% if reviews %}<div class="grid gap-4">{% for review in reviews %}{% include "app/components/public_review_card.html" %}{% endfor %}</div>
+  {% if reviews %}<div class="grid min-w-0 max-w-full gap-4">{% for review in reviews %}{% include "app/components/public_review_card.html" %}{% endfor %}</div>
   {% elif not feed.problems %}<p class="text-[var(--color-text-muted)]">No public reviews yet.</p>{% endif %}
   {% if feed.problems %}
     <div class="mt-4 flex flex-wrap items-center gap-3">{% for problem in feed.problems %}<p class="text-[var(--color-warning-text)]">{{ problem.provider }} reviews couldn't load.</p>{% endfor %}<button type="button" hx-get="{{ retry_url }}" hx-target="#public-review-feed" hx-swap="outerHTML" class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]">Retry</button></div>
