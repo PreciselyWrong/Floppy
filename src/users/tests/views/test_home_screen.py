@@ -128,6 +128,18 @@ class HomeScreenViewTests(TestCase):
             [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
         )
 
+        filter_fields = home_screen.build_filter_field_data(self.user, "all", [])
+        progress_field = next(
+            field for field in filter_fields if field["key"] == "progress"
+        )
+        self.assertTrue(progress_field["visible"])
+        self.assertEqual(
+            home_screen.validate_library_row_filters(
+                {"progress": "not_caught_up"}, "all"
+            )["progress"],
+            "not_caught_up",
+        )
+
     def test_all_media_section_respects_saved_position(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
         self.user.home_screen_media_type_order = [
@@ -210,6 +222,88 @@ class HomeScreenViewTests(TestCase):
         self.assertEqual(
             [entry.item.title for entry in all_media_group["rows"][0]["items"]],
             ["Current Game", "Current Movie"],
+        )
+
+    def test_all_media_not_caught_up_hides_tv_with_no_released_episodes_left(self):
+        self._set_enabled_media_types(MediaTypes.TV.value, MediaTypes.MOVIE.value)
+        movie_item = Item.objects.create(
+            title="Current Movie",
+            media_id="all-media-current-movie-released-progress",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+
+        now = timezone.now()
+
+        def create_show(title, media_id, watched_episodes):
+            tv_item = Item.objects.create(
+                title=title,
+                media_id=media_id,
+                media_type=MediaTypes.TV.value,
+                source=Sources.TMDB.value,
+            )
+            tv = TV.objects.create(
+                item=tv_item,
+                user=self.user,
+                status=Status.IN_PROGRESS.value,
+            )
+            season_item = Item.objects.create(
+                title=f"{title} Season 1",
+                media_id=media_id,
+                media_type=MediaTypes.SEASON.value,
+                source=Sources.TMDB.value,
+                season_number=1,
+            )
+            season = Season.objects.create(
+                item=season_item,
+                user=self.user,
+                related_tv=tv,
+                status=Status.IN_PROGRESS.value,
+            )
+            for episode_number in range(1, 3):
+                episode_item = Item.objects.create(
+                    title=f"{title} S01E{episode_number:02d}",
+                    media_id=media_id,
+                    media_type=MediaTypes.EPISODE.value,
+                    source=Sources.TMDB.value,
+                    season_number=1,
+                    episode_number=episode_number,
+                    release_datetime=now - timedelta(days=episode_number),
+                )
+                if episode_number <= watched_episodes:
+                    Episode.objects.create(
+                        item=episode_item,
+                        related_season=season,
+                        end_date=now - timedelta(days=episode_number),
+                    )
+
+        create_show("Caught Up TV", "all-media-caught-up", watched_episodes=2)
+        create_show("Released Episode Left TV", "all-media-episode-left", watched_episodes=1)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            title="In progress",
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "progress": "not_caught_up",
+            },
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+        all_media_group = next(group for group in groups if group["media_type"] == "all")
+
+        self.assertEqual(
+            [entry.item.title for entry in all_media_group["rows"][0]["items"]],
+            ["Current Movie", "Released Episode Left TV"],
         )
 
     def test_empty_all_media_section_is_not_rendered_on_home(self):
