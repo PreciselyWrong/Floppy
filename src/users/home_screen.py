@@ -2615,7 +2615,7 @@ def _library_query_entries(
         # MUSIC_SUBVIEW_TRACKS falls through to the standard Music/Item query below.
     status_filter = normalized_filters.get("status") or []
     rule_media_types = (
-        _all_media_type_selection(user, row.filters)
+        [m for m in _all_media_type_selection(user, row.filters) if m != MediaTypes.SEASON.value]
         if row.media_type == HOME_ALL_MEDIA_TYPE
         else [row.media_type]
     )
@@ -3093,8 +3093,10 @@ def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
         target_media_types = {row.media_type}
     else:
         target_media_types = set(get_enabled_home_media_types(user))
-        if "media_types" in (row.filters or {}):
-            target_media_types = set(_all_media_type_selection(user, row.filters))
+        if row.filters and "media_types" in row.filters:
+            selected = row.filters.get("media_types")
+            if selected:
+                target_media_types = set(selected)
 
     processed_days = []
     enable_binge = row.filters.get(
