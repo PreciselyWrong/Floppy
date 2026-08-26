@@ -15,10 +15,17 @@ from app import config, helpers, image_cache
 from app.models import Item, MediaTypes, Sources, Status
 from app.providers import tmdb
 from app.services import metadata_resolution
+from users.media_type_chips import media_type_chip_preferences
 from users.models import TimeFormatChoices
 from users.templatetags.user_tags import user_date_format, user_time_format
 
 register = template.Library()
+
+
+@register.simple_tag
+def home_media_type_chip(user, media_type):
+    """Resolve one user's validated Home media-type label appearance."""
+    return media_type_chip_preferences(user, media_type)
 
 
 @register.simple_tag

@@ -38,9 +38,12 @@
           {% endif %}
 
           {% if show_media_type_chip|default:False %}
-            <div class="absolute top-2 left-2 z-20 rounded-md border border-white/15 bg-gray-950/90 px-2 py-1 shadow-md backdrop-blur-sm"
-                 data-media-type-chip="{{ resolved_media_type }}">
-              <span class="text-[10px] font-bold uppercase tracking-[0.08em] text-white drop-shadow-sm">{{ resolved_media_type|media_type_readable }}</span>
+            {% home_media_type_chip user resolved_media_type as media_type_chip %}
+            <div class="media-type-chip media-type-chip--{{ media_type_chip.style }}"
+                 data-media-type-chip="{{ resolved_media_type }}"
+                 data-media-type-chip-style="{{ media_type_chip.style }}"
+                 style="--media-type-chip-color: {{ media_type_chip.color }}; --media-type-chip-contrast: {{ media_type_chip.contrast }}">
+              <span>{{ resolved_media_type|media_type_readable }}</span>
             </div>
           {% elif show_status_chip|default_if_none:True %}
             {% include "app/components/media_card_status_chip.html" with media=media current_sort_value=current_sort_value recommend_mode=recommend_mode show_next_event_chip=show_next_event_chip Status=Status only %}

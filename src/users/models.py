@@ -1190,6 +1190,25 @@ class User(AbstractUser):
         default=False,
         help_text="Show a media-type header (icon + name) above each group of home screen rows",
     )
+    home_media_type_chips_enabled = models.BooleanField(
+        default=True,
+        help_text="Show media-type labels on mixed in-progress and finished Home rows",
+    )
+    home_media_type_chip_style = models.CharField(
+        max_length=12,
+        default="soft",
+        choices=[
+            ("solid", "Solid"),
+            ("soft", "Soft"),
+            ("outline", "Outline"),
+        ],
+        help_text="Appearance of media-type labels on mixed Home rows",
+    )
+    home_media_type_chip_colors = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Custom hexadecimal label colors keyed by media type",
+    )
     home_binge_grouping_enabled = models.BooleanField(
         default=True,
         help_text="Group consecutive episodes of the same series into a single expandable card in the home activity journal",

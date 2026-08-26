@@ -2704,9 +2704,9 @@ def _shelf_finished_entries(
     )
 
 
-def _show_media_type_chip(row: HomeScreenRow, media_type: str) -> bool:
+def _show_media_type_chip(user, row: HomeScreenRow, media_type: str) -> bool:
     """Use the poster corner for identity when an active/completed row mixes media."""
-    if media_type != HOME_ALL_MEDIA_TYPE:
+    if media_type != HOME_ALL_MEDIA_TYPE or not user.home_media_type_chips_enabled:
         return False
     if row.row_type in {
         HomeScreenRowTypeChoices.SHELF_RESUME,
@@ -2724,6 +2724,49 @@ def _show_media_type_chip(row: HomeScreenRow, media_type: str) -> bool:
 
 
 MIN_BINGE_EPISODES = 2
+
+
+def _episode_series_identity(entry: dict) -> tuple[str, str] | None:
+    show = entry.get("show")
+    if isinstance(show, dict):
+        if show.get("source") is not None and show.get("media_id") is not None:
+            return str(show["source"]), str(show["media_id"])
+        if show.get("id") is not None:
+            return "id", str(show["id"])
+    elif show is not None:
+        source = getattr(show, "source", None)
+        media_id = getattr(show, "media_id", None)
+        if source is not None and media_id is not None:
+            return str(source), str(media_id)
+        if getattr(show, "id", None) is not None:
+            return "id", str(show.id)
+
+    item = entry.get("item")
+    if isinstance(item, dict):
+        source = item.get("source")
+        media_id = item.get("media_id")
+    else:
+        source = getattr(item, "source", None)
+        media_id = getattr(item, "media_id", None)
+    if source is None or media_id is None:
+        source = entry.get("source")
+        media_id = entry.get("media_id")
+    if source is None or media_id is None:
+        return None
+    return str(source), str(media_id)
+
+
+def _episode_series_title(entry: dict) -> str | None:
+    show = entry.get("show")
+    if isinstance(show, dict):
+        title = show.get("title")
+    else:
+        title = getattr(show, "title", None)
+    if title:
+        return title
+    item = entry.get("item")
+    item_title = None if isinstance(item, dict) else getattr(item, "title", None)
+    return entry.get("series_title") or item_title or entry.get("title")
 
 
 def group_watch_entries_by_binge(
@@ -2749,17 +2792,7 @@ def group_watch_entries_by_binge(
             i += 1
             continue
 
-        curr_item = curr.get("item")
-        curr_media_id = (
-            getattr(curr_item, "media_id", None)
-            if curr_item
-            else curr.get("media_id")
-        )
-        curr_source = (
-            getattr(curr_item, "source", None)
-            if curr_item
-            else curr.get("source")
-        )
+        curr_identity = _episode_series_identity(curr)
 
         j = i + 1
         while j < n:
@@ -2770,23 +2803,7 @@ def group_watch_entries_by_binge(
             )
             if not next_is_ep:
                 break
-            next_item = next_e.get("item")
-            next_media_id = (
-                getattr(next_item, "media_id", None)
-                if next_item
-                else next_e.get("media_id")
-            )
-            next_source = (
-                getattr(next_item, "source", None)
-                if next_item
-                else next_e.get("source")
-            )
-            if (
-                curr_media_id is not None
-                and next_media_id is not None
-                and curr_media_id == next_media_id
-                and curr_source == next_source
-            ):
+            if curr_identity is not None and _episode_series_identity(next_e) == curr_identity:
                 j += 1
             else:
                 break
@@ -2810,11 +2827,7 @@ def group_watch_entries_by_binge(
                 episode_range = f"S{season:02d}E{min(ep_nums):02d}-E{max(ep_nums):02d}"
 
             total_runtime = sum(e.get("runtime_minutes") or 0 for e in run)
-            series_title = latest.get("series_title") or (
-                getattr(latest.get("item"), "title", None)
-                if latest.get("item")
-                else latest.get("title")
-            )
+            series_title = _episode_series_title(latest)
 
             result.append(
                 {
@@ -2825,7 +2838,7 @@ def group_watch_entries_by_binge(
                     "count": len(run),
                     "total_runtime_minutes": total_runtime,
                     "episodes": run,
-                    "group_id": f"binge-{curr_media_id}-{i}",
+                    "group_id": f"binge-{curr_identity[0]}-{curr_identity[1]}-{i}",
                 }
             )
         else:
@@ -2977,7 +2990,7 @@ def _build_row_section(
         "total": len(entries),
         "loaded_count": loaded_count,
         "show_played_chip": row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
-        "show_media_type_chip": _show_media_type_chip(row, media_type),
+        "show_media_type_chip": _show_media_type_chip(user, row, media_type),
         "card_width_class": "w-44",
         "grid_class": "media-grid media-grid-square"
         if media_type in SQUARE_HOME_MEDIA_TYPES
