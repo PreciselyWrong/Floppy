@@ -202,6 +202,9 @@ class ThemeTokenContractTests(SimpleTestCase):
         portal = Path(
             settings.BASE_DIR, "static", "js", "modalPortal.js"
         ).read_text(encoding="utf-8")
+        modal_handler = Path(
+            settings.BASE_DIR, "static", "js", "mediaStatusDateHandler.js"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("js/modalPortal.js", base)
         self.assertIn('document.querySelectorAll(".fixed.inset-0")', portal)
@@ -209,6 +212,8 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("overlay._x_dataStack", portal)
         self.assertIn("document.body.appendChild(overlay)", portal)
         self.assertIn("htmx:afterSettle", portal)
+        self.assertIn("node._x_dataStack", modal_handler)
+        self.assertIn("stateTarget.data[stateTarget.stateKey] = isOpen", modal_handler)
 
     def test_home_screen_row_controls_wrap_inside_their_panel(self):
         template = Path(

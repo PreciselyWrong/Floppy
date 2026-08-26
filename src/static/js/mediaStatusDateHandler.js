@@ -153,12 +153,19 @@ function trackModalFindStateTarget(target) {
         node.getAttribute("x-show"),
       );
       if (stateKey) {
+        const stackData = node._x_dataStack?.find((data) =>
+          Object.prototype.hasOwnProperty.call(data, stateKey),
+        );
+        if (stackData) {
+          return { data: stackData, stateKey };
+        }
+
         let host = node;
         while (host && !host.hasAttribute?.("x-data")) {
           host = host.parentElement;
         }
         if (host) {
-          return { host, stateKey };
+          return { data: Alpine.$data(host), stateKey };
         }
       }
     }
@@ -172,13 +179,13 @@ function trackModalFindStateTarget(target) {
         const data = Alpine.$data(node);
         if (data) {
           if (Object.prototype.hasOwnProperty.call(data, "createTrackOpen")) {
-            return { host: node, stateKey: "createTrackOpen" };
+            return { data, stateKey: "createTrackOpen" };
           }
           if (Object.prototype.hasOwnProperty.call(data, "editTrackOpen")) {
-            return { host: node, stateKey: "editTrackOpen" };
+            return { data, stateKey: "editTrackOpen" };
           }
           if (Object.prototype.hasOwnProperty.call(data, "trackOpen")) {
-            return { host: node, stateKey: "trackOpen" };
+            return { data, stateKey: "trackOpen" };
           }
         }
       } catch {
@@ -198,11 +205,10 @@ function trackModalSetOpen(target, isOpen) {
   }
 
   try {
-    const data = Alpine.$data(stateTarget.host);
-    if (!data || !(stateTarget.stateKey in data)) {
+    if (!stateTarget.data || !(stateTarget.stateKey in stateTarget.data)) {
       return false;
     }
-    data[stateTarget.stateKey] = isOpen;
+    stateTarget.data[stateTarget.stateKey] = isOpen;
     return true;
   } catch {
     return false;
