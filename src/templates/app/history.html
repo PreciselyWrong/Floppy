@@ -12,6 +12,11 @@
   cacheUpdater: null,
   refreshListener: null,
   loggingStyle: '{{ user.game_logging_style|default:"repeats" }}',
+  timelineFamily: 'all',
+  dayMatches(day) {
+    return this.timelineFamily === 'all'
+      || Boolean(day.querySelector(`[data-timeline-family='${this.timelineFamily}']`));
+  },
   init() {
     const urlParams = new URLSearchParams(window.location.search);
     const urlLoggingStyle = urlParams.get('logging_style');
@@ -83,6 +88,38 @@
   </div>
   
 <div class="history-page">
+  {% if history_mode != "release" %}
+    <nav class="history-timeline-filters mb-6 overflow-x-auto"
+         aria-label="Filter history by media family">
+      <div class="flex min-w-max gap-2" role="group">
+        <button type="button"
+                data-timeline-chip="all"
+                @click="timelineFamily = 'all'"
+                :aria-pressed="timelineFamily === 'all'"
+                :class="timelineFamily === 'all' ? 'history-timeline-chip-active' : ''"
+                class="history-timeline-chip">All</button>
+        <button type="button"
+                data-timeline-chip="movies"
+                @click="timelineFamily = 'movies'"
+                :aria-pressed="timelineFamily === 'movies'"
+                :class="timelineFamily === 'movies' ? 'history-timeline-chip-active' : ''"
+                class="history-timeline-chip">Movies</button>
+        <button type="button"
+                data-timeline-chip="series"
+                @click="timelineFamily = 'series'"
+                :aria-pressed="timelineFamily === 'series'"
+                :class="timelineFamily === 'series' ? 'history-timeline-chip-active' : ''"
+                class="history-timeline-chip">Series</button>
+        <button type="button"
+                data-timeline-chip="books"
+                @click="timelineFamily = 'books'"
+                :aria-pressed="timelineFamily === 'books'"
+                :class="timelineFamily === 'books' ? 'history-timeline-chip-active' : ''"
+                class="history-timeline-chip">Books</button>
+      </div>
+    </nav>
+  {% endif %}
+
   {# Month-based navigation header #}
   {# Left = toward present (newer), Right = toward past (older) #}
   {% if use_month_view %}

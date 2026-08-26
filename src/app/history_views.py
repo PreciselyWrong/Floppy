@@ -23,6 +23,7 @@ from app import (
     helpers,
     history_cache,
     history_processor,
+    history_timeline,
 )
 from app import statistics as stats
 from app.models import BasicMedia, MediaTypes
@@ -754,6 +755,7 @@ def _annotate_history_day_for_template(day):
             "next_entry_offset": len(entries),
             "has_more": False,
             "remaining_entry_count": 0,
+            "timeline_entries": history_timeline.group_day_timeline_entries(entries),
         },
     )
     return annotated_day
@@ -779,6 +781,9 @@ def _prepare_history_day_page(day, user, filters, offset=0):
     page_size = history_cache.HISTORY_ENTRIES_PER_DAY_PAGE
     entries = annotated_day["entries"]
     annotated_day["entries"] = entries[offset : offset + page_size]
+    annotated_day["timeline_entries"] = history_timeline.group_day_timeline_entries(
+        annotated_day["entries"],
+    )
     annotated_day["entry_offset"] = offset
     annotated_day["next_entry_offset"] = offset + page_size
     annotated_day["has_more"] = offset + page_size < annotated_day["entry_count"]
