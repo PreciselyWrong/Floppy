@@ -448,18 +448,31 @@ class HomeScreenViewTests(TestCase):
 
     def test_home_screen_renders_in_progress_episode_navigation_row_option(self):
         self._set_enabled_media_types(MediaTypes.TV.value)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=home_screen.HOME_ALL_MEDIA_TYPE,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [MediaTypes.TV.value, MediaTypes.MOVIE.value],
+            },
+        )
 
         response = self.client.get(reverse("home_screen"))
 
         self.assertContains(response, "Open episode on card click")
         self.assertContains(response, "isInProgressEpisodeRow(section, row)")
+        self.assertContains(
+            response,
+            "selectedTypes.some(mediaType => ['tv', 'anime', 'season'].includes(mediaType))",
+        )
         sections = json.loads(response.context["home_screen_sections_json"])
-        tv_section = next(
+        all_media_section = next(
             section
             for section in sections
-            if section["media_type"] == MediaTypes.TV.value
+            if section["media_type"] == home_screen.HOME_ALL_MEDIA_TYPE
         )
-        self.assertTrue(tv_section["rows"][0]["open_last_episode"])
+        self.assertTrue(all_media_section["rows"][0]["open_last_episode"])
 
     def test_home_rows_progress_filter_ignores_dropped_tv_seasons(self):
         """Home not-caught-up rows should ignore dropped TV seasons."""

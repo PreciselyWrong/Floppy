@@ -851,8 +851,12 @@
         },
         isInProgressEpisodeRow(section, row) {
           const statuses = this.rowStatusValues(row);
+          const selectedTypes = Array.isArray(row.filters?.media_types) ? row.filters.media_types : [];
+          const supportsEpisodes = ['tv', 'anime', 'season'].includes(section.media_type)
+            || (section.media_type === 'all'
+              && selectedTypes.some(mediaType => ['tv', 'anime', 'season'].includes(mediaType)));
           return row.row_type === 'library_query'
-            && ['tv', 'anime', 'season'].includes(section.media_type)
+            && supportsEpisodes
             && statuses.length === 1
             && statuses[0] === 'In progress';
         },
