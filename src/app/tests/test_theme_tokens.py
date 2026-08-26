@@ -220,6 +220,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("stateKey in data", modal_handler)
         self.assertIn("stateTarget.data[stateTarget.stateKey] = isOpen", modal_handler)
         self.assertIn("overlay._modalOriginParent.appendChild(overlay)", modal_handler)
+        self.assertIn('overlay.style.display = "none"', modal_handler)
         self.assertIn("overlay.remove()", modal_handler)
 
     def test_home_screen_row_controls_wrap_inside_their_panel(self):
