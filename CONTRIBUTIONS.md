@@ -6,7 +6,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
-| HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `4ed9bd55` | `sha-156f7f51df5a08af96590429fecadeec7e383be9` | Pending | — | Deployed — `All media / In progress` exclut les séries rattrapées, y compris pour les réglages existants; filtre migré, aucune série rattrapée rendue et préflight vert |
+| HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `4ce6573f` | Pending build | Pending | — | On custom — `Stale` en mode `All media` affiche le type de chaque média; 3 tests ciblés, Ruff et contrôle Django verts |
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — calcul, affichage, options et préflight vert |
 | DETAIL-002 | Public reviews from TMDB, BetaSeries and Hardcover | `feat/public-reviews` | `f137348e` | Pending build | Pending | — | On custom — filtres, relance, pagination, attribution; 286 tests ciblés, migration, thèmes, Ruff et CSS verts |
 | PWA-001 | Installable app experience | `feat/pwa-install` | `0a810b38` | `sha-2f3741c8d86dc66a0edfe8b08597d5ecb418eddf` | Changes requested | — | Development — installation non fonctionnelle rapportée par Nicolas |
