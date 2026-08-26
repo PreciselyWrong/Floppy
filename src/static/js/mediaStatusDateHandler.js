@@ -199,20 +199,28 @@ function trackModalFindStateTarget(target) {
 }
 
 function trackModalSetOpen(target, isOpen) {
+  const element = trackModalResolveElement(target);
+  const overlay = element?.closest(".fixed.inset-0");
   const stateTarget = trackModalFindStateTarget(target);
-  if (!stateTarget || !window.Alpine) {
-    return false;
+  let stateUpdated = false;
+
+  if (stateTarget && window.Alpine) {
+    try {
+      if (stateTarget.data && stateTarget.stateKey in stateTarget.data) {
+        stateTarget.data[stateTarget.stateKey] = isOpen;
+        stateUpdated = true;
+      }
+    } catch {
+      stateUpdated = false;
+    }
   }
 
-  try {
-    if (!stateTarget.data || !(stateTarget.stateKey in stateTarget.data)) {
-      return false;
-    }
-    stateTarget.data[stateTarget.stateKey] = isOpen;
+  if (!isOpen && overlay) {
+    overlay.remove();
     return true;
-  } catch {
-    return false;
   }
+
+  return stateUpdated;
 }
 
 function trackModalOpenWhenReady(formId, attempt = 0) {
