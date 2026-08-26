@@ -1,6 +1,10 @@
+import json
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+
+from users.appearance import default_detail_layouts
 
 
 class PublicReviewPreferenceTests(TestCase):
@@ -11,24 +15,30 @@ class PublicReviewPreferenceTests(TestCase):
         )
         self.client.force_login(self.user)
 
-    def test_preferences_persist_review_visibility_and_position(self):
+    def test_appearance_persists_review_visibility_and_order(self):
+        layouts = default_detail_layouts()
+        layouts["episode"]["content"] = ["reviews", "notes", "cast"]
+
         response = self.client.post(
-            reverse("preferences"),
-            {"show_public_reviews": "0", "public_reviews_position": "top"},
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": json.dumps(layouts),
+            },
         )
 
-        self.assertRedirects(response, reverse("preferences"))
+        self.assertRedirects(response, reverse("appearance"))
         self.user.refresh_from_db()
-        self.assertFalse(self.user.show_public_reviews)
-        self.assertEqual("top", self.user.public_reviews_position)
-
-    def test_preferences_render_review_controls(self):
-        response = self.client.get(reverse("preferences"))
-
-        self.assertContains(response, "Public reviews")
-        self.assertContains(response, 'name="public_reviews_position"')
-        content = response.content.decode()
-        self.assertLess(
-            content.index("Public reviews"),
-            content.index("Tracking &amp; Interaction"),
+        self.assertEqual(
+            ["reviews", "notes", "cast"],
+            self.user.detail_page_layouts["episode"]["content"],
         )
+
+    def test_review_controls_only_render_in_appearance(self):
+        appearance = self.client.get(reverse("appearance"))
+        preferences = self.client.get(reverse("preferences"))
+
+        self.assertContains(appearance, "Public reviews")
+        self.assertNotContains(preferences, 'name="show_public_reviews"')
+        self.assertNotContains(preferences, 'name="public_reviews_position"')

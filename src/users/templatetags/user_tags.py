@@ -11,6 +11,9 @@ from users.appearance import (
     custom_theme_css,
     resolved_detail_layouts,
 )
+from users.appearance import (
+    detail_layout_family as resolve_detail_layout_family,
+)
 from users.models import DateFormatChoices, TimeFormatChoices
 
 register = template.Library()
@@ -228,15 +231,7 @@ def detail_section_attrs(user, family, zone, section):
 @register.simple_tag
 def detail_layout_family(media_type):
     """Map generic media types to their shared detail layout family."""
-    if media_type in {"tv", "anime", "season"}:
-        return "series"
-    if media_type in {"game", "boardgame"}:
-        return "game"
-    if media_type == "comic":
-        return "comic"
-    if media_type == "podcast":
-        return "podcast"
-    return "media"
+    return resolve_detail_layout_family(media_type)
 
 
 @register.filter

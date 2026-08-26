@@ -54,6 +54,23 @@ class AppearanceViewTests(TestCase):
 
             self.assertIn("ratings", {section["key"] for section in hero_sections})
 
+    def test_public_reviews_are_configurable_for_supported_detail_families(self):
+        for family_key in ("media", "series", "episode"):
+            content_sections = DETAIL_LAYOUT_FAMILIES[family_key]["zones"]["content"][
+                "sections"
+            ]
+
+            self.assertIn("reviews", {section["key"] for section in content_sections})
+
+        for family_key in ("game", "comic", "podcast"):
+            content_sections = DETAIL_LAYOUT_FAMILIES[family_key]["zones"]["content"][
+                "sections"
+            ]
+
+            self.assertNotIn(
+                "reviews", {section["key"] for section in content_sections}
+            )
+
     def test_appearance_owns_every_logo_control(self):
         response = self.client.get(reverse("appearance"))
 
