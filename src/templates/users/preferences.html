@@ -487,6 +487,48 @@
             <input type="hidden" name="top_talent_sort_by" x-bind:value="selectedValue">
           </div>
         </div>
+
+        <div class="col-span-full p-3 bg-[var(--color-surface-strong)] rounded-md mt-4">
+          <input type="hidden" name="home_media_type_chips_present" value="1">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <label class="text-[var(--color-text-secondary)] text-sm font-medium">Media Type Labels</label>
+              <p class="text-[var(--color-text-muted)] text-xs mt-1">Labels on mixed In progress and Finished posters.</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input type="hidden" name="home_media_type_chips_enabled" value="0">
+              <input class="sr-only peer"
+                     type="checkbox"
+                     name="home_media_type_chips_enabled"
+                     value="1"
+                     {% if user.home_media_type_chips_enabled %}checked{% endif %}>
+              <div class="w-9 h-5 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-px after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4.5 after:w-4.5 after:transition-all peer-checked:bg-indigo-600">
+              </div>
+            </label>
+          </div>
+          <div class="mt-4 grid gap-3 sm:grid-cols-[minmax(0,12rem)_1fr] sm:items-start">
+            <label class="text-xs text-[var(--color-text-muted)]">
+              Appearance
+              <select name="home_media_type_chip_style"
+                      class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-2 py-1.5 text-sm text-[var(--color-text-secondary)]">
+                {% for value, label in media_type_chip_styles %}
+                  <option value="{{ value }}" {% if user.home_media_type_chip_style == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              {% for option in media_type_chip_options %}
+                <label class="flex items-center gap-2 rounded-md bg-[var(--color-panel)] px-2 py-1.5 text-xs text-[var(--color-text-secondary)]">
+                  <input type="color"
+                         name="home_media_type_chip_color_{{ option.value }}"
+                         value="{{ option.color }}"
+                         class="h-5 w-5 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0">
+                  <span class="truncate">{{ option.label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
         </div>
       </section>
 

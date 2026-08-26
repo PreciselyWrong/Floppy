@@ -25,7 +25,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_celery_beat.models import PeriodicTask
 
-from app import history_cache, image_cache, statistics_cache
+from app import config, history_cache, image_cache, statistics_cache
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
 from app.models import Item, MediaTypes, Status
@@ -57,6 +57,12 @@ from users.home_screen import (
     search_home_screen_lists,
     serialize_settings_sections,
     toggle_home_row_direction,
+)
+from users.media_type_chips import (
+    HOME_MEDIA_TYPE_CHIP_STYLES,
+    HOME_MEDIA_TYPE_CHIP_TYPES,
+    default_media_type_chip_color,
+    normalize_media_type_chip_colors,
 )
 from users.models import (
     ActivityHistoryViewChoices,
@@ -1045,6 +1051,9 @@ def preferences(request):
     tvdb_enabled = metadata_resolution.provider_is_enabled(
         MetadataSourceDefaultChoices.TVDB,
     )
+    saved_chip_colors = normalize_media_type_chip_colors(
+        request.user.home_media_type_chip_colors
+    )
 
     if request.method == "POST":
         # Prevent demo users from updating preferences
@@ -1084,6 +1093,9 @@ def preferences(request):
         person_hidden_sections_raw = request.POST.get("person_hidden_sections")
         show_up_next_episode_code_raw = request.POST.get("show_up_next_episode_code")
         now_playing_open_episode_raw = request.POST.get("now_playing_open_episode")
+        home_media_type_chips_present = request.POST.get(
+            "home_media_type_chips_present"
+        )
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1136,6 +1148,30 @@ def preferences(request):
         ):
             request.user.theme = theme
             fields_to_update.append("theme")
+
+        if home_media_type_chips_present is not None:
+            chips_enabled = request.POST.get("home_media_type_chips_enabled") == "1"
+            chip_style = request.POST.get("home_media_type_chip_style")
+            submitted_colors = normalize_media_type_chip_colors(
+                {
+                    media_type: request.POST.get(
+                        f"home_media_type_chip_color_{media_type}"
+                    )
+                    for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+                }
+            )
+            if request.user.home_media_type_chips_enabled != chips_enabled:
+                request.user.home_media_type_chips_enabled = chips_enabled
+                fields_to_update.append("home_media_type_chips_enabled")
+            if (
+                chip_style in HOME_MEDIA_TYPE_CHIP_STYLES
+                and request.user.home_media_type_chip_style != chip_style
+            ):
+                request.user.home_media_type_chip_style = chip_style
+                fields_to_update.append("home_media_type_chip_style")
+            if request.user.home_media_type_chip_colors != submitted_colors:
+                request.user.home_media_type_chip_colors = submitted_colors
+                fields_to_update.append("home_media_type_chip_colors")
 
         if (
             time_format
@@ -1464,6 +1500,23 @@ def preferences(request):
         ),
         "person_sections_order_text": ", ".join(request.user.person_sections_order or []),
         "person_hidden_sections_text": ", ".join(request.user.person_hidden_sections or []),
+        "media_type_chip_styles": (
+            ("solid", "Solid"),
+            ("soft", "Soft"),
+            ("outline", "Outline"),
+        ),
+        "media_type_chip_options": [
+            {
+                "value": media_type,
+                "label": app_tags.media_type_readable(media_type),
+                "color": saved_chip_colors.get(
+                    media_type,
+                    default_media_type_chip_color(media_type),
+                ),
+            }
+            for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+            if config.get_config(media_type)
+        ],
     }
 
     return render(request, "users/preferences.html", context)

@@ -199,9 +199,8 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
         entry["play_count"] = annotated or repeat_attr or 1
         entries.append(entry)
 
-    # Reading (books, comics, manga) and flat anime — single tracking records
-    # anchored on their completion/activity day, mirroring movies. These appear
-    # in both logging styles since they have no per-session/repeat semantics.
+    # Reading and flat anime enter History only when completed. A start date is
+    # progress state, not a finished activity worth logging in the timeline.
     for media_type_value, model in (
         (MediaTypes.BOOK.value, Book),
         (MediaTypes.COMIC.value, Comic),
@@ -213,22 +212,16 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
             and media_type_value not in requested_media_types
         ):
             continue
-        records = (
-            model.objects.filter(user=user)
-            .filter(
-                models.Q(end_date__gte=day_start, end_date__lt=day_end)
-                | (
-                    models.Q(end_date__isnull=True)
-                    & models.Q(start_date__gte=day_start, start_date__lt=day_end)
-                ),
-            )
-            .select_related("item")
-        )
+        records = model.objects.filter(
+            user=user,
+            end_date__gte=day_start,
+            end_date__lt=day_end,
+        ).select_related("item")
         for record in records:
             item = getattr(record, "item", None)
             if not item:
                 continue
-            played_at_local = _localize_datetime(record.end_date or record.start_date)
+            played_at_local = _localize_datetime(record.end_date)
             if not played_at_local:
                 continue
             entry = {

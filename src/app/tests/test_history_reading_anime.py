@@ -132,8 +132,7 @@ class ReadingAnimeHistoryDayTests(TestCase):
 
         self.assertIn(self.day_key, day_keys)
 
-    def test_in_progress_reading_is_indexed_from_its_start_date(self):
-        """An unfinished read is indexed on its start day, as the day builder renders it."""
+    def test_in_progress_reading_is_absent_from_history(self):
         item = Item.objects.create(
             media_id="book-6",
             source=Sources.MANUAL.value,
@@ -141,12 +140,18 @@ class ReadingAnimeHistoryDayTests(TestCase):
             title="Started Book",
             image="http://example.com/x.jpg",
         )
-        Book.objects.create(
+        book = Book.objects.create(
             item=item,
             user=self.user,
             status=Status.IN_PROGRESS.value,
             progress=1,
             start_date=self.now,
         )
+        Book.objects.filter(pk=book.pk).update(
+            status=Status.IN_PROGRESS.value,
+            end_date=None,
+        )
 
-        self.assertIn(self.day_key, history_cache.build_history_index(self.user))
+        self.assertNotIn(self.day_key, history_cache.build_history_index(self.user))
+        self.assertIsNone(history_cache.build_history_day(self.user, self.day_key))
+        self.assertEqual(history_cache.build_history_days(self.user), [])

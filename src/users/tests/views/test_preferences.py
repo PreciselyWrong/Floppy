@@ -67,6 +67,30 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.theme, "system")
 
+    def test_preferences_manage_home_media_type_chip_appearance(self):
+        response = self.client.get(reverse("preferences"))
+        self.assertContains(response, 'name="home_media_type_chips_enabled"')
+        self.assertContains(response, 'name="home_media_type_chip_style"')
+        self.assertContains(response, 'name="home_media_type_chip_color_movie"')
+
+        response = self.client.post(
+            reverse("preferences"),
+            {
+                "home_media_type_chips_present": "1",
+                "home_media_type_chips_enabled": "1",
+                "home_media_type_chip_style": "soft",
+                "home_media_type_chip_color_movie": "#123abc",
+                "home_media_type_chip_color_book": "javascript:alert(1)",
+            },
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.home_media_type_chips_enabled)
+        self.assertEqual(self.user.home_media_type_chip_style, "soft")
+        self.assertEqual(self.user.home_media_type_chip_colors["movie"], "#123ABC")
+        self.assertNotIn("book", self.user.home_media_type_chip_colors)
+
     def test_preferences_display_labels_and_logo(self):
         """The display cards expose the simplified labels and logo choice."""
         response = self.client.get(reverse("preferences"))

@@ -2647,6 +2647,31 @@ class HomeScreenCompanionParityTests(TestCase):
         self.assertFalse(movie_item["is_group"])
         self.assertEqual(movie_item["entry"]["title"], "Inception")
 
+    def test_group_watch_entries_by_binge_accepts_cached_episode_payloads(self):
+        show = {"id": 42, "title": "Great Show", "image": "show.jpg"}
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": {
+                    "media_id": "100",
+                    "source": Sources.TMDB.value,
+                    "title": f"Episode {number}",
+                },
+                "show": show,
+                "season_number": 1,
+                "episode_number": number,
+                "runtime_minutes": 45,
+            }
+            for number in (3, 2)
+        ]
+
+        grouped = home_screen.group_watch_entries_by_binge(episodes)
+
+        self.assertEqual(len(grouped), 1)
+        self.assertTrue(grouped[0]["is_group"])
+        self.assertEqual(grouped[0]["series_title"], "Great Show")
+        self.assertEqual(grouped[0]["count"], 2)
+
     def test_group_watch_entries_by_binge_disabled(self):
         item = Item.objects.create(
             title="Breaking Bad",
@@ -2990,3 +3015,49 @@ class HomeScreenCompanionParityTests(TestCase):
         self.assertContains(response, ">Movie</span>", html=False)
         self.assertContains(response, 'data-media-type-chip="tv"')
         self.assertContains(response, ">TV Show</span>", html=False)
+
+    def test_all_media_type_chips_follow_user_appearance_preferences(self):
+        self.user.movie_enabled = True
+        self.user.home_media_type_chips_enabled = True
+        self.user.home_media_type_chip_style = "outline"
+        self.user.home_media_type_chip_colors = {"movie": "#123ABC"}
+        self.user.save(
+            update_fields=[
+                "movie_enabled",
+                "home_media_type_chips_enabled",
+                "home_media_type_chip_style",
+                "home_media_type_chip_colors",
+            ]
+        )
+        HomeScreenRow.objects.filter(user=self.user).delete()
+        item = Item.objects.create(
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+            media_id="styled-chip-movie",
+            title="Styled Movie",
+            image="https://example.com/movie.jpg",
+        )
+        Movie.objects.create(
+            user=self.user,
+            item=item,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_RESUME,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertContains(response, 'data-media-type-chip-style="outline"')
+        self.assertContains(response, "--media-type-chip-color: #123ABC")
+
+        self.user.home_media_type_chips_enabled = False
+        self.user.save(update_fields=["home_media_type_chips_enabled"])
+        cache.clear()
+        response = self.client.get(reverse("home"))
+        self.assertNotContains(response, 'data-media-type-chip="movie"')
