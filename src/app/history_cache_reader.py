@@ -418,7 +418,7 @@ def get_recent_history_entries(user, media_type, *, limit, offset):
 
         for day in days:
             for entry in day.get("entries", []):
-                if _entry_home_media_type(entry) != media_type:
+                if media_type != "all" and _entry_home_media_type(entry) != media_type:
                     continue
                 if skipped < offset:
                     skipped += 1

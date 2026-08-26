@@ -15,6 +15,38 @@ def _entry(key, media_type, *, library_media_type=None):
 
 class RecentHistoryEntryReaderTests(SimpleTestCase):
     @patch("app.history_cache_reader.get_cached_history_window")
+    def test_all_media_returns_every_supported_history_entry(self, cached_window):
+        cached_window.return_value = (
+            [
+                {
+                    "entries": [
+                        _entry("movie", MediaTypes.MOVIE.value),
+                        _entry(
+                            "tv",
+                            MediaTypes.EPISODE.value,
+                            library_media_type=MediaTypes.TV.value,
+                        ),
+                        _entry("book", MediaTypes.BOOK.value),
+                    ]
+                }
+            ],
+            1,
+        )
+
+        entries, has_more = history_cache_reader.get_recent_history_entries(
+            self.user,
+            "all",
+            limit=14,
+            offset=0,
+        )
+
+        self.assertEqual(
+            [entry["entry_key"] for entry in entries],
+            ["movie", "tv", "book"],
+        )
+        self.assertFalse(has_more)
+
+    @patch("app.history_cache_reader.get_cached_history_window")
     def test_returns_one_bounded_entry_window_and_has_more(self, cached_window):
         cached_window.return_value = (
             [
