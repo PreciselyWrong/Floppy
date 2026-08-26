@@ -27,3 +27,8 @@ class PublicReviewPreferenceTests(TestCase):
 
         self.assertContains(response, "Public reviews")
         self.assertContains(response, 'name="public_reviews_position"')
+        content = response.content.decode()
+        self.assertLess(
+            content.index("Public reviews"),
+            content.index("Tracking &amp; Interaction"),
+        )
