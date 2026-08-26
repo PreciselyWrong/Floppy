@@ -6,6 +6,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
+| HISTORY-002 | Expandable cached episode groups | `fix/activity-journal-binge-cache` | `e6b879ac` | Pending build | Pending | — | Validated — Activity Journal et History conservent les épisodes derrière le total groupé; compteur, plage, chevron et option vérifiés par 55 tests |
 | HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `4ce6573f` | Pending build | Pending | — | On custom — `Stale` en mode `All media` affiche le type de chaque média; 3 tests ciblés, Ruff et contrôle Django verts |
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — calcul, affichage, options et préflight vert |
 | DETAIL-002 | Public reviews from TMDB, BetaSeries and Hardcover | `feat/public-reviews` | `f137348e` | `sha-b52ab589f5f2c39de6939ac149163c84ed0a8d25` | Pending | — | Deployed — filtres, relance, pagination et attribution; 286 tests ciblés et préflight distant vert |
