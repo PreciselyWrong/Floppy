@@ -13,7 +13,6 @@ class PublicReviewDetailIntegrationTests(TestCase):
         self.user = get_user_model().objects.create_user(
             username="public-review-detail-user",
             password="secret",
-            public_reviews_position="top",
         )
         self.client.force_login(self.user)
         self.provider = ReviewProvider("Test", lambda *_: [])
@@ -44,20 +43,13 @@ class PublicReviewDetailIntegrationTests(TestCase):
         }
 
         response = self.client.get(
-            self._detail_url(Sources.TMDB.value, MediaTypes.MOVIE.value)
+            self._detail_url(Sources.TMDB.value, MediaTypes.MOVIE.value),
+            {"fragment": "secondary"},
         )
 
         self.assertContains(response, "Loading public reviews")
-        self.assertContains(response, 'data-public-reviews-position="top"')
-        self.assertEqual("top", response.context["public_reviews_position"])
-        content = response.content.decode()
-        self.assertLess(
-            content.index("Movie synopsis marker."),
-            content.index('data-public-reviews-position="top"'),
-        )
-        self.assertLess(
-            content.index('data-public-reviews-position="top"'),
-            content.index('id="detail-secondary-content"'),
+        self.assertContains(
+            response, 'data-detail-section="reviews" style="order: 5"'
         )
 
     @patch("app.media_details_views.providers_for_target")
@@ -76,19 +68,13 @@ class PublicReviewDetailIntegrationTests(TestCase):
         }
 
         response = self.client.get(
-            self._detail_url(Sources.TMDB.value, MediaTypes.TV.value, "1399")
+            self._detail_url(Sources.TMDB.value, MediaTypes.TV.value, "1399"),
+            {"fragment": "secondary"},
         )
 
         self.assertContains(response, "Loading public reviews")
-        self.assertContains(response, 'data-public-reviews-position="top"')
-        content = response.content.decode()
-        self.assertLess(
-            content.index("Series synopsis marker."),
-            content.index('data-public-reviews-position="top"'),
-        )
-        self.assertLess(
-            content.index('data-public-reviews-position="top"'),
-            content.index('id="detail-secondary-content"'),
+        self.assertContains(
+            response, 'data-detail-section="reviews" style="order: 6"'
         )
 
     @patch("app.media_details_views.providers_for_target")
@@ -106,19 +92,13 @@ class PublicReviewDetailIntegrationTests(TestCase):
         }
 
         response = self.client.get(
-            self._detail_url(Sources.HARDCOVER.value, MediaTypes.BOOK.value, "312460")
+            self._detail_url(Sources.HARDCOVER.value, MediaTypes.BOOK.value, "312460"),
+            {"fragment": "secondary"},
         )
 
         self.assertContains(response, "Loading public reviews")
-        self.assertContains(response, 'data-public-reviews-position="top"')
-        content = response.content.decode()
-        self.assertLess(
-            content.index("Book synopsis marker."),
-            content.index('data-public-reviews-position="top"'),
-        )
-        self.assertLess(
-            content.index('data-public-reviews-position="top"'),
-            content.index('id="detail-secondary-content"'),
+        self.assertContains(
+            response, 'data-detail-section="reviews" style="order: 5"'
         )
 
     @patch("app.views.providers_for_target")
@@ -165,14 +145,18 @@ class PublicReviewDetailIntegrationTests(TestCase):
         )
 
         self.assertContains(response, "Loading public reviews")
-        self.assertContains(response, 'data-public-reviews-position="top"')
+        self.assertContains(
+            response, 'data-detail-section="reviews" style="order: 3"'
+        )
         self.assertContains(response, "season=1&amp;episode=1&amp;tvdb_id=81189")
 
     @patch("app.media_details_views.providers_for_target")
     @patch("app.providers.services.get_media_metadata")
-    def test_bottom_position_is_applied_to_the_detail_loader(self, metadata, providers):
-        self.user.public_reviews_position = "bottom"
-        self.user.save(update_fields=["public_reviews_position"])
+    def test_saved_order_is_applied_to_the_detail_loader(self, metadata, providers):
+        self.user.detail_page_layouts = {
+            "media": {"content": ["reviews", "notes", "cast"]}
+        }
+        self.user.save(update_fields=["detail_page_layouts"])
         providers.return_value = (self.provider,)
         metadata.return_value = {
             "media_id": "238",
@@ -188,4 +172,6 @@ class PublicReviewDetailIntegrationTests(TestCase):
             {"fragment": "secondary"},
         )
 
-        self.assertContains(response, 'data-public-reviews-position="bottom"')
+        self.assertContains(
+            response, 'data-detail-section="reviews" style="order: 0"'
+        )

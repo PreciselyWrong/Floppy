@@ -77,7 +77,7 @@ docker compose up -d
 - ⛔ Déplacer l'installation du filtre de logs ou élargir son `except` — une panne peut alors exposer des secrets silencieusement.
 - ⛔ Utiliser une classe Tailwind `dark:` — elle suit l'OS et contredit le choix de thème explicite de l'utilisateur.
 - ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
-- ⛔ Placer les réglages des avis publics dans une section de suivi — ils appartiennent à « Display & Layout » avec les autres options d’apparence.
+- ⛔ Placer les réglages des avis publics dans les préférences générales — ils appartiennent au configurateur « Detail pages » d’Appearance, avec une visibilité et un ordre par famille.
 - ⛔ Créer une liste horizontale de cartes sans le geste partagé `data-horizontal-scroll` — le doigt, la souris, le stylet et le clavier doivent tous pouvoir la parcourir.
 - ⛔ Laisser un effet de survol dépasser du scrollport sans réserver sa marge — le haut des affiches ne doit jamais être découpé au hover.
 - ⛔ Décaler horizontalement une rangée pour compenser son hover — la première carte doit rester alignée avec le titre.

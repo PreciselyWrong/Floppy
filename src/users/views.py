@@ -963,6 +963,10 @@ def appearance(request):
         request.user.theme = theme
         request.user.custom_theme = custom_theme
         request.user.detail_page_layouts = detail_layouts
+        request.user.show_public_reviews = any(
+            "reviews" in family_layout.get("content", [])
+            for family_layout in detail_layouts.values()
+        )
         request.user.logo_style = logo_style
         request.user.logo_text = logo_text
         request.user.logo_text_font = logo_text_font
@@ -975,6 +979,7 @@ def appearance(request):
                 "theme",
                 "custom_theme",
                 "detail_page_layouts",
+                "show_public_reviews",
                 "logo_style",
                 "logo_text",
                 "logo_text_font",
@@ -1092,8 +1097,6 @@ def preferences(request):
             "hide_completed_recommendations"
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
-        show_public_reviews_raw = request.POST.get("show_public_reviews")
-        public_reviews_position = request.POST.get("public_reviews_position")
         progress_bar_raw = request.POST.get("progress_bar")
         season_enrichment_raw = request.POST.get("show_season_enrichment")
         episode_public_ratings_raw = request.POST.get("show_episode_public_ratings")
@@ -1409,19 +1412,6 @@ def preferences(request):
                     book_comic_manga_progress_percentage
                 )
                 fields_to_update.append("book_comic_manga_progress_percentage")
-
-        if show_public_reviews_raw is not None:
-            show_public_reviews = show_public_reviews_raw == "1"
-            if request.user.show_public_reviews != show_public_reviews:
-                request.user.show_public_reviews = show_public_reviews
-                fields_to_update.append("show_public_reviews")
-
-        if (
-            public_reviews_position in {"top", "bottom"}
-            and request.user.public_reviews_position != public_reviews_position
-        ):
-            request.user.public_reviews_position = public_reviews_position
-            fields_to_update.append("public_reviews_position")
 
         provider_region = request.POST.get("watch_provider_region", "")
         if provider_region in [region[0] for region in watch_provider_regions]:

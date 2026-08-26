@@ -81,6 +81,7 @@ from app.view_constants import (
     force_live_metadata_cache_key,
 )
 from lists.views_helpers import get_public_list_for_item
+from users.appearance import detail_layout_family, detail_section_enabled
 from users.models import HomePinnedItem
 
 logger = logging.getLogger(__name__)
@@ -2057,7 +2058,12 @@ def media_details(
     review_user = request.user if request.user.is_authenticated else None
     public_reviews_preview_url = None
     if (
-        (not request.user.is_authenticated or request.user.show_public_reviews)
+        detail_section_enabled(
+            request.user,
+            detail_layout_family(media_type),
+            "content",
+            "reviews",
+        )
         and providers_for_target(review_target, review_user)
     ):
         public_reviews_preview_url = reverse(
@@ -2205,11 +2211,6 @@ def media_details(
         "carousel_supported": carousel_supported,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
         "public_reviews_preview_url": public_reviews_preview_url,
-        "public_reviews_position": (
-            request.user.public_reviews_position
-            if request.user.is_authenticated
-            else "bottom"
-        ),
         **_build_detail_person_rows(media_metadata, item=detail_item),
     }
     logger.info(

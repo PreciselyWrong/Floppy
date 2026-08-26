@@ -5,6 +5,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from app.public_reviews import PublicReview, ReviewFeed, ReviewProblem, ReviewProvider
+from users.appearance import default_detail_layouts
 
 
 @override_settings(BETASERIES_API_KEY="", TMDB_API="tmdb-key")
@@ -239,8 +240,10 @@ class PublicReviewViewTests(TestCase):
 
     @patch("app.public_review_views.collect_reviews")
     def test_hidden_preview_does_not_call_providers(self, collect):
-        self.user.show_public_reviews = False
-        self.user.save(update_fields=["show_public_reviews"])
+        layouts = default_detail_layouts()
+        layouts["media"]["content"].remove("reviews")
+        self.user.detail_page_layouts = layouts
+        self.user.save(update_fields=["detail_page_layouts"])
 
         response = self.client.get(reverse("public_reviews_preview", kwargs=self.kwargs))
 

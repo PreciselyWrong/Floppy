@@ -14,6 +14,7 @@ from app.public_reviews import (
     providers_for_target,
     sort_reviews,
 )
+from users.appearance import detail_layout_family, detail_section_enabled
 
 VALID_SORTS = {"recent", "oldest", "best", "worst"}
 REVIEW_QUERY_KEYS = ("season", "episode", "tvdb_id", "imdb_id")
@@ -49,8 +50,13 @@ def _target(media_type, source, media_id, request):
     )
 
 
-def _hidden(request):
-    return request.user.is_authenticated and not request.user.show_public_reviews
+def _hidden(request, media_type):
+    return not detail_section_enabled(
+        request.user,
+        detail_layout_family(media_type),
+        "content",
+        "reviews",
+    )
 
 
 def _review_querystring(request):
@@ -116,7 +122,7 @@ def _collect_pages(target, user, providers, page):
 @require_GET
 def public_reviews_preview(request, source, media_type, media_id, title):
     """Render the two-review lazy detail-page preview."""
-    if _hidden(request):
+    if _hidden(request, media_type):
         return HttpResponse("")
     target = _target(media_type, source, media_id, request)
     providers = providers_for_target(target, request.user if request.user.is_authenticated else None)
@@ -144,7 +150,7 @@ def public_reviews_preview(request, source, media_type, media_id, title):
 @require_GET
 def public_reviews(request, source, media_type, media_id, title):
     """Render the complete sortable review feed."""
-    if _hidden(request):
+    if _hidden(request, media_type):
         return HttpResponse("")
     target = _target(media_type, source, media_id, request)
     providers = providers_for_target(target, request.user if request.user.is_authenticated else None)

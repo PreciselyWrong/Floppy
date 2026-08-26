@@ -91,6 +91,7 @@ DETAIL_LAYOUT_FAMILIES = {
                 ("cast", "Cast"),
                 ("crew", "Crew"),
                 ("recommendations", "Recommendations"),
+                ("reviews", "Public reviews"),
             ),
         },
     },
@@ -114,6 +115,7 @@ DETAIL_LAYOUT_FAMILIES = {
                 ("cast", "Cast"),
                 ("crew", "Crew"),
                 ("recommendations", "Recommendations"),
+                ("reviews", "Public reviews"),
             ),
         },
     },
@@ -147,6 +149,7 @@ DETAIL_LAYOUT_FAMILIES = {
                 ("notes", "Notes"),
                 ("cast", "Cast"),
                 ("crew", "Crew"),
+                ("reviews", "Public reviews"),
             )
         },
     },
@@ -271,6 +274,32 @@ def resolved_detail_layouts(saved_layouts):
             if zone_key in resolved[family_key] and isinstance(section_keys, list):
                 resolved[family_key][zone_key] = section_keys
     return resolved
+
+
+def detail_layout_family(media_type):
+    """Map a media type to the detail-page family used by Appearance."""
+    if media_type == "episode":
+        return "episode"
+    if media_type in {"tv", "anime", "season"}:
+        return "series"
+    if media_type in {"game", "boardgame"}:
+        return "game"
+    if media_type == "comic":
+        return "comic"
+    if media_type == "podcast":
+        return "podcast"
+    return "media"
+
+
+def detail_section_enabled(user, family, zone, section):
+    """Return whether a detail section is enabled for an authenticated user."""
+    saved_layouts = (
+        getattr(user, "detail_page_layouts", {})
+        if getattr(user, "is_authenticated", False)
+        else {}
+    )
+    sections = resolved_detail_layouts(saved_layouts).get(family, {}).get(zone, [])
+    return section in sections
 
 
 def parse_detail_layouts(raw_payload):

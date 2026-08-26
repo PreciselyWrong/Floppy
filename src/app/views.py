@@ -391,6 +391,7 @@ from integrations import anime_mapping
 from integrations.models import CollectionSourceState
 from lists.models import CustomList
 from lists.views_helpers import get_public_list_for_item
+from users.appearance import detail_section_enabled
 from users.home_screen import build_home_page_groups
 from users.models import (
     HomeSortChoices,
@@ -1020,7 +1021,7 @@ def episode_details(
     )
     review_user = request.user if request.user.is_authenticated else None
     if (
-        (not request.user.is_authenticated or request.user.show_public_reviews)
+        detail_section_enabled(request.user, "episode", "content", "reviews")
         and providers_for_target(review_target, review_user)
     ):
         review_url = reverse(
@@ -1044,11 +1045,6 @@ def episode_details(
             }
         )
         context["public_reviews_preview_url"] = f"{review_url}?{review_query}"
-        context["public_reviews_position"] = (
-            request.user.public_reviews_position
-            if request.user.is_authenticated
-            else "bottom"
-        )
     return render(request, "app/episode_details.html", context)
 
 
