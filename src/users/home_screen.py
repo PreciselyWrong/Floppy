@@ -1235,12 +1235,11 @@ def home_row_header_title_parts(row: HomeScreenRow, user) -> tuple[str, str | No
 
 
 def toggle_home_row_direction(user, row_id: int) -> HomeScreenRow:
-    """Flip a library Home row's direction and persist it."""
+    """Flip a Home row's direction and persist it."""
     row = (
         HomeScreenRow.objects.filter(
             user=user,
             id=row_id,
-            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
         )
         .select_related("custom_list")
         .first()
@@ -1548,7 +1547,7 @@ def search_home_screen_lists(user, query: str, media_type: str) -> list[dict]:
 
 def _item_matches_home_media_type(item: Item, media_type: str) -> bool:
     if media_type == HOME_ALL_MEDIA_TYPE:
-        return True
+        return item.media_type != MediaTypes.SEASON.value
     library_media_type = getattr(item, "library_media_type", "") or ""
     return media_type in (library_media_type, item.media_type)
 
@@ -2333,6 +2332,9 @@ def sort_home_entries(
     )
 
 
+MAX_HOME_ROW_TOTAL_ENTRIES = 60
+
+
 def _library_query_entries(
     user, row: HomeScreenRow, collection_context_cache: dict | None = None,
 ) -> list[HomeRowEntry]:
@@ -2345,18 +2347,18 @@ def _library_query_entries(
                 normalized_filters,
                 row.sort_by,
                 row.direction,
-            )
+            )[:MAX_HOME_ROW_TOTAL_ENTRIES]
         if subview == MUSIC_SUBVIEW_ARTISTS:
             return _build_artist_home_entries(
                 user,
                 normalized_filters,
                 row.sort_by,
                 row.direction,
-            )
+            )[:MAX_HOME_ROW_TOTAL_ENTRIES]
         # MUSIC_SUBVIEW_TRACKS falls through to the standard Music/Item query below.
     status_filter = normalized_filters.get("status") or []
     rule_media_types = (
-        get_enabled_home_media_types(user)
+        [m for m in get_enabled_home_media_types(user) if m != MediaTypes.SEASON.value]
         if row.media_type == HOME_ALL_MEDIA_TYPE
         else [row.media_type]
     )
@@ -2404,7 +2406,7 @@ def _library_query_entries(
     entries = _apply_progress_filter(
         entries, row.media_type, normalized_filters.get("progress", "all")
     )
-    return sort_home_entries(entries, row.sort_by, row.direction)
+    return sort_home_entries(entries, row.sort_by, row.direction)[:MAX_HOME_ROW_TOTAL_ENTRIES]
 
 
 def _custom_list_entries(user, row: HomeScreenRow) -> list[HomeRowEntry]:
@@ -2808,13 +2810,14 @@ def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
     if not days:
         return None
 
-    excluded_families = set(row.filters.get("excluded_families") or [])
     if row.media_type != HOME_ALL_MEDIA_TYPE:
         target_media_types = {row.media_type}
     else:
-        target_media_types = (
-            set(get_enabled_home_media_types(user)) - excluded_families
-        )
+        target_media_types = set(get_enabled_home_media_types(user))
+        if row.filters and "media_types" in row.filters:
+            selected = row.filters.get("media_types")
+            if selected:
+                target_media_types = set(selected)
 
     processed_days = []
     enable_binge = row.filters.get(

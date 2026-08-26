@@ -2367,3 +2367,60 @@ class HomeScreenCompanionParityTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.home_binge_grouping_enabled)
         self.assertEqual(self.user.home_stale_days_threshold, 14)
+
+    def test_toggle_home_row_direction_works_on_shelf_rows(self):
+        shelf_row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_STALE,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+        updated = home_screen.toggle_home_row_direction(self.user, shelf_row.id)
+        self.assertEqual(updated.direction, DirectionChoices.ASC)
+
+        shelf_row.refresh_from_db()
+        self.assertEqual(shelf_row.direction, DirectionChoices.ASC)
+
+    def test_all_media_shelves_exclude_standalone_season_items(self):
+        self.user.tv_enabled = True
+        self.user.season_enabled = True
+        self.user.movie_enabled = True
+        self.user.save()
+        show_item = Item.objects.create(
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+            media_id="all-media-tv-show",
+            title="Upload",
+        )
+        season_item = Item.objects.create(
+            media_type=MediaTypes.SEASON.value,
+            source=Sources.TMDB.value,
+            media_id="all-media-tv-season-4",
+            title="Season 4",
+            season_number=4,
+        )
+        show_media = TV.objects.create(
+            user=self.user,
+            item=show_item,
+            status=Status.COMPLETED.value,
+        )
+        Season.objects.create(
+            user=self.user,
+            item=season_item,
+            related_tv=show_media,
+            status=Status.COMPLETED.value,
+        )
+        shelf_row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_FINISHED,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+        entries = home_screen._shelf_finished_entries(self.user, shelf_row)
+        item_ids = [entry.item.id for entry in entries]
+        self.assertIn(show_item.id, item_ids)
+        self.assertNotIn(season_item.id, item_ids)
