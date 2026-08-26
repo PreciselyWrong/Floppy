@@ -110,6 +110,19 @@
                               <template x-if="openMenu === 'filter'">
                                 <div class="absolute z-40 mt-2 w-60 bg-[var(--color-surface-strong)] rounded-md shadow-lg overflow-hidden border border-gray-700">
                                   <div x-show="filterView === 'root'">
+                                    <template x-if="row.row_type === 'watch_history'">
+                                      <label class="flex items-center gap-3 px-4 py-3 text-sm text-[var(--color-text-secondary)] cursor-pointer"
+                                             @click.stop>
+                                        <input type="checkbox"
+                                               x-model="row.filters.binge_grouping"
+                                               class="h-4 w-4 shrink-0 rounded border-gray-500 bg-[var(--color-page-bg)] text-indigo-600 focus:ring-indigo-500">
+                                        <span>
+                                          <span class="block font-medium">Group consecutive episodes</span>
+                                          <span class="block text-xs text-[var(--color-text-muted)]">Same series, watched on the same day.</span>
+                                        </span>
+                                      </label>
+                                    </template>
+                                    <div x-show="row.row_type === 'watch_history'" class="border-t border-gray-700"></div>
                                     <button type="button"
                                             class="flex items-center w-full px-4 py-2 text-left text-sm transition-colors cursor-pointer text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
                                             @click.stop="clearLibraryFilters(section, row); openMenu = null; filterView = 'root'; filterSearch = ''">
@@ -378,18 +391,6 @@
           <span class="min-w-0">
             <span class="block text-sm font-medium text-[var(--color-text-secondary)]">Show media type headers</span>
             <span class="block text-xs text-[var(--color-text-muted)]">Group rows under a header (icon + media type) on the home screen.</span>
-          </span>
-        </label>
-
-        <label class="flex items-start gap-3 rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-3 cursor-pointer">
-          <input type="checkbox"
-                 name="home_binge_grouping_enabled"
-                 value="1"
-                 {% if home_binge_grouping_enabled %}checked{% endif %}
-                 class="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-500 bg-[var(--color-page-bg)] text-indigo-600 focus:ring-indigo-500">
-          <span class="min-w-0">
-            <span class="block text-sm font-medium text-[var(--color-text-secondary)]">Group consecutive episodes in Activity Journal (Binge Grouping)</span>
-            <span class="block text-xs text-[var(--color-text-muted)]">Condense series episodes watched on the same day into a single expandable card (S01E01–E04).</span>
           </span>
         </label>
 
