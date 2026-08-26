@@ -6,7 +6,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
-| HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `0ff7ca1f` | `sha-84c40386ffce04fa8a0a7a083a526843c5a364b4` | Pending | — | Deployed — regroupements réels actifs, lectures non terminées absentes et bulles personnalisables; 83 tests ciblés, rendus Home/History en 200 et préflight vert |
+| HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `7b4ca0c4` | Pending build | Pending | — | Validated — History suit le thème, sa navigation est configurable et les lectures en cours restent exclues; 25 tests ciblés, Ruff, Django et Tailwind verts |
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — calcul, affichage, options et préflight vert |
 | PWA-001 | Installable app experience | `feat/pwa-install` | `0a810b38` | `sha-2f3741c8d86dc66a0edfe8b08597d5ecb418eddf` | Changes requested | — | Development — installation non fonctionnelle rapportée par Nicolas |
 | UI-002 | Direct horizontal carousel gestures | `feat/horizontal-swipe` | `5a5b85fe` | `sha-c7b650655dc08564586be05467d0615be16f4881` | Works | — | Tested — gestes carrousels validés par Nicolas |
