@@ -2,15 +2,20 @@ import json
 import logging
 import time
 from datetime import UTC
+from urllib.parse import urlencode
 
 from django.apps import apps
 from django.conf import settings
 from django.contrib.auth.decorators import login_not_required
 from django.core.cache import cache
 from django.shortcuts import render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
+from app import (
+    carousel as carousel_media,
+)
 from app import (
     config,
     credits,  # noqa: A004  # app.credits module, not the site builtin
@@ -61,6 +66,7 @@ from app.models import (
 )
 from app.models.episode_runtimes import build_season_runtime_index
 from app.providers import services, tmdb
+from app.public_reviews import ReviewTarget, providers_for_target
 from app.services import metadata_resolution
 from app.services.metadata_fallback import stored_metadata_fallback
 from app.tag_views import (
@@ -69,7 +75,11 @@ from app.tag_views import (
     _resolve_detail_tag_genres,
 )
 from app.track_modal_views import _DummyPodcastWrapper
-from app.view_constants import DETAIL_SECONDARY_FRAGMENT, force_live_metadata_cache_key
+from app.view_constants import (
+    DETAIL_CAROUSEL_FRAGMENT,
+    DETAIL_SECONDARY_FRAGMENT,
+    force_live_metadata_cache_key,
+)
 from lists.views_helpers import get_public_list_for_item
 from users.models import HomePinnedItem
 
@@ -175,7 +185,15 @@ def media_details(
     title,
 ):
     """Return the details page for a media item."""
+    if request.GET.get("fragment") == DETAIL_CAROUSEL_FRAGMENT:
+        return render(
+            request,
+            "app/components/detail_carousel_fragment.html",
+            {"carousel": carousel_media.resolve_carousel_media(media_type, source, media_id)},
+        )
+
     detail_view_started_at = time.perf_counter()
+    carousel_supported = carousel_media.carousel_supported(media_type, source)
     render_secondary_only = (
         request.GET.get("fragment") == DETAIL_SECONDARY_FRAGMENT
         and media_type != MediaTypes.PODCAST.value
@@ -184,6 +202,11 @@ def media_details(
         not render_secondary_only and media_type != MediaTypes.PODCAST.value
     )
     detail_return_url = _detail_request_url(request)
+    detail_carousel_fragment_url = (
+        _detail_request_url(request, fragment=DETAIL_CAROUSEL_FRAGMENT)
+        if carousel_supported
+        else None
+    )
     detail_secondary_fragment_url = _detail_request_url(
         request,
         fragment=DETAIL_SECONDARY_FRAGMENT,
@@ -491,15 +514,7 @@ def media_details(
             for episode_obj, enriched in zip(
                 episodes[:initial_limit], enriched_episodes, strict=False
             ):
-                # Format duration
-                duration_str = ""
-                if episode_obj.duration:
-                    hours = episode_obj.duration // 3600
-                    minutes = (episode_obj.duration % 3600) // 60
-                    if hours > 0:
-                        duration_str = f"{hours}h {minutes}m"
-                    else:
-                        duration_str = f"{minutes}m"
+                duration_str = helpers.seconds_to_hm(episode_obj.duration)
 
                 # Get user's podcast media for this episode
                 episode_media = enriched["media"]
@@ -2028,6 +2043,42 @@ def media_details(
             media_metadata["episodes"],
         )
 
+    review_external_ids = dict(
+        (getattr(detail_item, "provider_external_ids", None) if detail_item else None)
+        or media_metadata.get("provider_external_ids")
+        or {}
+    )
+    review_target = ReviewTarget(
+        media_type=media_type,
+        source=source,
+        media_id=str(media_id),
+        external_ids=review_external_ids,
+    )
+    review_user = request.user if request.user.is_authenticated else None
+    public_reviews_preview_url = None
+    if (
+        (not request.user.is_authenticated or request.user.show_public_reviews)
+        and providers_for_target(review_target, review_user)
+    ):
+        public_reviews_preview_url = reverse(
+            "public_reviews_preview",
+            kwargs={
+                "source": source,
+                "media_type": media_type,
+                "media_id": media_id,
+                "title": title,
+            },
+        )
+        review_query = urlencode(
+            {
+                key: review_external_ids[key]
+                for key in ("tvdb_id", "imdb_id")
+                if review_external_ids.get(key)
+            }
+        )
+        if review_query:
+            public_reviews_preview_url = f"{public_reviews_preview_url}?{review_query}"
+
     context = {
         "user": request.user,
         "media": media_metadata,
@@ -2151,6 +2202,14 @@ def media_details(
         "detail_secondary_fragment_url": detail_secondary_fragment_url,
         "defer_detail_secondary": defer_detail_secondary,
         "render_secondary_only": render_secondary_only,
+        "carousel_supported": carousel_supported,
+        "detail_carousel_fragment_url": detail_carousel_fragment_url,
+        "public_reviews_preview_url": public_reviews_preview_url,
+        "public_reviews_position": (
+            request.user.public_reviews_position
+            if request.user.is_authenticated
+            else "bottom"
+        ),
         **_build_detail_person_rows(media_metadata, item=detail_item),
     }
     logger.info(

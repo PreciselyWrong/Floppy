@@ -1,0 +1,20 @@
+<section class="mb-8" aria-labelledby="public-reviews-heading">
+  <div class="mb-4 flex items-center justify-between gap-3">
+    <h2 id="public-reviews-heading" class="text-xl font-bold">Public reviews</h2>
+    {% if feed.reviews %}
+      {% url 'public_reviews' source=target.source media_type=target.media_type media_id=target.media_id title=title as reviews_url %}
+      <a class="rounded text-sm font-medium text-[var(--color-link)] hover:text-[var(--color-link-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]" href="{{ reviews_url }}{% if review_querystring %}?{{ review_querystring }}{% endif %}">See all {{ total_reviews }} reviews</a>
+    {% endif %}
+  </div>
+  {% if reviews %}
+    <div class="grid gap-4">{% for review in reviews %}{% include "app/components/public_review_card.html" with preview=True %}{% endfor %}</div>
+  {% elif not feed.problems %}
+    <p class="text-sm text-[var(--color-text-muted)]">No public reviews yet.</p>
+  {% endif %}
+  {% if feed.problems %}
+    <div class="mt-3 flex flex-wrap items-center gap-3">
+      {% for problem in feed.problems %}<p class="text-sm text-[var(--color-warning-text)]">{{ problem.provider }} reviews couldn't load.</p>{% endfor %}
+      <button type="button" hx-get="{{ retry_url }}" hx-target="closest section" hx-swap="outerHTML" class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm hover:bg-[var(--color-hover-dim)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]">Retry</button>
+    </div>
+  {% endif %}
+</section>

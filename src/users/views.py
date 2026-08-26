@@ -16,7 +16,7 @@ from django.contrib.auth.decorators import login_not_required, login_required
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.defaultfilters import pluralize
@@ -28,7 +28,7 @@ from django_celery_beat.models import PeriodicTask
 from app import config, history_cache, image_cache, statistics_cache
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
-from app.models import Item, MediaTypes, Status
+from app.models import Album, Artist, Item, MediaTypes, Status
 from app.providers import tmdb
 from app.services import metadata_resolution
 from app.templatetags import app_tags
@@ -86,6 +86,7 @@ from users.models import (
     TimeFormatChoices,
     TitleDisplayPreferenceChoices,
     TopTalentSortChoices,
+    UiLanguageChoices,
     User,
     WeekStartDayChoices,
 )
@@ -1073,6 +1074,7 @@ def preferences(request):
         selected_media_types = request.POST.getlist("media_types_checkboxes")
         date_format = request.POST.get("date_format")
         theme = request.POST.get("theme")
+        ui_language = request.POST.get("ui_language")
         time_format = request.POST.get("time_format")
         activity_history_view = request.POST.get("activity_history_view")
         game_logging_style = request.POST.get("game_logging_style")
@@ -1090,6 +1092,8 @@ def preferences(request):
             "hide_completed_recommendations"
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
+        show_public_reviews_raw = request.POST.get("show_public_reviews")
+        public_reviews_position = request.POST.get("public_reviews_position")
         progress_bar_raw = request.POST.get("progress_bar")
         season_enrichment_raw = request.POST.get("show_season_enrichment")
         episode_public_ratings_raw = request.POST.get("show_episode_public_ratings")
@@ -1180,6 +1184,14 @@ def preferences(request):
             if request.user.home_media_type_chip_colors != submitted_colors:
                 request.user.home_media_type_chip_colors = submitted_colors
                 fields_to_update.append("home_media_type_chip_colors")
+
+        if (
+            ui_language
+            and ui_language in UiLanguageChoices.values
+            and request.user.ui_language != ui_language
+        ):
+            request.user.ui_language = ui_language
+            fields_to_update.append("ui_language")
 
         if (
             time_format
@@ -1398,6 +1410,19 @@ def preferences(request):
                 )
                 fields_to_update.append("book_comic_manga_progress_percentage")
 
+        if show_public_reviews_raw is not None:
+            show_public_reviews = show_public_reviews_raw == "1"
+            if request.user.show_public_reviews != show_public_reviews:
+                request.user.show_public_reviews = show_public_reviews
+                fields_to_update.append("show_public_reviews")
+
+        if (
+            public_reviews_position in {"top", "bottom"}
+            and request.user.public_reviews_position != public_reviews_position
+        ):
+            request.user.public_reviews_position = public_reviews_position
+            fields_to_update.append("public_reviews_position")
+
         provider_region = request.POST.get("watch_provider_region", "")
         if provider_region in [region[0] for region in watch_provider_regions]:
             if request.user.watch_provider_region != provider_region:
@@ -1492,6 +1517,7 @@ def preferences(request):
         "library_labels_json": json.dumps(library_labels),
         "watch_provider_choices": watch_provider_regions,
         "metadata_language_choices": metadata_language_choices,
+        "ui_language_choices": UiLanguageChoices.choices,
         "tv_metadata_source_choices": tv_metadata_source_choices,
         "anime_metadata_source_choices": anime_metadata_source_choices,
         "anime_library_mode_choices": AnimeLibraryModeChoices.choices,
@@ -1616,6 +1642,7 @@ def integrations(request):
             "plex_connected": bool(plex_account and plex_account.plex_token),
             "jellyfin_account": jellyfin_account,
             "jellyfin_playback_reporting_import": jellyfin_playback_reporting_import,
+            "jellyfin_pull_interval_minutes": tasks.JELLYFIN_PULL_INTERVAL_MINUTES,
             "seerr_global_webhook_enabled": bool(settings.SEERR_GLOBAL_WEBHOOK_SECRET),
         },
     )
@@ -1962,19 +1989,20 @@ def _import_source_media_summary(user):
         if media_type == MediaTypes.EPISODE.value:
             continue
         model = apps.get_model(app_label="app", model_name=media_type)
-        sources = (
+        rows = (
             model.objects.filter(user=user, import_run__isnull=False)
+            .values("import_run__source")
+            .annotate(count=Count("id"))
             .order_by("import_run__source")
-            .values_list("import_run__source", flat=True)
-            .distinct()
         )
-        for source in sources:
-            count = model.objects.filter(
-                user=user, import_run__source=source
-            ).count()
-            summary.append(
-                {"media_type": media_type, "source": source, "count": count}
-            )
+        summary.extend(
+            {
+                "media_type": media_type,
+                "source": row["import_run__source"],
+                "count": row["count"],
+            }
+            for row in rows
+        )
     return summary
 
 
@@ -2014,10 +2042,21 @@ def bulk_delete_by_media_type(request):
         messages.error(request, "Unknown media type.")
         return redirect("advanced")
 
+    delete_metadata = request.POST.get("delete_metadata") == "true"
+
     media_querysets = _media_querysets_for_bulk_delete(request.user, media_type)
     item_count = sum(queryset.count() for queryset in media_querysets)
+    candidate_item_ids = (
+        _candidate_item_ids_for_metadata_cleanup(media_querysets, media_type)
+        if delete_metadata
+        else set()
+    )
     for queryset in media_querysets:
         queryset.delete()
+
+    metadata_count = 0
+    if delete_metadata and candidate_item_ids:
+        metadata_count = _delete_orphaned_metadata(media_type, candidate_item_ids)
 
     if item_count:
         # Model post-delete signals invalidate runtime caches and schedule
@@ -2027,14 +2066,16 @@ def bulk_delete_by_media_type(request):
         cache_management.clear_statistics_cache_for_user(request.user.id)
         cache_management.clear_discover_cache_for_user(request.user.id)
         label = MediaTypes(media_type).label
-        messages.success(
-            request,
-            f"Permanently deleted {item_count} {label} item(s) from your library.",
-        )
+        message = f"Permanently deleted {item_count} {label} item(s) from your library."
+        if delete_metadata:
+            message += f" Also removed {metadata_count} metadata entr{'y' if metadata_count == 1 else 'ies'}."
+        messages.success(request, message)
         logger.info(
-            "Permanently deleted %s %s items for user %s",
+            "Permanently deleted %s %s items (metadata=%s, metadata_count=%s) for user %s",
             item_count,
             media_type,
+            delete_metadata,
+            metadata_count,
             request.user.id,
         )
     else:
@@ -2063,6 +2104,78 @@ def _media_querysets_for_bulk_delete(user, media_type):
             item__library_media_type=MediaTypes.ANIME.value,
         )
     return [queryset]
+
+
+def _candidate_item_ids_for_metadata_cleanup(media_querysets, media_type):
+    """Return Item ids that may become orphaned once media_querysets are deleted.
+
+    Must be called before the querysets are deleted. TV/anime rows cascade-delete
+    their Season and Episode rows, so those Items are candidates too even though
+    they aren't directly represented by media_querysets.
+    """
+    item_ids = set()
+    for queryset in media_querysets:
+        item_ids.update(queryset.values_list("item_id", flat=True))
+
+    if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
+        season_model = apps.get_model(app_label="app", model_name="season")
+        episode_model = apps.get_model(app_label="app", model_name="episode")
+        for tv_queryset in media_querysets:
+            seasons = season_model.objects.filter(related_tv__in=tv_queryset)
+            item_ids.update(seasons.values_list("item_id", flat=True))
+            item_ids.update(
+                episode_model.objects.filter(
+                    related_season__related_tv__in=tv_queryset,
+                ).values_list("item_id", flat=True),
+            )
+
+    return item_ids
+
+
+def _delete_orphaned_metadata(media_type, item_ids):
+    """Delete Item rows (and music catalog rows) no longer tracked by anyone."""
+    tracking_models = [apps.get_model(app_label="app", model_name=media_type)]
+    if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
+        tracking_models = [
+            apps.get_model(app_label="app", model_name="tv"),
+            apps.get_model(app_label="app", model_name="anime"),
+            apps.get_model(app_label="app", model_name="season"),
+            apps.get_model(app_label="app", model_name="episode"),
+        ]
+
+    orphaned_ids = set(item_ids)
+    for model in tracking_models:
+        manager = getattr(model, "all_objects", model.objects)
+        orphaned_ids -= set(
+            manager.filter(item_id__in=item_ids).values_list("item_id", flat=True),
+        )
+
+    item_count, _ = Item.objects.filter(id__in=orphaned_ids).delete()
+
+    if media_type == MediaTypes.MUSIC.value:
+        item_count += _delete_orphaned_music_catalog()
+
+    return item_count
+
+
+def _delete_orphaned_music_catalog():
+    """Delete Artist/Album catalog rows no longer referenced by anyone.
+
+    Track has no independent lifecycle -- it cascades when its Album is deleted.
+    """
+    album_count, _ = Album.objects.filter(
+        music_entries__isnull=True,
+        trackers__isnull=True,
+    ).delete()
+    artist_count, _ = Artist.objects.filter(
+        music_entries__isnull=True,
+        trackers__isnull=True,
+        albums__isnull=True,
+        album_credits__isnull=True,
+        members__isnull=True,
+        bands__isnull=True,
+    ).delete()
+    return album_count + artist_count
 
 
 @require_POST

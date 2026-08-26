@@ -225,6 +225,14 @@ class ThemeChoices(models.TextChoices):
     CUSTOM = "custom", "Custom palette"
 
 
+class UiLanguageChoices(models.TextChoices):
+    """Choices for UI display language preference."""
+
+    AUTO = "auto", "Auto (browser language)"
+    EN = "en", "English"
+    ES = "es", "Español"
+
+
 class LogoStyleChoices(models.TextChoices):
     """Choices for the Floppy logo style preference."""
 
@@ -832,6 +840,16 @@ class User(AbstractUser):
         default=False,
         help_text="Hide zero ratings from media cards",
     )
+    show_public_reviews = models.BooleanField(
+        default=True,
+        help_text="Show public reviews on supported detail pages",
+    )
+    public_reviews_position = models.CharField(
+        max_length=6,
+        choices=(("top", "Top"), ("bottom", "Bottom")),
+        default="bottom",
+        help_text="Place public reviews before or after other detail sections",
+    )
     obfuscate_episodes = models.BooleanField(
         default=False,
         help_text="Blur unseen episode thumbnails to avoid spoilers",
@@ -1105,6 +1123,13 @@ class User(AbstractUser):
         default=dict,
         blank=True,
         help_text="Visible and ordered sections for each detail page family",
+    )
+
+    ui_language = models.CharField(
+        max_length=10,
+        default=UiLanguageChoices.AUTO,
+        choices=UiLanguageChoices.choices,
+        help_text="Preferred UI display language",
     )
 
     logo_style = models.CharField(

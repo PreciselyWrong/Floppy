@@ -7,6 +7,7 @@ from django.core.cache import cache
 from app import helpers
 from app.models import MediaTypes, Sources
 from app.providers import services
+from app.public_reviews import ProviderReviewPage
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,9 @@ BOOK_CATEGORY_BUNDLE = 8  # Hardcover book_category_id for bundle editions
 
 base_url = "https://api.hardcover.app/v1/graphql"
 MAX_SEARCH_QUERY_LENGTH = 50
+PUBLIC_REVIEW_LIMIT = 20
+MIN_PUBLIC_REVIEW_LENGTH = 20
+PUBLIC_REVIEWS_CACHE_TIMEOUT = 60 * 60
 
 
 def cap_search_query(query):
@@ -32,6 +36,84 @@ def cap_search_query(query):
         return capped_query
 
     return capped_query[:word_boundary].rstrip()
+
+
+def public_reviews(media_id, user=None, *, page=1, page_size=PUBLIC_REVIEW_LIMIT):
+    """Return the most-liked readable public reviews for a Hardcover book."""
+    query = """
+    query PublicReviews($id: Int!, $limit: Int!, $offset: Int!, $min_length: Int!) {
+      books(where: {id: {_eq: $id}}) {
+        slug
+        user_books(
+          where: {review_length: {_gte: $min_length}}
+          order_by: {likes_count: desc}
+          limit: $limit
+          offset: $offset
+        ) {
+          rating
+          review_raw
+          created_at
+          reviewed_at
+          url
+          user { username name }
+        }
+        user_books_aggregate(where: {review_length: {_gte: $min_length}}) {
+          aggregate { count }
+        }
+      }
+    }
+    """
+    page = max(int(page), 1)
+    page_size = max(1, min(int(page_size), PUBLIC_REVIEW_LIMIT))
+    variables = {
+        "id": int(media_id),
+        "limit": page_size,
+        "offset": (page - 1) * page_size,
+        "min_length": MIN_PUBLIC_REVIEW_LENGTH,
+    }
+    cache_key = f"hardcover_public_reviews_v2_{media_id}_{page}_{page_size}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return ProviderReviewPage(**cached)
+    response = services.api_request(
+        Sources.HARDCOVER.value,
+        "POST",
+        base_url,
+        params={"query": query, "variables": variables},
+        headers={"Authorization": _authorization_header(user)},
+    )
+    if response.get("errors"):
+        raise services.ProviderAPIError(Sources.HARDCOVER.value, ValueError(response["errors"]))
+    book_data = next(iter((response.get("data") or {}).get("books") or []), None)
+    if not book_data:
+        return ProviderReviewPage([])
+    url = f"https://hardcover.app/books/{book_data['slug']}" if book_data.get("slug") else None
+    reviews = []
+    for item in book_data.get("user_books") or []:
+        body = (item.get("review_raw") or "").strip()
+        if len(body) < MIN_PUBLIC_REVIEW_LENGTH:
+            continue
+        user_data = item.get("user") or {}
+        reviews.append(
+            {
+                "author": (user_data.get("name") or "").strip() or user_data.get("username") or "Anonymous",
+                "body": body,
+                "published_at": item.get("reviewed_at") or item.get("created_at"),
+                "score": item.get("rating") * 2 if item.get("rating") is not None else None,
+                "url": item.get("url") or url,
+            }
+        )
+    total = (
+        (book_data.get("user_books_aggregate") or {}).get("aggregate") or {}
+    ).get("count")
+    result = {
+        "reviews": reviews,
+        "total": total,
+        "has_more": variables["offset"] + len(book_data.get("user_books") or [])
+        < int(total or 0),
+    }
+    cache.set(cache_key, result, PUBLIC_REVIEWS_CACHE_TIMEOUT)
+    return ProviderReviewPage(**result)
 
 
 def _resolve_api_token(user):
