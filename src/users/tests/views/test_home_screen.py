@@ -2787,6 +2787,58 @@ class HomeScreenCompanionParityTests(TestCase):
         self.assertEqual(cached_window.call_args.kwargs["limit"], 14)
         self.assertEqual(cached_window.call_args.kwargs["offset"], 0)
 
+    @patch("app.history_cache.get_cached_history_window", autospec=True)
+    def test_activity_journal_renders_cached_entries_without_an_image_key(
+        self,
+        cached_window,
+    ):
+        cached_window.return_value = (
+            [
+                {
+                    "day_key": "2026-08-25",
+                    "date_display": "25 August 2026",
+                    "weekday": "Tuesday",
+                    "total_runtime_display": "48min",
+                    "entries": [
+                        {
+                            "id": 6284,
+                            "media_type": MediaTypes.EPISODE.value,
+                            "media_id": "103516",
+                            "source": Sources.TMDB.value,
+                            "title": "An Adventure Hour in Space",
+                            "season_number": 3,
+                            "episode_number": 4,
+                            "played_at_local": timezone.now(),
+                            "item": {
+                                "id": 6284,
+                                "media_type": MediaTypes.EPISODE.value,
+                                "media_id": "103516",
+                                "source": Sources.TMDB.value,
+                                "title": "An Adventure Hour in Space",
+                                "season_number": 3,
+                                "episode_number": 4,
+                            },
+                        }
+                    ],
+                }
+            ],
+            1,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.WATCH_HISTORY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={"binge_grouping": True},
+        )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "An Adventure Hour in Space")
+
     def test_home_screen_settings_saves_binge_on_the_activity_journal_row(self):
         response = self.client.post(
             reverse("home_screen"),
