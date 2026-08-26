@@ -50,6 +50,7 @@ from app.models import (
     Movie,
     Music,
     Podcast,
+    Status,
     Track,
 )
 
@@ -213,6 +214,7 @@ def build_history_day(user, day_key, logging_style_override=None, media_types=No
             continue
         records = model.objects.filter(
             user=user,
+            status=Status.COMPLETED.value,
             end_date__gte=day_start,
             end_date__lt=day_end,
         ).select_related("item")

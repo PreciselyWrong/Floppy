@@ -121,6 +121,7 @@ from app.models import (
     Music,
     Podcast,
     Sources,
+    Status,
     Track,
 )
 
@@ -409,6 +410,7 @@ def _build_reading_entries(
         queryset = model.objects.filter(
             user=user,
             item__media_type=reading_media_type,
+            status=Status.COMPLETED.value,
             end_date__isnull=False,
         ).select_related("item")
         if credited_reading_item_ids is not None:

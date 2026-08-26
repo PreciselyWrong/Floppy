@@ -25,7 +25,17 @@ from app.history_cache_utils import (
     _typed_history_index_registry_key,
     expand_history_media_types,
 )
-from app.models import Anime, BoardGame, Book, Comic, Episode, Game, Manga, Movie
+from app.models import (
+    Anime,
+    BoardGame,
+    Book,
+    Comic,
+    Episode,
+    Game,
+    Manga,
+    Movie,
+    Status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +121,11 @@ def build_history_index(
             requested_media_types is None or media_type in requested_media_types
         ):
             continue
-        reading_qs = model.objects.filter(user=user, end_date__isnull=False)
+        reading_qs = model.objects.filter(
+            user=user,
+            status=Status.COMPLETED.value,
+            end_date__isnull=False,
+        )
         reading_end_days = (
             reading_qs.annotate(day=TruncDate("end_date"))
             .values_list("day", flat=True)

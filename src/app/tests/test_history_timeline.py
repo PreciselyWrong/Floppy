@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
@@ -359,3 +361,18 @@ class HistoryTimelineViewTests(TestCase):
         self.assertContains(response, 'data-timeline-family="movies"', html=False)
         self.assertContains(response, 'data-timeline-family="series"', html=False)
         self.assertContains(response, 'data-timeline-family="books"', html=False)
+
+    def test_history_timeline_uses_theme_accent_without_forced_acid_color(self):
+        css = (Path(settings.BASE_DIR) / "static/css/input.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("--color-history-acid", css)
+        self.assertIn("border-color: var(--color-accent)", css)
+        for template_name in (
+            "history_timeline_single.html",
+            "history_timeline_binge.html",
+        ):
+            template = (
+                Path(settings.BASE_DIR) / "templates/app/components" / template_name
+            ).read_text(encoding="utf-8")
+            self.assertNotIn("--color-history-acid", template)

@@ -679,6 +679,14 @@ def sidebar(request):
 
         fields_to_update = []
 
+        if request.POST.get("sidebar_navigation_present") is not None:
+            sidebar_history_enabled = (
+                request.POST.get("sidebar_history_enabled") == "on"
+            )
+            if request.user.sidebar_history_enabled != sidebar_history_enabled:
+                request.user.sidebar_history_enabled = sidebar_history_enabled
+                fields_to_update.append("sidebar_history_enabled")
+
         # Handle clickable_media_cards preference
         clickable_media_cards = request.POST.get("clickable_media_cards") == "on"
         if request.user.clickable_media_cards != clickable_media_cards:

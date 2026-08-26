@@ -8,7 +8,7 @@
   {% with entry.item|display_title:user as preferred_title %}
     <a href="{{ entry.item|media_url }}"
        hx-boost="true"
-       class="flex min-w-0 gap-3 p-3 pr-12 transition-colors hover:bg-[var(--color-surface-strong)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-history-acid)] sm:gap-4">
+       class="flex min-w-0 gap-3 p-3 pr-12 transition-colors hover:bg-[var(--color-surface-strong)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-accent)] sm:gap-4">
       <img alt="{{ preferred_title|default:entry.display_title|default:entry.title }}"
            class="lazyload h-[7.5rem] w-20 shrink-0 rounded-md object-cover sm:h-[8.25rem] sm:w-[5.5rem]"
            data-src="{{ entry.poster|image_url }}"
@@ -26,7 +26,7 @@
           {{ preferred_title|default:entry.display_title|default:entry.title }}
         </h3>
         {% if entry.media_type == MediaTypes.EPISODE.value and entry.episode_code %}
-          <p class="history-timeline-acid mt-0.5 line-clamp-2 text-sm font-semibold">
+          <p class="history-timeline-accent mt-0.5 line-clamp-2 text-sm font-semibold">
             {% if entry.show.title %}{{ entry.show.title }} &middot; {% endif %}{{ entry.episode_code }}
           </p>
         {% endif %}
@@ -35,7 +35,7 @@
           {% if entry.runtime_minutes %}<span aria-hidden="true"> &bull; </span>{{ entry.runtime_minutes }} min{% endif %}
         </p>
         {% if entry.score|show_media_score:user %}
-          <p class="history-timeline-acid mt-1 text-base font-bold">{{ entry.score|score_display:user }}</p>
+          <p class="history-timeline-accent mt-1 text-base font-bold">{{ entry.score|score_display:user }}</p>
         {% endif %}
       </div>
     </a>
@@ -43,7 +43,7 @@
 
   {% if entry.item and entry.item.media_type and history_mode != "release" %}
     <button type="button"
-            class="absolute right-2 top-2 rounded-full bg-[var(--color-surface-strong)] p-2 text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-history-acid)] focus-visible:outline-2 focus-visible:outline-[var(--color-history-acid)]"
+            class="absolute right-2 top-2 rounded-full bg-[var(--color-surface-strong)] p-2 text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-accent)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"
             title="Edit tracking"
             aria-label="Edit tracking for {{ entry.display_title|default:entry.title }}"
             hx-get="{% media_view_url 'track_modal' entry.item %}"
