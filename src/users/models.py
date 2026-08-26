@@ -2342,6 +2342,10 @@ class HomeScreenRow(models.Model):
         choices=DirectionChoices.choices,
     )
     filters = models.JSONField(default=dict, blank=True)
+    open_last_episode = models.BooleanField(
+        default=True,
+        help_text="Open the episode to continue from In Progress Home rows",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

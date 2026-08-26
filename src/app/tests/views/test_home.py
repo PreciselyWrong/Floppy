@@ -228,6 +228,25 @@ class HomeViewTests(TestCase):
             html=False,
         )
 
+    def test_in_progress_row_can_keep_series_navigation(self):
+        HomeScreenRow.objects.filter(user=self.user).delete()
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=MediaTypes.TV.value,
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.COMPLETION,
+            direction=DirectionChoices.DESC,
+            filters={"status": [Status.IN_PROGRESS.value]},
+            open_last_episode=False,
+        )
+
+        response = self._get_hydrated_home()
+        row = self._get_first_row(response, MediaTypes.TV.value)
+
+        self.assertTrue(row["items"])
+        self.assertTrue(all(not entry.resume_navigation for entry in row["items"]))
+
     def test_home_row_direction_matches_persisted_row(self):
         """Each row dict must carry its own direction for the header arrow icon.
 

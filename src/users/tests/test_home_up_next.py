@@ -177,3 +177,20 @@ class HomeUpNextTests(SimpleTestCase):
 
         self.assertTrue(resume_navigation)
         self.assertIs(title_item, series_item)
+
+    def test_in_progress_episode_navigation_can_be_disabled(self):
+        series_item = SimpleNamespace(media_type=MediaTypes.TV.value)
+        season_item = SimpleNamespace(media_type=MediaTypes.SEASON.value)
+        media = SimpleNamespace(
+            related_tv=SimpleNamespace(item=series_item),
+        )
+
+        resume_navigation, title_item = home_screen._resume_navigation_metadata(
+            season_item,
+            media,
+            ["In progress"],
+            open_last_episode=False,
+        )
+
+        self.assertFalse(resume_navigation)
+        self.assertIsNone(title_item)

@@ -384,6 +384,78 @@ class HomeScreenViewTests(TestCase):
 
         self.assertNotIn("all", {group["media_type"] for group in groups})
 
+    def test_in_progress_episode_navigation_option_defaults_on_and_can_be_disabled(
+        self,
+    ):
+        default_row = home_screen._row_payload_to_model(
+            self.user,
+            MediaTypes.TV.value,
+            {
+                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                "filters": {"status": [Status.IN_PROGRESS.value]},
+                "sort_by": HomeSortChoices.COMPLETION,
+            },
+            0,
+        )
+        disabled_row = home_screen._row_payload_to_model(
+            self.user,
+            MediaTypes.TV.value,
+            {
+                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                "filters": {"status": [Status.IN_PROGRESS.value]},
+                "sort_by": HomeSortChoices.COMPLETION,
+                "open_last_episode": False,
+            },
+            0,
+        )
+
+        self.assertTrue(default_row.open_last_episode)
+        self.assertFalse(disabled_row.open_last_episode)
+
+        home_screen.save_home_screen_configuration(
+            self.user,
+            json.dumps(
+                [
+                    {
+                        "media_type": MediaTypes.TV.value,
+                        "rows": [
+                            {
+                                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                                "filters": {
+                                    "status": [Status.IN_PROGRESS.value],
+                                },
+                                "sort_by": HomeSortChoices.COMPLETION,
+                                "open_last_episode": False,
+                            }
+                        ],
+                    }
+                ]
+            ),
+        )
+
+        saved_row = HomeScreenRow.objects.get(
+            user=self.user,
+            media_type=MediaTypes.TV.value,
+        )
+        self.assertFalse(saved_row.open_last_episode)
+        sections = home_screen.serialize_settings_sections(self.user)
+        tv_section = next(
+            section
+            for section in sections
+            if section["media_type"] == MediaTypes.TV.value
+        )
+        self.assertFalse(tv_section["rows"][0]["open_last_episode"])
+
+    def test_home_screen_renders_in_progress_episode_navigation_row_option(self):
+        self._set_enabled_media_types(MediaTypes.TV.value)
+
+        response = self.client.get(reverse("home_screen"))
+
+        self.assertContains(response, "Open episode on card click")
+        self.assertContains(response, "isInProgressEpisodeRow(section, row)")
+        sections = json.loads(response.context["home_screen_sections_json"])
+        self.assertTrue(sections[0]["rows"][0]["open_last_episode"])
+
     def test_home_rows_progress_filter_ignores_dropped_tv_seasons(self):
         """Home not-caught-up rows should ignore dropped TV seasons."""
         self._set_enabled_media_types(MediaTypes.TV.value)

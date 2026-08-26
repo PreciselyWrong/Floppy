@@ -347,12 +347,23 @@ class HomeRowEntry:
     title_item_override: Item | None = None
 
 
-def _resume_navigation_metadata(item, media, status_filter) -> tuple[bool, Item | None]:
-    if status_filter != [Status.IN_PROGRESS.value] or item.media_type not in {
-        MediaTypes.TV.value,
-        MediaTypes.ANIME.value,
-        MediaTypes.SEASON.value,
-    }:
+def _resume_navigation_metadata(
+    item,
+    media,
+    status_filter,
+    *,
+    open_last_episode=True,
+) -> tuple[bool, Item | None]:
+    if (
+        not open_last_episode
+        or status_filter != [Status.IN_PROGRESS.value]
+        or item.media_type
+        not in {
+            MediaTypes.TV.value,
+            MediaTypes.ANIME.value,
+            MediaTypes.SEASON.value,
+        }
+    ):
         return False, None
     if item.media_type == MediaTypes.SEASON.value:
         related_tv = getattr(media, "related_tv", None)
@@ -1169,6 +1180,7 @@ def _serialize_settings_row(user, row: HomeScreenRow, media_type: str) -> dict:
         "custom_list_name": row.custom_list.name if row.custom_list_id else "",
         "sort_by": row.sort_by,
         "direction": row.direction,
+        "open_last_episode": row.open_last_episode,
         "filters": filters,
         "title": row_title(row, user),
         "custom_title": row.title or "",
@@ -1500,6 +1512,7 @@ def _row_payload_to_model(
         sort_by=sort_by,
         direction=direction,
         filters=filters,
+        open_last_episode=bool(row_payload.get("open_last_episode", True)),
     )
 
 
@@ -2658,6 +2671,7 @@ def _library_query_entries(
             item,
             media,
             status_filter,
+            open_last_episode=row.open_last_episode,
         )
         entries.append(
             HomeRowEntry(
