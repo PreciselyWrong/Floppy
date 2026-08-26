@@ -2,7 +2,9 @@
   const portalFullscreenOverlays = () => {
     document.querySelectorAll(".fixed.inset-0").forEach((overlay) => {
       if (overlay.parentElement !== document.body) {
-        overlay._x_dataStack = Alpine.closestDataStack(overlay);
+        const dataStack = Alpine.closestDataStack(overlay);
+        overlay._modalDataStack = dataStack;
+        overlay._x_dataStack = dataStack;
         Alpine.mutateDom(() => {
           document.body.appendChild(overlay);
         });
