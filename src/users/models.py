@@ -1323,6 +1323,10 @@ class User(AbstractUser):
         blank=True,
         help_text="User's preferred order of media types in the sidebar",
     )
+    sidebar_history_enabled = models.BooleanField(
+        default=True,
+        help_text="Show History in the sidebar navigation",
+    )
     auto_pause_in_progress_enabled = models.BooleanField(
         default=False,
         help_text="Automatically pause stale in-progress items",

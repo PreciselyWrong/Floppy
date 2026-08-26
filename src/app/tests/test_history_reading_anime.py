@@ -155,3 +155,25 @@ class ReadingAnimeHistoryDayTests(TestCase):
         self.assertNotIn(self.day_key, history_cache.build_history_index(self.user))
         self.assertIsNone(history_cache.build_history_day(self.user, self.day_key))
         self.assertEqual(history_cache.build_history_days(self.user), [])
+
+    def test_in_progress_reading_with_a_stale_end_date_is_absent_from_history(self):
+        item = Item.objects.create(
+            media_id="book-stale-end-date",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.BOOK.value,
+            title="Still Reading",
+            image="http://example.com/x.jpg",
+        )
+        book = Book.objects.create(
+            item=item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            start_date=self.now,
+            end_date=self.now,
+        )
+        Book.objects.filter(pk=book.pk).update(status=Status.IN_PROGRESS.value)
+
+        self.assertNotIn(self.day_key, history_cache.build_history_index(self.user))
+        self.assertIsNone(history_cache.build_history_day(self.user, self.day_key))
+        self.assertEqual(history_cache.build_history_days(self.user), [])

@@ -42,6 +42,30 @@
 
       <div class="border-t border-gray-600 my-5"></div>
 
+      <div class="mb-5">
+        <div class="flex items-center mb-4">
+          {% icon 'history' is_active=False extra_classes="w-5 h-5 text-[var(--color-link)]" %}
+          <h3 class="ml-2 text-lg font-semibold">Navigation</h3>
+        </div>
+        <div class="flex items-center justify-between p-3 bg-[var(--color-surface-strong)] rounded-md">
+          <input type="hidden" name="sidebar_navigation_present" value="1">
+          <div>
+            <label class="text-[var(--color-text-secondary)] text-sm font-medium">History</label>
+            <p class="text-[var(--color-text-muted)] text-xs mt-1">Show History in the sidebar.</p>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer ml-4">
+            <input class="sr-only peer"
+                   type="checkbox"
+                   name="sidebar_history_enabled"
+                   {% if user.sidebar_history_enabled %}checked{% endif %}>
+            <div class="w-9 h-5 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-px after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4.5 after:w-4.5 after:transition-all peer-checked:bg-indigo-600">
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="border-t border-gray-600 my-5"></div>
+
       {# Media Types Settings #}
       <div class="mb-5">
         <div class="flex items-center mb-4">
