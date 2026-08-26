@@ -57,7 +57,8 @@
                   <a href="{% if item.latest.item %}{{ item.latest.item|media_url }}{% else %}#{% endif %}"
                      class="shrink-0 w-[60px] h-[90px] rounded-md overflow-hidden bg-[var(--color-surface-alt)] shadow block"
                      @click.stop>
-                    <img src="{{ item.latest.poster|default:item.latest.item.image|default:IMG_NONE|image_url }}"
+                    {% firstof item.latest.poster item.latest.item.image IMG_NONE as poster_image %}
+                    <img src="{{ poster_image|image_url }}"
                          alt="{{ item.series_title }}"
                          class="w-full h-full object-cover lazyload"
                          loading="lazy">
@@ -153,7 +154,8 @@
                 {# Poster on left (60x90) #}
                 <a href="{% if item.entry.item %}{{ item.entry.item|media_url }}{% else %}#{% endif %}"
                    class="shrink-0 w-[60px] h-[90px] rounded-md overflow-hidden bg-[var(--color-surface-alt)] shadow block">
-                  <img src="{{ item.entry.poster|default:item.entry.item.image|default:IMG_NONE|image_url }}"
+                  {% firstof item.entry.poster item.entry.item.image IMG_NONE as poster_image %}
+                  <img src="{{ poster_image|image_url }}"
                        alt="{{ item.entry.title }}"
                        class="w-full h-full object-cover lazyload"
                        loading="lazy">
