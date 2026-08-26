@@ -153,6 +153,10 @@ function trackModalFindStateTarget(target) {
         node.getAttribute("x-show"),
       );
       if (stateKey) {
+        if (node._modalStateHost) {
+          return { data: Alpine.$data(node._modalStateHost), stateKey };
+        }
+
         const stackData = (node._modalDataStack ?? node._x_dataStack)?.find(
           (data) => data && stateKey in data,
         );
