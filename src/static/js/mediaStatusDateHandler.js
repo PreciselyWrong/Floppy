@@ -223,6 +223,7 @@ function trackModalSetOpen(target, isOpen) {
     if (overlay._modalOriginParent?.isConnected) {
       Alpine.mutateDom(() => {
         overlay._modalOriginParent.appendChild(overlay);
+        overlay.style.display = "none";
       });
     } else {
       overlay.remove();
