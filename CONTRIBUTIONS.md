@@ -19,7 +19,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 | HOME-005 | Collapsible Home rows | `feat/home-collapsible-rows` | `c1aebfb9` | `sha-a9e52961` | Works | — | Tested |
 | HOME-004 | `Up Next` row | `feat/home-up-next` | `0dd683ca` | `sha-a6762b17070dd7e56c0cfa23fcea3ad455558334` | Pending | — | Deployed — `SxxExx` visible et désactivable; `Now Playing` ouvre l’épisode avec option; 138 tests combinés et Ruff validés |
 | HOME-003 | Stale Home row | `feat/home-stale-row` | `79267e47` | `sha-a9e52961` | Pending | — | Deployed |
-| HOME-002 | Resume next-episode navigation | `feat/home-resume-navigation` | `ab710d19` | `sha-a9e52961` | Pending | — | Deployed |
+| HOME-002 | Resume next-episode navigation | `feat/home-resume-navigation` | `1d4c32a6` | Pending build | Pending | — | Validated — l’ouverture directe de l’épisode est configurable par rangée In Progress, active par défaut; 111 tests Home passent |
 | HOME-001 | Pinned Home titles | `feat/home-pins` | `6e5a1d7e` | `sha-a9e52961` | Pending | — | Deployed |
 
 ## Règles de mise à jour

@@ -454,7 +454,12 @@ class HomeScreenViewTests(TestCase):
         self.assertContains(response, "Open episode on card click")
         self.assertContains(response, "isInProgressEpisodeRow(section, row)")
         sections = json.loads(response.context["home_screen_sections_json"])
-        self.assertTrue(sections[0]["rows"][0]["open_last_episode"])
+        tv_section = next(
+            section
+            for section in sections
+            if section["media_type"] == MediaTypes.TV.value
+        )
+        self.assertTrue(tv_section["rows"][0]["open_last_episode"])
 
     def test_home_rows_progress_filter_ignores_dropped_tv_seasons(self):
         """Home not-caught-up rows should ignore dropped TV seasons."""
