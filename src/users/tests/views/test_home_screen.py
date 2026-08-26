@@ -1940,6 +1940,7 @@ class HomeScreenViewTests(TestCase):
         row = HomeScreenRow.objects.get(user=self.user, media_type="all")
         self.assertEqual(row.title, "In progress")
         self.assertEqual(row.filters["status"], [Status.IN_PROGRESS.value])
+        self.assertEqual(row.filters["progress"], "not_caught_up")
         self.user.refresh_from_db()
         self.assertEqual(
             self.user.home_screen_media_type_order,

@@ -551,7 +551,7 @@ def _default_recent_row_direction() -> str:
 def _build_default_rows_for_media_type(user, media_type: str) -> list[HomeScreenRow]:
     sort_by = _home_default_library_sort(media_type, user)
     default_filters = dict(HOME_QUERY_DEFAULT_FILTERS)
-    if media_type in HOME_PROGRESS_MEDIA_TYPES:
+    if media_type in HOME_PROGRESS_FILTER_MEDIA_TYPES:
         default_filters["progress"] = "not_caught_up"
     defaults = [
         HomeScreenRow(
@@ -1423,6 +1423,12 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
         raw_filters.get("progress", normalized.get("progress")),
         HOME_QUERY_DEFAULT_FILTERS["progress"],
     )
+    if (
+        media_type == HOME_ALL_MEDIA_TYPE
+        and "progress" not in raw_filters
+        and normalized["status"] == [Status.IN_PROGRESS.value]
+    ):
+        normalized["progress"] = "not_caught_up"
     payload = {
         key: normalized.get(key, HOME_QUERY_DEFAULT_FILTERS.get(key, ""))
         for key in HOME_SCREEN_FILTER_KEYS
