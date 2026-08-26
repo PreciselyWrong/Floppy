@@ -209,10 +209,11 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("js/modalPortal.js", base)
         self.assertIn('document.querySelectorAll(".fixed.inset-0")', portal)
         self.assertIn("Alpine.closestDataStack(overlay)", portal)
+        self.assertIn("overlay._modalDataStack", portal)
         self.assertIn("overlay._x_dataStack", portal)
         self.assertIn("document.body.appendChild(overlay)", portal)
         self.assertIn("htmx:afterSettle", portal)
-        self.assertIn("node._x_dataStack", modal_handler)
+        self.assertIn("node._modalDataStack", modal_handler)
         self.assertIn("stateKey in data", modal_handler)
         self.assertIn("stateTarget.data[stateTarget.stateKey] = isOpen", modal_handler)
 
