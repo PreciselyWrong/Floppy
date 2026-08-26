@@ -102,7 +102,8 @@ docker compose up -d
 - ⛔ Faire travailler deux features dans le même worktree ou faire dépendre leur migration l'une de l'autre — elles doivent rester extractibles en PR indépendantes.
 - ⛔ Coder une rangée Home hors de la configuration existante — chaque rangée doit rester ajoutable, supprimable et ordonnable.
 - ⛔ Remplacer le besoin « In progress » transversal par une rangée par média — un seul endroit doit couvrir toutes les familles activées.
-- ⛔ Remplacer l'identité d'un prochain épisode par sa seule date — conserver `SxxExx` quand les numéros sont connus.
+- ⛔ Remplacer l’identité d’un prochain épisode par sa seule date — conserver `SxxExx` quand les numéros sont connus.
+- ⛔ Réduire un groupe d’épisodes en cache à son seul total — Activity Journal et History doivent conserver les épisodes membres pour afficher le compteur, le chevron et le détail dépliable.
 - ⛔ Ajouter un menu dans une rangée configurable sans promouvoir la rangée ouverte au-dessus de ses sœurs — leurs bordures et contrôles peuvent recouvrir la liste déroulante.
 
 ## Pièges

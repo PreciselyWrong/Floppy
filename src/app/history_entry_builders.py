@@ -287,12 +287,33 @@ def _merge_episode_run(run):
             if runtime_minutes
             else None,
             "group_count": len(run),
+            "group_entries": run,
             "is_episode_group": True,
             "entry_key": "episode-group-"
             + "-".join(str(entry["entry_key"]) for entry in run),
         }
     )
     return latest
+
+
+def expand_episode_group_entries(entries):
+    """Restore cached episode-group members for timeline presentation."""
+    expanded = []
+    for entry in entries:
+        group_entries = (
+            entry.get("group_entries")
+            if isinstance(entry, dict) and entry.get("is_episode_group")
+            else None
+        )
+        if (
+            isinstance(group_entries, list)
+            and len(group_entries) > 1
+            and all(isinstance(member, dict) for member in group_entries)
+        ):
+            expanded.extend(group_entries)
+        else:
+            expanded.append(entry)
+    return expanded
 
 
 def _group_consecutive_episode_entries(entries):

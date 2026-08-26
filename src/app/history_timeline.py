@@ -1,6 +1,7 @@
 """Pure timeline transformations and binge grouping for History."""
 
 from app import helpers
+from app.history_entry_builders import expand_episode_group_entries
 from app.models import MediaTypes
 
 RUNTIME_UNKNOWN_AIRED = 999998
@@ -149,6 +150,7 @@ def _build_single_timeline_item(entry: dict) -> dict:
 
 def group_day_timeline_entries(entries: list[dict]) -> list[dict]:
     """Transform a day's raw history entries into timeline items with consecutive same-show binge grouping."""
+    entries = expand_episode_group_entries(entries)
     if not entries:
         return []
 

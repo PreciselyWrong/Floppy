@@ -109,6 +109,40 @@ class PureHistoryTimelineGroupingTests(TestCase):
         self.assertFalse(grouped[0]["is_binge"])
         self.assertFalse(grouped[1]["is_binge"])
 
+    def test_cached_episode_group_keeps_expandable_timeline_entries(self):
+        show = {"source": "tmdb", "media_id": "103516", "title": "Great Show"}
+        episodes = [
+            {
+                "media_type": MediaTypes.EPISODE.value,
+                "show": show,
+                "title": f"Episode {number}",
+                "display_title": f"Episode {number}",
+                "season_number": 3,
+                "episode_number": number,
+                "played_at_local": timezone.now() - timedelta(minutes=offset),
+                "runtime_minutes": runtime,
+                "entry_key": str(number),
+            }
+            for number, offset, runtime in ((3, 0, 51), (2, 49, 51), (1, 171, 49))
+        ]
+        cached_group = {
+            **episodes[0],
+            "is_episode_group": True,
+            "group_count": 3,
+            "group_entries": episodes,
+            "runtime_minutes": 151,
+            "entry_key": "episode-group-3-2-1",
+        }
+
+        grouped = history_timeline.group_day_timeline_entries([cached_group])
+
+        self.assertEqual(len(grouped), 1)
+        self.assertTrue(grouped[0]["is_binge"])
+        self.assertEqual(grouped[0]["count"], 3)
+        self.assertEqual(grouped[0]["episode_range"], "S03E01\N{EN DASH}E03")
+        self.assertEqual(grouped[0]["runtime_minutes"], 151)
+        self.assertEqual(len(grouped[0]["entries"]), 3)
+
     def test_non_consecutive_same_show_episodes_do_not_group(self):
         show_a = {"source": "tmdb", "media_id": "100", "title": "Show A"}
         now = timezone.now()

@@ -566,9 +566,14 @@ class HistoryDayEpisodeOrderingTests(TestCase):
         day_key = history_cache.history_day_key(played_at)
         day = history_cache.build_history_day(user, day_key)
 
-        episode_codes = [
-            entry["episode_code"]
+        episode_groups = [
+            entry
             for entry in day["entries"]
             if entry["media_type"] == MediaTypes.EPISODE.value
         ]
-        self.assertEqual(episode_codes, ["S01E03", "S01E02", "S01E01"])
+        self.assertEqual(len(episode_groups), 1)
+        self.assertEqual(episode_groups[0]["episode_code"], "S01E01-E03")
+        self.assertEqual(
+            [entry["episode_code"] for entry in episode_groups[0]["group_entries"]],
+            ["S01E03", "S01E02", "S01E01"],
+        )

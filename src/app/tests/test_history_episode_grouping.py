@@ -45,6 +45,10 @@ class ConsecutiveEpisodeGroupingTests(SimpleTestCase):
         self.assertEqual(grouped[0]["runtime_display"], "1h 12min")
         self.assertEqual(grouped[0]["group_count"], 3)
         self.assertTrue(grouped[0]["is_episode_group"])
+        self.assertEqual(
+            [entry["episode_number"] for entry in grouped[0]["group_entries"]],
+            [3, 2, 1],
+        )
 
     def test_unrelated_activity_breaks_an_episode_run(self):
         movie = {

@@ -19,6 +19,7 @@ from django.utils import timezone
 
 from app.helpers import is_caught_up_media
 from app.history_cache_reader import get_recent_history_entries
+from app.history_entry_builders import expand_episode_group_entries
 from app.media_list_filters import next_episode_for_media
 from app.models import (
     BasicMedia,
@@ -3084,6 +3085,7 @@ def group_watch_entries_by_binge(
     entries: list[dict], enable_binge: bool = True
 ) -> list[dict]:
     """Group consecutive same-day episodes of the same series into binge cards."""
+    entries = expand_episode_group_entries(entries)
     if not entries:
         return []
     if not enable_binge:

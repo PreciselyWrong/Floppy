@@ -2857,6 +2857,50 @@ class HomeScreenCompanionParityTests(TestCase):
         self.assertEqual(grouped[0]["series_title"], "Great Show")
         self.assertEqual(grouped[0]["count"], 2)
 
+    def test_group_watch_entries_by_binge_expands_cached_episode_group(self):
+        show = {"id": 42, "title": "Great Show", "image": "show.jpg"}
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": {
+                    "media_id": "100",
+                    "source": Sources.TMDB.value,
+                    "title": f"Episode {number}",
+                },
+                "show": show,
+                "season_number": 3,
+                "episode_number": number,
+                "runtime_minutes": runtime,
+            }
+            for number, runtime in ((3, 51), (2, 51), (1, 49))
+        ]
+        cached_group = {
+            **episodes[0],
+            "is_episode_group": True,
+            "group_count": 3,
+            "group_entries": episodes,
+            "runtime_minutes": 151,
+        }
+
+        grouped = home_screen.group_watch_entries_by_binge([cached_group])
+
+        self.assertEqual(len(grouped), 1)
+        self.assertTrue(grouped[0]["is_group"])
+        self.assertEqual(grouped[0]["count"], 3)
+        self.assertEqual(grouped[0]["episode_range"], "S03E01-E03")
+        self.assertEqual(grouped[0]["total_runtime_minutes"], 151)
+        self.assertEqual(len(grouped[0]["episodes"]), 3)
+
+        ungrouped = home_screen.group_watch_entries_by_binge(
+            [cached_group],
+            enable_binge=False,
+        )
+        self.assertEqual(len(ungrouped), 3)
+        self.assertEqual(
+            [item["entry"]["runtime_minutes"] for item in ungrouped],
+            [51, 51, 49],
+        )
+
     def test_group_watch_entries_by_binge_disabled(self):
         item = Item.objects.create(
             title="Breaking Bad",
