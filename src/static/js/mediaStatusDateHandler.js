@@ -220,7 +220,13 @@ function trackModalSetOpen(target, isOpen) {
   }
 
   if (!isOpen && overlay) {
-    overlay.remove();
+    if (overlay._modalOriginParent?.isConnected) {
+      Alpine.mutateDom(() => {
+        overlay._modalOriginParent.appendChild(overlay);
+      });
+    } else {
+      overlay.remove();
+    }
     return true;
   }
 

@@ -208,6 +208,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn('document.querySelectorAll(".fixed.inset-0")', portal)
         self.assertIn("Alpine.closestDataStack(overlay)", portal)
         self.assertIn("overlay._modalDataStack", portal)
+        self.assertIn("overlay._modalOriginParent", portal)
         self.assertIn("overlay._modalStateHost", portal)
         self.assertIn("overlay._x_dataStack", portal)
         self.assertIn("document.body.appendChild(overlay)", portal)
@@ -216,6 +217,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("node._modalStateHost", modal_handler)
         self.assertIn("stateKey in data", modal_handler)
         self.assertIn("stateTarget.data[stateTarget.stateKey] = isOpen", modal_handler)
+        self.assertIn("overlay._modalOriginParent.appendChild(overlay)", modal_handler)
         self.assertIn("overlay.remove()", modal_handler)
 
     def test_home_screen_row_controls_wrap_inside_their_panel(self):
