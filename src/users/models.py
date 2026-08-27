@@ -1371,6 +1371,22 @@ class User(AbstractUser):
         blank=True,
         help_text="Watch-provider names pinned/favorited by the user, promoted out of 'More'",
     )
+    detail_availability_enabled = models.BooleanField(
+        default=True,
+        help_text="Show local service availability on private media details",
+    )
+    detail_availability_plex_enabled = models.BooleanField(
+        default=True,
+        help_text="Show Plex availability on private media details",
+    )
+    detail_availability_radarr_enabled = models.BooleanField(
+        default=True,
+        help_text="Show Radarr availability on private media details",
+    )
+    detail_availability_sonarr_enabled = models.BooleanField(
+        default=True,
+        help_text="Show Sonarr availability on private media details",
+    )
     book_comic_manga_progress_percentage = models.BooleanField(
         default=False,
         help_text="Track book, comic, and manga progress as percentage instead of pages/issues/chapters",

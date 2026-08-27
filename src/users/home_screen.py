@@ -1026,6 +1026,14 @@ def build_filter_field_data(
     return visible_fields
 
 
+def serialize_settings_filter_fields(user, media_type: str) -> list[dict]:
+    """Return lazily requested filter fields for one Home settings section."""
+    tag_names = list(
+        Tag.objects.filter(user=user).values_list("name", flat=True).order_by("name")
+    )
+    return build_filter_field_data(user, media_type, precomputed_tags=tag_names)
+
+
 _SUMMARY_STATIC_FILTER_LABELS = {
     "stale_days": {
         str(days): f"No progress for {days} days"
@@ -2181,10 +2189,11 @@ def _entry_recent_timestamp(entry: HomeRowEntry):
     media = _entry_media(entry)
     if not media:
         return None
+    progress = getattr(media, "progress", 0) or 0
     candidate = (
         getattr(media, "last_played_at", None)
         or getattr(media, "progressed_at", None)
-        or getattr(media, "created_at", None)
+        or (getattr(media, "created_at", None) if progress > 0 else None)
     )
     dt_value = _coerce_datetime(candidate)
     return dt_value.timestamp() if dt_value else None

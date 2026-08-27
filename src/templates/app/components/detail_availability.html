@@ -1,0 +1,62 @@
+{% if detail_availability.services %}
+  <section class="mt-6" aria-labelledby="detail-availability-heading">
+    <h2 id="detail-availability-heading" class="mb-4 text-xl font-bold">Availability</h2>
+    <div class="space-y-3 rounded-lg bg-[var(--color-surface)] p-4">
+      {% for service in detail_availability.services %}
+        <div>
+          <h3 class="text-sm font-semibold text-[var(--color-text-muted)]">{{ service.label|upper }}</h3>
+          {% if service.instances %}
+            <div class="mt-2 space-y-3">
+              {% for instance in service.instances %}
+                <div class="text-sm">
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <span class="font-medium text-[var(--color-text-secondary)]">{{ instance.label }}</span>
+                      <span class="ml-1 text-xs {% if instance.status == 'available' %}text-emerald-400{% else %}text-[var(--color-text-muted)]{% endif %}">
+                        {% if instance.status == "available" %}Available{% else %}Not found{% endif %}
+                      </span>
+                      {% if instance.detail %}<span class="ml-1 text-xs text-[var(--color-text-muted)]">{{ instance.detail }}</span>{% endif %}
+                    </div>
+                    <a href="{{ instance.url }}"
+                       target="_blank"
+                       rel="noopener"
+                       class="shrink-0 text-xs font-medium text-[var(--color-link)] hover:text-[var(--color-link-hover)]">{{ instance.action_label }}</a>
+                  </div>
+                  {% if instance.sync_status != "current" %}
+                    <p class="mt-1 text-xs text-amber-400">
+                      {% if instance.sync_status == "error" %}Sync error{% elif instance.sync_status == "stale" %}Sync delayed{% else %}Sync pending{% endif %}
+                    </p>
+                  {% endif %}
+                  {% if instance.seasons %}
+                    <div class="mt-2 flex flex-wrap gap-1.5">
+                      {% for season in instance.seasons %}
+                        <span class="rounded-full bg-[var(--color-surface-strong)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">S{{ season.season_number }} · {{ season.available_episodes }} episode{{ season.available_episodes|pluralize }}</span>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="mt-2 flex items-center justify-between gap-3 text-sm">
+              <span class="{% if service.status == 'available' %}text-emerald-400{% else %}text-[var(--color-text-muted)]{% endif %}">
+                {% if service.status == "available" %}Available{% else %}Not found{% endif %}
+              </span>
+              <a href="{{ service.url }}"
+                 target="_blank"
+                 rel="noopener"
+                 class="text-xs font-medium text-[var(--color-link)] hover:text-[var(--color-link-hover)]">{{ service.action_label }}</a>
+            </div>
+            {% if service.seasons %}
+              <div class="mt-2 flex flex-wrap gap-1.5">
+                {% for season in service.seasons %}
+                  <span class="rounded-full bg-[var(--color-surface-strong)] px-2 py-1 text-xs text-[var(--color-text-secondary)]">S{{ season.season_number }} · {{ season.available_episodes }} episode{{ season.available_episodes|pluralize }}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}

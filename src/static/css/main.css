@@ -6963,6 +6963,15 @@ html.light .theme-toggle-icon-moon {
   .detail-carousel-grid__header {
     margin-top: 1.5rem;
   }
+  .detail-carousel-grid:has(#detail-carousel-wrap:empty) {
+    grid-template-areas: "poster header" "poster chips" "poster synopsis";
+  }
+  .detail-carousel-grid:has(#detail-carousel-wrap:empty) .detail-carousel-grid__carousel {
+    display: none;
+  }
+  .detail-carousel-grid:has(#detail-carousel-wrap:empty) .detail-carousel-grid__header {
+    margin-top: 0;
+  }
 }
 [data-active-playback-card] {
   grid-column: span 3 !important;

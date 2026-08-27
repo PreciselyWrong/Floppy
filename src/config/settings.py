@@ -1000,6 +1000,11 @@ if not FORK_OWNER_URL:
 ADMIN_ENABLED = config("ADMIN_ENABLED", default=False, cast=bool)
 
 TRACK_TIME = config("TRACK_TIME", default=True, cast=bool)
+DETAIL_AVAILABILITY_STALE_HOURS = config(
+    "DETAIL_AVAILABILITY_STALE_HOURS",
+    default=48,
+    cast=int,
+)
 
 BACKUP_DIR = config("BACKUP_DIR", default=str(BASE_DIR / "backups"))
 
