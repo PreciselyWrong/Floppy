@@ -915,6 +915,14 @@ def build_filter_field_data(
     return visible_fields
 
 
+def serialize_settings_filter_fields(user, media_type: str) -> list[dict]:
+    """Return lazily requested filter fields for one Home settings section."""
+    tag_names = list(
+        Tag.objects.filter(user=user).values_list("name", flat=True).order_by("name")
+    )
+    return build_filter_field_data(user, media_type, precomputed_tags=tag_names)
+
+
 _SUMMARY_STATIC_FILTER_LABELS = {
     "progress": {
         "caught_up": "Caught Up",

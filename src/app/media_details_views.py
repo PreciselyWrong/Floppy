@@ -33,6 +33,7 @@ from app.activity_builders import (
     _should_queue_game_lengths_refresh,
 )
 from app.db_retry import run_retryable_db_operation
+from app.detail_availability import build_detail_availability
 from app.detail_builders import (
     _apply_cached_hltb_link,
     _build_detail_link_sections,
@@ -1869,6 +1870,14 @@ def media_details(
             pass
 
     has_collection_data = bool(collection_entries) or collection_entry is not None
+    detail_availability = None
+    if render_secondary_only and not public_view and detail_item is not None:
+        detail_availability = build_detail_availability(
+            user=request.user,
+            item=detail_item,
+            media_type=media_type,
+            title=media_metadata.get("title") or detail_item.title,
+        )
 
     if media_type in [
         MediaTypes.TV.value,
@@ -2054,6 +2063,7 @@ def media_details(
         "collection_entries": collection_entries,
         "collection_stats": collection_stats,
         "has_collection_data": has_collection_data,
+        "detail_availability": detail_availability,
         "fetching_collection_data": fetching_collection_data
         if not public_view
         else False,

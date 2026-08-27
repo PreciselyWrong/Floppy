@@ -316,6 +316,8 @@ class MediaDetailsViewTests(TestCase):
         self.assertContains(
             response, '<h2 class="text-xl font-bold">Collection</h2>', html=False
         )
+        self.assertContains(response, "Availability")
+        self.assertContains(response, "Search Plex")
         self.assertContains(response, "media-grid-row-detail-cast", html=False)
         self.assertNotContains(
             response,
@@ -1053,6 +1055,7 @@ class MediaDetailsViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Public list note")
+        self.assertNotContains(response, "Availability")
 
         response = self.client.get(
             detail_url,

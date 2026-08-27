@@ -946,6 +946,12 @@ def preferences(request):
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
         progress_bar_raw = request.POST.get("progress_bar")
+        detail_availability_fields = (
+            "detail_availability_enabled",
+            "detail_availability_plex_enabled",
+            "detail_availability_radarr_enabled",
+            "detail_availability_sonarr_enabled",
+        )
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1128,6 +1134,15 @@ def preferences(request):
             if request.user.progress_bar != progress_bar:
                 request.user.progress_bar = progress_bar
                 fields_to_update.append("progress_bar")
+
+        for field_name in detail_availability_fields:
+            raw_value = request.POST.get(field_name)
+            if raw_value is None:
+                continue
+            enabled = raw_value == "1"
+            if getattr(request.user, field_name) != enabled:
+                setattr(request.user, field_name, enabled)
+                fields_to_update.append(field_name)
 
         if (
             quick_season_update_mobile is not None

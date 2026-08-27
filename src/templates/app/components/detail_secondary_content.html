@@ -207,6 +207,8 @@
         {% endif %}
       </div>
 
+      {% include "app/components/detail_availability.html" %}
+
       {% if media.genres %}
         {% url 'medialist' media_type=parent_media_type|default:media_type as genre_list_url %}
         <h2 class="text-xl font-bold mb-4 mt-6">Genres</h2>

@@ -1,0 +1,15 @@
+<div class="flex items-center justify-between gap-4 rounded-md bg-[var(--color-surface-strong)] p-3">
+  <div>
+    <label class="text-sm font-medium text-[var(--color-text-secondary)]">{{ label }}</label>
+    {% if description %}<p class="mt-1 text-xs text-[var(--color-text-muted)]">{{ description }}</p>{% endif %}
+  </div>
+  <label class="relative inline-flex shrink-0 cursor-pointer items-center">
+    <input type="hidden" name="{{ field_name }}" value="0">
+    <input class="peer sr-only"
+           type="checkbox"
+           name="{{ field_name }}"
+           value="1"
+           {% if enabled %}checked{% endif %}>
+    <div class="h-5 w-9 rounded-full bg-gray-600 after:absolute after:left-0.5 after:top-px after:h-4.5 after:w-4.5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-indigo-600 peer-checked:after:translate-x-full peer-checked:after:border-white"></div>
+  </label>
+</div>
