@@ -1,3 +1,4 @@
+import json
 import logging
 import math
 from collections import Counter, defaultdict
@@ -7,16 +8,34 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import EmptyPage, Paginator
+from django.db.models import Q
 from django.http import HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_POST
 
 from app import helpers
+from app.collection_fields import (
+    CollectionFieldNotFoundError,
+    CollectionFieldValidationError,
+    save_collection_field_schema,
+    serialize_collection_field_schema,
+)
 from app.forms import CollectionEntryForm
 from app.log_safety import exception_summary
-from app.models import CollectionEntry, Game, Item, MediaTypes, Status
+from app.models import (
+    CollectionEntry,
+    CollectionField,
+    CollectionFieldGroup,
+    CollectionFieldType,
+    Game,
+    Item,
+    MediaTypes,
+    Status,
+)
 from app.providers import services
 from app.services import metadata_resolution
 from integrations.models import CollectionSourceState
@@ -34,6 +53,13 @@ COLLECTION_SORT_FIELDS = {
     "release_date": "item__release_datetime",
 }
 COLLECTION_RATING_CHOICES = {"all", "rated", "not_rated"}
+COLLECTION_COMPLETENESS_CHOICES = {"all", "partial", "full"}
+_TV_FAMILY_MEDIA_TYPES = {
+    MediaTypes.TV.value,
+    MediaTypes.ANIME.value,
+    MediaTypes.SEASON.value,
+    MediaTypes.EPISODE.value,
+}
 
 
 def _scored_item_ids(user, item_ids_by_media_type):
@@ -56,6 +82,23 @@ def _scored_item_ids(user, item_ids_by_media_type):
             ).values_list("item_id", flat=True),
         )
     return scored_ids
+
+
+def _shows_for_keys(show_keys):
+    """Resolve (media_id, source) keys to their TV/anime show Items."""
+    if not show_keys:
+        return []
+    media_ids = {media_id for media_id, _source in show_keys}
+    sources = {source for _media_id, source in show_keys}
+    return [
+        item
+        for item in Item.objects.filter(
+            media_type__in=[MediaTypes.TV.value, MediaTypes.ANIME.value],
+            media_id__in=media_ids,
+            source__in=sources,
+        )
+        if (item.media_id, item.source) in show_keys
+    ]
 
 
 @require_GET
@@ -89,6 +132,9 @@ def collection_list(request, media_type=None):
     rating_filter = request.GET.get("rating", "all")
     if rating_filter not in COLLECTION_RATING_CHOICES:
         rating_filter = "all"
+    completeness_filter = request.GET.get("completeness", "all")
+    if completeness_filter not in COLLECTION_COMPLETENESS_CHOICES:
+        completeness_filter = "all"
 
     collection = helpers.get_user_collection(request.user, effective_media_type)
     if search_query:
@@ -113,6 +159,41 @@ def collection_list(request, media_type=None):
         else:
             collection = collection.exclude(item_id__in=scored_ids)
 
+    if completeness_filter != "all":
+        show_keys = set(
+            collection.filter(item__media_type__in=_TV_FAMILY_MEDIA_TYPES)
+            .values_list("item__media_id", "item__source")
+            .distinct(),
+        )
+        show_items = _shows_for_keys(show_keys)
+        completeness_map = helpers.get_collection_completeness_map(
+            request.user,
+            show_items,
+        )
+        matching_keys = set()
+        for item in show_items:
+            stats = completeness_map.get(item.id)
+            if not stats or not stats["total"]:
+                continue
+            is_match = (completeness_filter == "partial" and stats["is_partial"]) or (
+                completeness_filter == "full" and stats["collected"] == stats["total"]
+            )
+            if is_match:
+                matching_keys.add((item.media_id, item.source))
+
+        if matching_keys:
+            key_query = Q()
+            for match_media_id, match_source in matching_keys:
+                key_query |= Q(
+                    item__media_id=match_media_id,
+                    item__source=match_source,
+                )
+            collection = collection.filter(
+                item__media_type__in=_TV_FAMILY_MEDIA_TYPES,
+            ).filter(key_query)
+        else:
+            collection = collection.none()
+
     order_field = COLLECTION_SORT_FIELDS[sort_by]
     if direction == "desc":
         order_field = f"-{order_field}"
@@ -125,6 +206,23 @@ def collection_list(request, media_type=None):
         page_obj = paginator.page(page_number)
     except EmptyPage:
         page_obj = paginator.page(paginator.num_pages)
+
+    page_entries = list(page_obj.object_list)
+    badge_entries = [
+        entry
+        for entry in page_entries
+        if entry.item.media_type in _SEASON_OR_SHOW_MEDIA_TYPES
+    ]
+    if badge_entries:
+        badge_show_keys = {
+            (entry.item.media_id, entry.item.source) for entry in badge_entries
+        }
+        badge_completeness_map = helpers.get_collection_completeness_map(
+            request.user,
+            _shows_for_keys(badge_show_keys),
+        )
+        for entry in badge_entries:
+            entry.completeness = badge_completeness_map.get(entry.item_id)
 
     base_collection = CollectionEntry.objects.filter(user=request.user)
     available_media_types = set(
@@ -176,6 +274,10 @@ def collection_list(request, media_type=None):
         "resolution_filter": resolution_filter,
         "hdr_filter": hdr_filter,
         "rating_filter": rating_filter,
+        "completeness_filter": completeness_filter,
+        "has_tv_family_collection": bool(
+            _TV_FAMILY_MEDIA_TYPES & available_media_types,
+        ),
         "search_query": search_query,
         "is_pagination": is_fragment and page_number > 1,
     }
@@ -233,11 +335,11 @@ def _expand_collection_entry_to_episodes(user, item, *, cleaned_data):
     """Create a CollectionEntry for every episode under a season/show Item.
 
     Episodes that already have at least one CollectionEntry for this user are
-    left untouched. Returns (created_count, skipped_count).
+    left untouched. Returns (created_entries, skipped_count).
     """
     episode_items = list(_episodes_for_season_or_show(item))
     if not episode_items:
-        return 0, 0
+        return [], 0
 
     already_collected_ids = set(
         CollectionEntry.objects.filter(
@@ -252,7 +354,7 @@ def _expand_collection_entry_to_episodes(user, item, *, cleaned_data):
         if episode_item.id not in already_collected_ids
     ]
     if not to_create:
-        return 0, len(episode_items)
+        return [], len(episode_items)
 
     copy_fields = {
         field: cleaned_data[field]
@@ -272,18 +374,25 @@ def _expand_collection_entry_to_episodes(user, item, *, cleaned_data):
             id__in=[entry.id for entry in new_entries],
         ).update(collected_at=collected_at)
 
-    return len(new_entries), len(already_collected_ids)
+    return new_entries, len(already_collected_ids)
 
 
-def _collection_add_season_or_show_response(request, item, form):
+def _collection_add_season_or_show_response(request, item, form, post_data):
     """Expand a season/show collection submission into per-episode entries."""
-    created_count, skipped_count = _expand_collection_entry_to_episodes(
+    created_entries, skipped_count = _expand_collection_entry_to_episodes(
         request.user,
         item,
         cleaned_data=form.cleaned_data,
     )
-    if created_count:
-        message = f"Added {created_count} episode(s) to collection"
+    if created_entries:
+        values = _custom_field_values_from_post(
+            request.user, post_data, scope_media_type=item.media_type,
+        )
+        if values:
+            CollectionEntry.objects.filter(
+                id__in=[entry.id for entry in created_entries],
+            ).update(custom_field_values=values)
+        message = f"Added {len(created_entries)} episode(s) to collection"
         if skipped_count:
             message += f" ({skipped_count} already collected)"
     else:
@@ -296,13 +405,13 @@ def _collection_add_season_or_show_response(request, item, form):
 
 def _collection_quick_add_season_or_show_response(request, item):
     """Expand a season/show quick-add into per-episode entries."""
-    created_count, skipped_count = _expand_collection_entry_to_episodes(
+    created_entries, skipped_count = _expand_collection_entry_to_episodes(
         request.user,
         item,
         cleaned_data={},
     )
-    if created_count:
-        message = f"Added {created_count} episode(s) to collection"
+    if created_entries:
+        message = f"Added {len(created_entries)} episode(s) to collection"
         if skipped_count:
             message += f" ({skipped_count} already collected)"
         messages.success(request, message)
@@ -310,7 +419,7 @@ def _collection_quick_add_season_or_show_response(request, item):
         message = "All episodes are already in your collection"
     if request.headers.get("HX-Request"):
         return JsonResponse(
-            {"success": True, "created": bool(created_count), "message": message}
+            {"success": True, "created": bool(created_entries), "message": message}
         )
     return _collection_redirect(request)
 
@@ -344,7 +453,9 @@ def collection_add(request):
 
     if form.is_valid():
         if item.media_type in _SEASON_OR_SHOW_MEDIA_TYPES:
-            return _collection_add_season_or_show_response(request, item, form)
+            return _collection_add_season_or_show_response(
+                request, item, form, post_data
+            )
 
         entry = form.save(commit=False)
         entry.user = request.user
@@ -367,6 +478,7 @@ def collection_add(request):
                 collected_at=collected_at
             )
             entry.collected_at = collected_at
+        _apply_custom_field_values(entry, request.user, post_data)
         messages.success(request, f"Added {item.title} to collection")
         if request.headers.get("HX-Request"):
             return JsonResponse(
@@ -445,6 +557,7 @@ def collection_update(request, entry_id):
                 collected_at=collected_at
             )
             entry.collected_at = collected_at
+        _apply_custom_field_values(entry, request.user, request.POST)
         messages.success(request, f"Updated collection entry for {entry.item.title}")
         if request.headers.get("HX-Request"):
             return JsonResponse(
@@ -905,6 +1018,96 @@ def _resolve_collection_item(
     return item, metadata
 
 
+def _custom_fields_fragment_context(request, item, *, manage_fields_open=False):
+    """Build context for the custom-fields fragment, scoped to one item."""
+    existing_entry = helpers.get_item_collection_entries(request.user, item).first()
+    return {
+        "item": item,
+        "custom_field_groups": _visible_custom_field_groups(
+            request.user, item.media_type
+        ),
+        "entry_custom_field_values": existing_entry.custom_field_values
+        if existing_entry
+        else {},
+        "manage_fields_open": manage_fields_open,
+        "custom_field_schema_json": json.dumps(
+            serialize_collection_field_schema(request.user)
+        ),
+        "field_type_choices_json": json.dumps(
+            [{"value": value, "label": label} for value, label in CollectionFieldType.choices]
+        ),
+        "media_type_choices_json": json.dumps(
+            [{"value": value, "label": label} for value, label in MediaTypes.choices]
+        ),
+        "collection_fields_save_url": reverse("collection_fields_save"),
+    }
+
+
+def _visible_custom_field_groups(user, media_type):
+    """Return the user's field groups with only fields matching media_type."""
+    groups = CollectionFieldGroup.objects.filter(user=user).prefetch_related("fields")
+    visible_groups = []
+    for group in groups:
+        visible_fields = [
+            field for field in group.fields.all() if media_type in field.media_types
+        ]
+        if visible_fields:
+            group.visible_fields = visible_fields
+            visible_groups.append(group)
+    return visible_groups
+
+
+def _custom_field_input_name(field_id):
+    """Return the POST field name used for a custom field's value."""
+    return f"custom_field_{field_id}"
+
+
+def _custom_field_values_from_post(user, post_data, *, scope_media_type, base_values=None):
+    """Return the custom_field_values dict implied by a submitted form.
+
+    Only considers fields scoped to scope_media_type, so submitting a form
+    for one media type never clobbers values stored for a field the form
+    never rendered (e.g. a book-only checkbox while adding a movie).
+    """
+    fields = CollectionField.objects.filter(group__user=user)
+    values = dict(base_values or {})
+    for field in fields:
+        if scope_media_type not in field.media_types:
+            continue
+        input_name = _custom_field_input_name(field.id)
+        if field.field_type == CollectionFieldType.CHECKBOX:
+            values[str(field.id)] = input_name in post_data
+            continue
+        if input_name not in post_data:
+            continue
+        raw_value = post_data.get(input_name, "").strip()
+        if not raw_value:
+            values.pop(str(field.id), None)
+            continue
+        if field.field_type == CollectionFieldType.NUMBER:
+            try:
+                raw_value = float(raw_value)
+            except ValueError:
+                continue
+        elif field.field_type == CollectionFieldType.SELECT and (
+            raw_value not in field.options
+        ):
+            continue
+        values[str(field.id)] = raw_value
+    return values
+
+
+def _apply_custom_field_values(entry, user, post_data, *, scope_media_type=None):
+    """Read submitted custom_field_* values and store them on the entry."""
+    entry.custom_field_values = _custom_field_values_from_post(
+        user,
+        post_data,
+        scope_media_type=scope_media_type or entry.item.media_type,
+        base_values=entry.custom_field_values,
+    )
+    entry.save(update_fields=["custom_field_values"])
+
+
 def build_collection_modal_context(
     request,
     source,
@@ -967,6 +1170,7 @@ def build_collection_modal_context(
         "form": form,
         "return_url": return_url,
         "collection_fields": collection_fields,
+        **_custom_fields_fragment_context(request, item),
     }
 
 
@@ -1002,6 +1206,33 @@ def collection_modal(request, source, media_type, media_id):
     response["Expires"] = "0"
     response["Vary"] = "Cookie, HX-Request"
     return response
+
+
+@login_required
+@require_POST
+def collection_fields_save(request):
+    """Reconcile the user's whole custom-field schema from one JSON payload."""
+    try:
+        payload = json.loads(request.body or "{}")
+    except (TypeError, ValueError):
+        return JsonResponse({"success": False, "error": "Invalid JSON"}, status=400)
+
+    try:
+        groups = save_collection_field_schema(request.user, payload)
+    except CollectionFieldValidationError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    except CollectionFieldNotFoundError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=404)
+
+    html = None
+    item = Item.objects.filter(id=payload.get("item_id")).first()
+    if item is not None:
+        html = render_to_string(
+            "app/components/collection_custom_fields.html",
+            _custom_fields_fragment_context(request, item, manage_fields_open=False),
+            request=request,
+        )
+    return JsonResponse({"success": True, "groups": groups, "html": html})
 
 
 @login_required

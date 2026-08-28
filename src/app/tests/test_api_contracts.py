@@ -449,6 +449,8 @@ class OpenAPIArtifactTests(SimpleTestCase):
             "genres",
             "score",
             "score_count",
+            "imdb_rating",
+            "imdb_rating_count",
             "cast",
             "crew",
             "details",
@@ -562,7 +564,7 @@ class OpenAPIArtifactTests(SimpleTestCase):
             ),
             ("/api/v1/media/{media_type}/{source}/{media_id}/", "get"): (
                 "retrieveMediaItem",
-                "CompleteMediaResponse",
+                "CompleteMediaItemResponse",
                 {"200", "400", "403", "404", "500"},
                 None,
             ),
@@ -951,7 +953,7 @@ class SchemaFindingContractTests(SimpleTestCase):
         self.assertIn(SCHEMA_REGENERATION_COMMAND, message)
 
     def test_reviewed_baseline_has_expected_unique_counts(self):
-        self.assertEqual(len(EXPECTED_SCHEMA_ERRORS), 82)
+        self.assertEqual(len(EXPECTED_SCHEMA_ERRORS), 83)
         self.assertEqual(len(EXPECTED_SCHEMA_WARNINGS), 18)
 
     def test_generated_schema_findings_match_reviewed_baseline(self):

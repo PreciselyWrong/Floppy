@@ -1030,15 +1030,17 @@ def describe_library_query(filters: dict, user, media_type: str) -> str:
 
 
 def serialize_settings_sections(user) -> list[dict]:
-    """Return Home Screen settings sections for the enabled sidebar media types."""
+    """Return Home Screen settings sections for the enabled sidebar media types.
+
+    `filter_fields` is intentionally omitted here — it's expensive to compute
+    (full smart-rule facet scan per media type) and the UI only needs it for
+    whichever section the user actually expands, so it's fetched lazily via
+    `home_screen_filter_fields` instead of eagerly for every section.
+    """
     rows = ensure_home_screen_rows(user)
     rows_by_media_type: dict[str, list[HomeScreenRow]] = defaultdict(list)
     for row in rows:
         rows_by_media_type[row.media_type].append(row)
-
-    tag_names = list(
-        Tag.objects.filter(user=user).values_list("name", flat=True).order_by("name")
-    )
 
     sections = []
     for media_type in get_home_configurable_media_types(
@@ -1062,9 +1064,7 @@ def serialize_settings_sections(user) -> list[dict]:
                         HomeScreenRowTypeChoices.CUSTOM_LIST,
                     ),
                 },
-                "filter_fields": build_filter_field_data(
-                    user, media_type, precomputed_tags=tag_names
-                ),
+                "filter_fields": [],
                 "rows": [
                     {
                         "id": row.id,
@@ -1087,6 +1087,14 @@ def serialize_settings_sections(user) -> list[dict]:
             },
         )
     return sections
+
+
+def serialize_settings_filter_fields(user, media_type: str) -> list[dict]:
+    """Return the filter fields for one Home Screen settings section on demand."""
+    tag_names = list(
+        Tag.objects.filter(user=user).values_list("name", flat=True).order_by("name")
+    )
+    return build_filter_field_data(user, media_type, precomputed_tags=tag_names)
 
 
 def row_title(row: HomeScreenRow, user) -> str:
@@ -1458,7 +1466,7 @@ def _item_matches_home_media_type(item: Item, media_type: str) -> bool:
 
 
 def _annotate_home_card_images(media_items):
-    """Annotate season cards with show-poster fallbacks when needed."""
+    """Annotate season/music cards with fallback art when needed."""
     season_items = [
         media
         for media in media_items
@@ -1467,6 +1475,15 @@ def _annotate_home_card_images(media_items):
     ]
     if season_items:
         BasicMedia.objects._fix_missing_season_images(season_items)
+
+    music_items = [
+        media
+        for media in media_items
+        if getattr(getattr(media, "item", None), "media_type", None)
+        == MediaTypes.MUSIC.value
+    ]
+    if music_items:
+        BasicMedia.objects._fix_missing_music_images(music_items)
 
 
 def _music_shell_item(media_id: str, title: str, image: str | None) -> Item:
@@ -1893,10 +1910,11 @@ def _entry_recent_timestamp(entry: HomeRowEntry):
     media = _entry_media(entry)
     if not media:
         return None
+    progress = getattr(media, "progress", 0) or 0
     candidate = (
         getattr(media, "last_played_at", None)
         or getattr(media, "progressed_at", None)
-        or getattr(media, "created_at", None)
+        or (getattr(media, "created_at", None) if progress > 0 else None)
     )
     dt_value = _coerce_datetime(candidate)
     return dt_value.timestamp() if dt_value else None
@@ -2484,7 +2502,7 @@ def _build_row_section(
         ):
             image = entry.podcast_show.image
         else:
-            image = entry.item.image
+            image = getattr(entry.media, "card_image_override", None) or entry.item.image
         return not image or image == settings.IMG_NONE
 
     poll_for_covers = media_type in SQUARE_HOME_MEDIA_TYPES and any(
