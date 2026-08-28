@@ -47,31 +47,10 @@ def _person_age(birth_date, end_date=None, today=None):
     if isinstance(end_date, str):
         end_date = date.fromisoformat(end_date)
     end_date = end_date or today or datetime.now(UTC).date()
-    age = end_date.year - birth_date.year
-    if (end_date.month, end_date.day) < (birth_date.month, birth_date.day):
-        age -= 1
-    return age if age >= 0 else None
+    return credits.person_age_at(birth_date, end_date)
 
 
-def _select_known_for(entries, limit=3):
-    """Select deduplicated works, prioritising watched and well-rated titles."""
-    unique = {}
-    for entry in entries or []:
-        key = (entry.get("media_type"), str(entry.get("media_id")))
-        current = unique.get(key)
-        if current is None or (
-            entry.get("is_watched") and not current.get("is_watched")
-        ):
-            unique[key] = entry
-    return sorted(
-        unique.values(),
-        key=lambda entry: (
-            not entry.get("is_watched"),
-            -(entry.get("vote_average") or 0),
-            -(entry.get("popularity") or 0),
-            -(entry.get("vote_count") or 0),
-        ),
-    )[:limit]
+_select_known_for = credits.select_known_for
 
 
 @require_GET
@@ -413,7 +392,6 @@ def person_detail(request, source, person_id, name):
         entry["tracked_item"] = tracked_item_map.get(media_key)
         entry["is_watched"] = media_key in watched_media_keys
 
-    known_for = _select_known_for(filmography)
     person_data["age"] = _person_age(
         person_data.get("birth_date"), person_data.get("death_date")
     )
@@ -682,14 +660,21 @@ def person_detail(request, source, person_id, name):
         "watched_show_count": watched_show_count,
         "watched_book_count": watched_book_count,
         "filmography": filmography,
-        "known_for": known_for,
         "tracked_titles": watched_filmography,
-        "person_sections_order": getattr(
-            request.user,
-            "person_sections_order",
-            ["known_for", "tracked", "cast", "guest", "crew", "biography", "details"],
-        ),
-        "person_hidden_sections": getattr(request.user, "person_hidden_sections", []),
+        "person_sections_order": [
+            value
+            for value in getattr(
+                request.user,
+                "person_sections_order",
+                ["tracked", "cast", "guest", "crew", "biography", "details"],
+            )
+            if value != "known_for"
+        ],
+        "person_hidden_sections": [
+            value
+            for value in getattr(request.user, "person_hidden_sections", [])
+            if value != "known_for"
+        ],
         "history_filter_url": history_filter_url,
         "tracked_plays_count": tracked_plays_count,
         "tracked_hours_count": tracked_hours_count,

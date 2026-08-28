@@ -7,6 +7,7 @@ from celery import states
 from celery.result import AsyncResult
 from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.models import UserManager as DjangoUserManager
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -19,11 +20,13 @@ from users import helpers
 
 EXCLUDED_SEARCH_TYPES = [MediaTypes.SEASON.value, MediaTypes.EPISODE.value]
 HOME_ALL_MEDIA_TYPE = "all"
+PERSON_KNOWN_FOR_LIMIT_DEFAULT = 3
+PERSON_KNOWN_FOR_LIMIT_MAX = 10
 
 
 def default_person_sections_order():
     """Return the default order for configurable person-page sections."""
-    return ["known_for", "tracked", "cast", "guest", "crew", "biography", "details"]
+    return ["tracked", "cast", "guest", "crew", "biography", "details"]
 
 VALID_SEARCH_TYPES = [
     value for value in MediaTypes.values if value not in EXCLUDED_SEARCH_TYPES
@@ -883,6 +886,11 @@ class User(AbstractUser):
         blank=True,
     )
     person_hidden_sections = models.JSONField(default=list, blank=True)
+    person_known_for_limit = models.PositiveSmallIntegerField(
+        default=PERSON_KNOWN_FOR_LIMIT_DEFAULT,
+        validators=[MinValueValidator(0), MaxValueValidator(PERSON_KNOWN_FOR_LIMIT_MAX)],
+        help_text="Number of watched titles shown under each detail credit card",
+    )
 
     # Watch provider region
     watch_provider_region = models.CharField(

@@ -1082,7 +1082,11 @@ def season_details(
         "render_secondary_only": render_secondary_only,
         "carousel_supported": carousel_supported,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
-        **_build_detail_person_rows(season_metadata),
+        **_build_detail_person_rows(
+            season_metadata,
+            item=season_item,
+            user=request.user,
+        ),
     }
     logger.info(
         "detail_render_complete path=%s phase=%s media_type=%s source=%s duration_ms=%.2f",

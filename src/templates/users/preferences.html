@@ -921,6 +921,9 @@
           <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Hidden person sections (comma separated)
             <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" name="person_hidden_sections" value="{{ person_hidden_sections_text }}">
           </label>
+          <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Known for titles under credit cards
+            <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" type="number" min="0" max="10" name="person_known_for_limit" value="{{ user.person_known_for_limit }}">
+          </label>
         </div>
 
         <!-- Hide Completed Recommendations -->

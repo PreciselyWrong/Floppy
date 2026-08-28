@@ -4560,6 +4560,11 @@
       }
     }
   }
+  .focus\:ring-\[var\(--color-link\)\] {
+    &:focus {
+      --tw-ring-color: var(--color-link);
+    }
+  }
   .focus\:ring-amber-400 {
     &:focus {
       --tw-ring-color: var(--color-amber-400);

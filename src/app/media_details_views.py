@@ -2224,7 +2224,11 @@ def media_details(
         "carousel_supported": carousel_supported,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
         "public_reviews_preview_url": public_reviews_preview_url,
-        **_build_detail_person_rows(media_metadata, item=detail_item),
+        **_build_detail_person_rows(
+            media_metadata,
+            item=detail_item,
+            user=request.user,
+        ),
     }
     logger.info(
         "detail_render_complete path=%s phase=%s media_type=%s source=%s duration_ms=%.2f",
