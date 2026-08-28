@@ -161,8 +161,10 @@ def _sonarr_availability(user, item, media_type: str) -> dict | None:
         "item__source": item.source,
         "item__media_type": MediaTypes.EPISODE.value,
     }
-    if media_type == MediaTypes.SEASON.value:
+    if media_type in {MediaTypes.SEASON.value, MediaTypes.EPISODE.value}:
         item_filter["item__season_number"] = item.season_number
+    if media_type == MediaTypes.EPISODE.value:
+        item_filter["item__episode_number"] = item.episode_number
 
     states = CollectionSourceState.objects.filter(
         user=user,
@@ -225,6 +227,7 @@ def build_detail_availability(*, user, item, media_type: str, title: str) -> dic
         MediaTypes.TV.value,
         MediaTypes.ANIME.value,
         MediaTypes.SEASON.value,
+        MediaTypes.EPISODE.value,
     }:
         sonarr = _sonarr_availability(user, item, media_type)
         if sonarr:

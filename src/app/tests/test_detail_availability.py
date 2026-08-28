@@ -227,6 +227,62 @@ class DetailAvailabilityTests(TestCase):
             sonarr["instances"][0]["url"],
         )
 
+    def test_sonarr_reports_the_exact_episode_on_episode_details(self):
+        episode = Item.objects.create(
+            media_id="125988",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="The Getaway",
+            season_number=3,
+            episode_number=9,
+        )
+        other_episode = Item.objects.create(
+            media_id=episode.media_id,
+            source=episode.source,
+            media_type=MediaTypes.EPISODE.value,
+            title="Other Episode",
+            season_number=3,
+            episode_number=8,
+        )
+        instance = SonarrInstance.objects.create(
+            user=self.user,
+            name="TV",
+            base_url="https://sonarr.local",
+            api_key="encrypted-key",
+            last_sync_at=timezone.now(),
+        )
+        CollectionSourceState.objects.create(
+            user=self.user,
+            item=other_episode,
+            source="sonarr",
+            source_instance_id=instance.id,
+        )
+
+        sonarr = next(
+            service
+            for service in self.build(episode)["services"]
+            if service["key"] == "sonarr"
+        )
+        self.assertEqual(sonarr["instances"][0]["status"], "not_found")
+
+        CollectionSourceState.objects.create(
+            user=self.user,
+            item=episode,
+            source="sonarr",
+            source_instance_id=instance.id,
+        )
+
+        sonarr = next(
+            service
+            for service in self.build(episode)["services"]
+            if service["key"] == "sonarr"
+        )
+        self.assertEqual(sonarr["instances"][0]["status"], "available")
+        self.assertEqual(
+            sonarr["instances"][0]["seasons"],
+            [{"season_number": 3, "available_episodes": 1}],
+        )
+
     def test_disabled_section_and_provider_are_omitted(self):
         RadarrInstance.objects.create(
             user=self.user,

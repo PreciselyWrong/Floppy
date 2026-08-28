@@ -89,6 +89,7 @@ docker compose up -d
 - ⛔ Garder les contrôles d’une rangée de réglages sur une ligne rigide — ils doivent revenir à la ligne sans sortir du panneau.
 - ⛔ Mettre en cache les pages, fragments ou données authentifiés dans la PWA — le service worker reste limité aux fichiers statiques publics.
 - ⛔ Supposer que toutes les fiches exposent le même champ de titre — épisodes, numéros et autres variantes doivent conserver leurs replis propres.
+- ⛔ Exclure les fiches épisode des disponibilités Sonarr — vérifier l’épisode exact pour éviter une absence ou un faux positif venant d’un épisode voisin.
 - ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.
 - ⛔ Placer les réglages du logo hors de `Settings > Appearance` ou laisser le logo de la sidebar se contracter — l'identité visuelle doit rester trouvable et lisible.
 - ⛔ Aligner le logo ou le mot-symbole sur un bord du bandeau de sidebar — toutes les variantes restent centrées dans la colonne.
