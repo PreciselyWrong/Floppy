@@ -5833,6 +5833,57 @@ class MediaDetailsViewTests(TestCase):
             language="en",
         )
 
+    @patch("app.season_details_views.credits_module.sync_item_credits_from_metadata")
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes", return_value=[])
+    def test_season_details_syncs_people_before_enriching_credit_cards(
+        self,
+        _mock_process_episodes,
+        mock_get_metadata,
+        mock_sync_credits,
+    ):
+        season_item = Item.objects.create(
+            media_id="season-credit-show",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            library_media_type=MediaTypes.SEASON.value,
+            season_number=1,
+            title="Season 1",
+        )
+        season_metadata = {
+            "title": "Season 1",
+            "season_title": "Season 1",
+            "media_id": "season-credit-show",
+            "media_type": MediaTypes.SEASON.value,
+            "source": Sources.TMDB.value,
+            "episodes": [],
+            "cast": [{"person_id": "42", "name": "Season Actor"}],
+            "crew": [],
+        }
+        mock_get_metadata.return_value = {
+            "title": "Credit Show",
+            "media_id": "season-credit-show",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "season/1": season_metadata,
+        }
+
+        response = self.client.get(
+            reverse(
+                "season_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "season-credit-show",
+                    "title": "credit-show",
+                    "season_number": 1,
+                },
+            ),
+            {"fragment": "secondary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_sync_credits.assert_called_once_with(season_item, season_metadata)
+
     @patch("app.providers.services.get_media_metadata")
     @patch("app.providers.tmdb.process_episodes")
     def test_season_details_view_anonymous_public(
@@ -6147,6 +6198,69 @@ class MediaDetailsViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+
+    @patch("app.views._build_detail_person_rows")
+    @patch("app.views.credits.sync_item_credits_from_metadata")
+    @patch("app.views.tmdb.episode")
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes", return_value=[])
+    def test_episode_details_builds_enriched_credit_rows(
+        self,
+        _mock_process_episodes,
+        mock_get_metadata,
+        mock_episode,
+        mock_sync_credits,
+        mock_build_person_rows,
+    ):
+        episode_item = Item.objects.create(
+            media_id="episode-credit-show",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            library_media_type=MediaTypes.TV.value,
+            season_number=1,
+            episode_number=2,
+            title="Episode 2",
+        )
+        mock_get_metadata.return_value = {
+            "title": "Credit Show",
+            "media_id": "episode-credit-show",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "season/1": {"title": "Season 1", "episodes": []},
+        }
+        episode_metadata = {
+            "cast": [{"person_id": "42", "name": "Episode Actor"}],
+            "crew": [],
+        }
+        mock_episode.return_value = episode_metadata
+        mock_build_person_rows.return_value = {
+            "cast_row": {"total": 1, "items": episode_metadata["cast"]},
+            "guest_row": {"total": 0, "items": []},
+            "crew_row": {"total": 0, "items": []},
+            "recommendations_row": {"total": 0, "items": []},
+        }
+
+        response = self.client.get(
+            reverse(
+                "episode_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "episode-credit-show",
+                    "title": "credit-show",
+                    "season_number": 1,
+                    "episode_number": 2,
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_sync_credits.assert_called_once_with(episode_item, episode_metadata)
+        mock_build_person_rows.assert_called_once_with(
+            episode_metadata,
+            item=episode_item,
+            user=self.user,
+        )
+        self.assertEqual(response.context["cast_row"]["total"], 1)
 
     @patch("app.views.tmdb.episode", return_value={})
     @patch("app.providers.services.get_media_metadata")
