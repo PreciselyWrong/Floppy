@@ -201,8 +201,11 @@ class DetailPersonCreditEnrichmentTests(TestCase):
             html.index('data-src="https://example.com/person.jpg"'),
             html.index("Age 33"),
         )
-        self.assertLess(html.index("Age 33"), html.index("Known for"))
+        self.assertLess(html.index("Age 33"), html.index("Your history"))
         self.assertIn("Watched One", html)
+        self.assertIn('data-person-credit-card="true"', html)
+        self.assertIn('data-person-credit-details="true"', html)
+        self.assertNotIn("search-result-card", html)
 
 
 

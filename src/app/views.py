@@ -104,6 +104,7 @@ from app.detail_builders import (
     _apply_cached_hltb_link,
     _build_detail_link_entry,
     _build_detail_link_sections,
+    _build_detail_person_rows,
     _build_game_length_card,
     _build_game_lengths_context,
     _build_imdb_rating_context,
@@ -896,6 +897,29 @@ def episode_details(
         )
     episode_item = episode_item_qs.first()
 
+    if (
+        not public_view
+        and episode_item
+        and isinstance(episode_metadata, dict)
+        and (episode_metadata.get("cast") or episode_metadata.get("crew"))
+        and not episode_item.person_credits.exists()
+    ):
+        run_retryable_db_operation(
+            lambda: credits.sync_item_credits_from_metadata(
+                episode_item,
+                episode_metadata,
+            ),
+            mode="best_effort",
+            operation_name="episode detail credits sync",
+            operation_logger=logger,
+        )
+
+    person_rows = _build_detail_person_rows(
+        episode_metadata,
+        item=episode_item,
+        user=request.user if request.user.is_authenticated else None,
+    )
+
     list_owner = None
     public_notes_view = False
     if public_list_view:
@@ -979,6 +1003,7 @@ def episode_details(
         "prev_episode_number": prev_episode_number,
         "next_episode_number": next_episode_number,
         "episode_metadata": episode_metadata,
+        "media": {"source": source},
         "imdb_score": imdb_score,
         "season_metadata": season_metadata,
         "current_instance": current_season_instance,
@@ -998,6 +1023,7 @@ def episode_details(
         or (episode_data or {}).get("title")
         or f"Episode {episode_number}",
         "detail_return_url": request.build_absolute_uri(),
+        **person_rows,
     }
     return render(request, "app/episode_details.html", context)
 

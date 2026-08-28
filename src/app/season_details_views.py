@@ -11,10 +11,12 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET
 
 from app import config, helpers
+from app import credits as credits_module
 from app.activity_builders import (
     _normalize_detail_episode_actions,
     _paginate_detail_episodes,
 )
+from app.db_retry import run_retryable_db_operation
 from app.detail_builders import (
     _build_detail_link_sections,
     _build_detail_person_rows,
@@ -962,6 +964,24 @@ def season_details(
         season_metadata["episodes"], episode_load_more = _paginate_detail_episodes(
             request,
             season_metadata["episodes"],
+        )
+
+    if (
+        render_secondary_only
+        and not public_view
+        and season_item
+        and isinstance(season_metadata, dict)
+        and (season_metadata.get("cast") or season_metadata.get("crew"))
+        and not season_item.person_credits.exists()
+    ):
+        run_retryable_db_operation(
+            lambda: credits_module.sync_item_credits_from_metadata(
+                season_item,
+                season_metadata,
+            ),
+            mode="best_effort",
+            operation_name="season detail credits sync",
+            operation_logger=logger,
         )
 
     # Resolve parent media type: anime URL kwarg takes priority, else detect via DB
