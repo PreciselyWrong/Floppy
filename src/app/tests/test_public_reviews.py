@@ -60,6 +60,37 @@ class PublicReviewSortTests(SimpleTestCase):
         )
 
 
+class PublicReviewBodyTests(SimpleTestCase):
+    def test_spoiler_tags_are_split_into_hidden_body_parts(self):
+        review = public_reviews.PublicReview(
+            "BetaSeries",
+            "didien",
+            "Before [spoiler]🤯[/spoiler] after [SPOILER]secret[/SPOILER]",
+        )
+
+        self.assertEqual(
+            [
+                ("Before ", False),
+                ("🤯", True),
+                (" after ", False),
+                ("secret", True),
+            ],
+            [(part.text, part.is_spoiler) for part in review.body_parts],
+        )
+
+    def test_unclosed_spoiler_tag_remains_plain_text(self):
+        review = public_reviews.PublicReview(
+            "BetaSeries",
+            "didien",
+            "Keep [spoiler]this readable",
+        )
+
+        self.assertEqual(
+            [("Keep [spoiler]this readable", False)],
+            [(part.text, part.is_spoiler) for part in review.body_parts],
+        )
+
+
 class PublicReviewFeedTests(SimpleTestCase):
     def test_one_provider_failure_does_not_hide_other_reviews(self):
         target = public_reviews.ReviewTarget("movie", "tmdb", "1")

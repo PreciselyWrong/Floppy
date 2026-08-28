@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -19,6 +20,31 @@ class ReviewTarget:
 
 
 @dataclass(frozen=True)
+class ReviewBodyPart:
+    """One plain or deliberately hidden fragment of a public review."""
+
+    text: str
+    is_spoiler: bool = False
+
+
+SPOILER_PATTERN = re.compile(r"\[spoiler\](.*?)\[/spoiler\]", re.IGNORECASE | re.DOTALL)
+
+
+def split_review_body(body):
+    """Split supported spoiler tags while leaving malformed input untouched."""
+    parts = []
+    cursor = 0
+    for match in SPOILER_PATTERN.finditer(body):
+        if match.start() > cursor:
+            parts.append(ReviewBodyPart(body[cursor : match.start()]))
+        parts.append(ReviewBodyPart(match.group(1), is_spoiler=True))
+        cursor = match.end()
+    if cursor < len(body):
+        parts.append(ReviewBodyPart(body[cursor:]))
+    return tuple(parts) or (ReviewBodyPart(body),)
+
+
+@dataclass(frozen=True)
 class PublicReview:
     """Normalized public review rendered by detail pages."""
 
@@ -30,6 +56,16 @@ class PublicReview:
     url: str | None = None
     provider_url: str = ""
     provider_logo: str = ""
+
+    @property
+    def body_parts(self):
+        """Return render-safe plain and spoiler fragments."""
+        return split_review_body(self.body)
+
+    @property
+    def has_spoilers(self):
+        """Return whether the review contains at least one complete spoiler tag."""
+        return any(part.is_spoiler for part in self.body_parts)
 
 
 @dataclass(frozen=True)
