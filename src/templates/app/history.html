@@ -77,7 +77,7 @@
     <div class="w-full max-w-xl px-4 pointer-events-auto">
       <div class="flex items-center gap-2 rounded-md border px-3 py-2 shadow-lg toast-info opacity-0"
            x-init="setTimeout(() => $el.classList.add('opacity-100', 'transform-none'), 10); $el.classList.add('transition-all', 'duration-300', 'ease-out', 'transform', 'translate-y-[-1rem]')">
-        {% include "app/icons/info.svg" with classes="w-4 h-4 text-indigo-300 shrink-0 animate-pulse" %}
+        {% include "app/icons/info.svg" with classes="w-4 h-4 text-[var(--color-info-text)] shrink-0 animate-pulse" %}
         <p class="text-sm font-medium flex-1">Refreshing history in background...</p>
         <button class="text-current opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
                 @click="cacheRefreshing = false; cacheUpdater?.stop();">
@@ -239,7 +239,7 @@
       {% for page_num in pages %}
         {% if page_num %}
           <a href="?{% if active_filters %}{% for key, value in active_filters.items %}{{ key }}={{ value }}{% if not forloop.last %}&{% endif %}{% endfor %}{% if active_filters %}&{% endif %}{% endif %}page={{ page_num }}"
-             class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-indigo-600 text-white{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
+             class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-accent)] text-[var(--color-page-bg)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
             {{ page_num }}
           </a>
         {% else %}
@@ -344,7 +344,7 @@
         {% for page_num in pages %}
           {% if page_num %}
             <a href="?{% if active_filters %}{% for key, value in active_filters.items %}{{ key }}={{ value }}{% if not forloop.last %}&{% endif %}{% endfor %}{% if active_filters %}&{% endif %}{% endif %}page={{ page_num }}"
-               class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-indigo-600 text-white{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
+               class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-accent)] text-[var(--color-page-bg)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
               {{ page_num }}
             </a>
           {% else %}
@@ -609,7 +609,7 @@
 }">
   {# FAB button #}
   <button @click="open = true"
-          class="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg flex items-center justify-center cursor-pointer transition-colors"
+          class="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-[var(--color-accent)] hover:brightness-110 text-[var(--color-page-bg)] shadow-lg flex items-center justify-center cursor-pointer transition-colors"
           title="Filter history"
           aria-label="Filter history">
     {% include "app/icons/funnel.svg" with classes="w-5 h-5" %}
@@ -646,13 +646,13 @@
                 <label class="block text-xs text-[var(--color-text-muted)] mb-1">From</label>
                 <input type="date"
                        x-model="startDate"
-                       class="w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer">
+                       class="w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer">
               </div>
               <div>
                 <label class="block text-xs text-[var(--color-text-muted)] mb-1">To</label>
                 <input type="date"
                        x-model="endDate"
-                       class="w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer">
+                       class="w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer">
               </div>
             </div>
           </div>
@@ -664,7 +664,7 @@
               <button type="button"
                       x-ref="mediaTypeTrigger"
                       @click="openMediaTypeDropdown()"
-                      class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer text-left"
+                      class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer text-left"
                       :class="selectedMediaTypes.length ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-muted)]'">
                 <span class="truncate" x-text="selectedMediaTypes.length ? mediaTypeOptions.filter(o => selectedMediaTypes.includes(o.value)).map(o => o.label).join(', ') : 'All types'"></span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-[var(--color-text-muted)] shrink-0 ml-2"><path d="m6 9 6 6 6-6"></path></svg>
@@ -679,7 +679,7 @@
                    x-transition:leave="transition ease-in duration-75"
                    x-transition:leave-start="transform opacity-100 scale-100"
                    x-transition:leave-end="transform opacity-0 scale-95"
-                   class="z-[70] overflow-y-auto py-1 bg-[var(--color-panel)] rounded-md shadow-lg border border-gray-600">
+                   class="z-[70] overflow-y-auto py-1 bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
                 <template x-for="opt in mediaTypeOptions" :key="opt.value">
                   <button type="button"
                           @click="toggleMediaType(opt.value)"
@@ -701,7 +701,7 @@
               <button type="button"
                       x-ref="historyModeTrigger"
                       @click="openHistoryModeDropdown()"
-                      class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer">
+                      class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer">
                 <span x-text="historyModeLabel"></span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-[var(--color-text-muted)]"><path d="m6 9 6 6 6-6"></path></svg>
               </button>
@@ -715,7 +715,7 @@
                    x-transition:leave="transition ease-in duration-75"
                    x-transition:leave-start="transform opacity-100 scale-100"
                    x-transition:leave-end="transform opacity-0 scale-95"
-                   class="z-[70] overflow-hidden py-1 bg-[var(--color-panel)] rounded-md shadow-lg border border-gray-600">
+                   class="z-[70] overflow-hidden py-1 bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
                 <button type="button"
                         @click="historyMode = ''; historyModeLabel = 'Activity (watched)'; historyModeOpen = false"
                         class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]"
@@ -739,7 +739,7 @@
                     x-ref="genreTrigger"
                     @click="openGenreDropdown()"
                     @keydown.escape.window="genreOpen = false"
-                    class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer text-left"
+                    class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer text-left"
                     :class="selectedGenres.length ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-muted)]'">
               <span class="truncate" x-text="selectedGenres.length ? selectedGenres.join(', ') : 'All genres'"></span>
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-[var(--color-text-muted)] shrink-0 ml-2"><path d="m6 9 6 6 6-6"></path></svg>
@@ -755,12 +755,12 @@
                  x-transition:leave="transition ease-in duration-75"
                  x-transition:leave-start="transform opacity-100 scale-100"
                  x-transition:leave-end="transform opacity-0 scale-95"
-                 class="z-[70] flex flex-col bg-[var(--color-panel)] rounded-md shadow-lg border border-gray-600">
+                 class="z-[70] flex flex-col bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
               <div class="px-2 pt-2 pb-1 shrink-0">
                 <input type="text"
                        x-model="genreSearch"
                        placeholder="Filter genres…"
-                       class="w-full px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text-secondary)] placeholder-[var(--color-text-muted)] border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                       class="w-full px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text-secondary)] placeholder-[var(--color-text-muted)] border border-[var(--color-surface-border)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]">
               </div>
               <div class="overflow-y-auto flex-1 py-1">
                 <template x-if="genresLoading">
@@ -789,7 +789,7 @@
                     x-ref="impliedGenreTrigger"
                     @click="openImpliedGenreDropdown()"
                     @keydown.escape.window="impliedGenreOpen = false"
-                    class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer text-left"
+                    class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer text-left"
                     :class="selectedImpliedGenres.length ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-muted)]'">
               <span class="truncate" x-text="selectedImpliedGenres.length ? selectedImpliedGenres.join(', ') : 'All implied genres'"></span>
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-[var(--color-text-muted)] shrink-0 ml-2"><path d="m6 9 6 6 6-6"></path></svg>
@@ -805,12 +805,12 @@
                  x-transition:leave="transition ease-in duration-75"
                  x-transition:leave-start="transform opacity-100 scale-100"
                  x-transition:leave-end="transform opacity-0 scale-95"
-                 class="z-[70] flex flex-col bg-[var(--color-panel)] rounded-md shadow-lg border border-gray-600">
+                 class="z-[70] flex flex-col bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
               <div class="px-2 pt-2 pb-1 shrink-0">
                 <input type="text"
                        x-model="impliedGenreSearch"
                        placeholder="Filter implied genres…"
-                       class="w-full px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text-secondary)] placeholder-[var(--color-text-muted)] border border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                       class="w-full px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text-secondary)] placeholder-[var(--color-text-muted)] border border-[var(--color-surface-border)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]">
               </div>
               <div class="overflow-y-auto flex-1 py-1">
                 <template x-if="genresLoading">
@@ -837,11 +837,11 @@
         {# Action buttons #}
         <div class="flex gap-3 mt-6">
           <button @click="clear()"
-                  class="flex-1 px-4 py-2 rounded-md border border-gray-600 text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:border-gray-400 text-sm transition-colors cursor-pointer">
+                  class="flex-1 px-4 py-2 rounded-md border border-[var(--color-surface-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:border-[var(--color-text-muted)] text-sm transition-colors cursor-pointer">
             Clear filters
           </button>
           <button @click="apply()"
-                  class="flex-1 px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors cursor-pointer">
+                  class="flex-1 px-4 py-2 rounded-md bg-[var(--color-accent)] hover:brightness-110 text-[var(--color-page-bg)] text-sm font-medium transition-colors cursor-pointer">
             Apply
           </button>
         </div>

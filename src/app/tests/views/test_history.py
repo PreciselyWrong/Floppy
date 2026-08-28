@@ -461,6 +461,15 @@ class HistoryMonthViewTests(TestCase):
         self.assertContains(response, "Month View Movie")
         self.assertContains(response, "Month View Episode")
 
+    def test_history_controls_use_theme_tokens(self):
+        response = self.client.get(reverse("history"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "bg-[var(--color-accent)]")
+        self.assertContains(response, "text-[var(--color-page-bg)]")
+        self.assertNotContains(response, "indigo-")
+        self.assertNotContains(response, "border-gray-")
+
     def _cache_large_history_day(self, *, keep_count=0, total_count=None):
         """Create and cache many same-day movie entries for pagination tests."""
         total_count = total_count or history_cache.HISTORY_ENTRIES_PER_DAY_PAGE + 5
