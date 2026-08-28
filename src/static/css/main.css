@@ -1299,6 +1299,9 @@
   .list-disc {
     list-style-type: disc;
   }
+  .list-none {
+    list-style-type: none;
+  }
   .\[appearance\:textfield\] {
     appearance: textfield;
   }
@@ -4669,6 +4672,11 @@
     &:focus-visible {
       --tw-outline-style: none;
       outline-style: none;
+    }
+  }
+  .focus-visible\:ring-inset {
+    &:focus-visible {
+      --tw-ring-inset: inset;
     }
   }
   .active\:cursor-grabbing {

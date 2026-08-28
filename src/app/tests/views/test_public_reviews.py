@@ -58,6 +58,29 @@ class PublicReviewViewTests(TestCase):
         self.assertContains(response, "season=2&amp;episode=3&amp;tvdb_id=81189")
 
     @patch("app.public_review_views.collect_reviews")
+    def test_preview_hides_betaseries_spoilers_until_revealed(self, collect):
+        collect.return_value = ReviewFeed(
+            reviews=[
+                PublicReview(
+                    "BetaSeries",
+                    "didien",
+                    "Before [spoiler]🤯 <script>alert('x')</script>[/spoiler] after",
+                )
+            ],
+            problems=[],
+            any_provider_active=True,
+        )
+
+        response = self.client.get(reverse("public_reviews_preview", kwargs=self.kwargs))
+
+        self.assertContains(response, "<details")
+        self.assertContains(response, "Show spoiler")
+        self.assertContains(response, "🤯")
+        self.assertContains(response, "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;")
+        self.assertNotContains(response, "[spoiler]")
+        self.assertNotContains(response, "[/spoiler]")
+
+    @patch("app.public_review_views.collect_reviews")
     def test_full_screen_applies_requested_sort(self, collect):
         collect.return_value = ReviewFeed(
             reviews=[
