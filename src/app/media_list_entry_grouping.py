@@ -93,6 +93,7 @@ def _get_separate_media_list(
     search,
     direction,
     list_sql_filters,
+    result_limit,
 ):
     """Return raw tracking rows without duplicate reduction or aggregation."""
     model = apps.get_model(app_label="app", model_name=media_type)
@@ -124,23 +125,23 @@ def _get_separate_media_list(
         list_mode=True,
     )
 
-    if not sort_filter:
-        return list(queryset)
-
-    if (
+    if sort_filter and (
         sort_filter in _POST_SORT_KEYS
         and media_type not in {MediaTypes.TV.value, MediaTypes.SEASON.value}
     ):
         queryset = list(queryset)
 
-    return list(
-        manager._sort_media_list(
+    if sort_filter:
+        queryset = manager._sort_media_list(
             queryset,
             sort_filter,
             media_type,
             direction,
         )
-    )
+
+    if result_limit is not None:
+        queryset = queryset[:result_limit]
+    return list(queryset)
 
 
 def _install_media_list_policy() -> None:
@@ -159,6 +160,7 @@ def _install_media_list_policy() -> None:
         direction=None,
         *,
         list_sql_filters=None,
+        result_limit=None,
     ):
         """Return media rows under the active entry-grouping policy."""
         if _ENTRY_GROUPING_MODE.get() is not True:
@@ -171,6 +173,7 @@ def _install_media_list_policy() -> None:
                 search,
                 direction,
                 list_sql_filters=list_sql_filters,
+                result_limit=result_limit,
             )
 
         return _get_separate_media_list(
@@ -182,6 +185,7 @@ def _install_media_list_policy() -> None:
             search,
             direction,
             list_sql_filters,
+            result_limit,
         )
 
     get_media_list._supports_entry_grouping_context = True

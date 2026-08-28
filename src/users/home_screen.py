@@ -2268,11 +2268,23 @@ def _library_query_entries(
         items,
         getattr(user, "tv_metadata_source_default", Sources.TMDB.value),
     )
-    media_lookup = _media_lookup_for_items(
-        user,
-        items,
-        status_filter=status_filter,
+    items = [
+        item for item in items if _item_matches_home_media_type(item, row.media_type)
+    ]
+    entries = _library_entries_for_items(user, items, status_filter)
+    entries = _apply_progress_filter(
+        entries, row.media_type, normalized_filters.get("progress", "all")
     )
+    return sort_home_entries(entries, row.sort_by, row.direction)
+
+
+def _library_entries_for_items(
+    user,
+    items: list[Item],
+    status_filter: list[str],
+) -> list[HomeRowEntry]:
+    """Hydrate standard Home card entries for an already ordered item subset."""
+    media_lookup = _media_lookup_for_items(user, items, status_filter=status_filter)
     entries = [
         HomeRowEntry(
             item=item,
@@ -2287,14 +2299,10 @@ def _library_query_entries(
             else None,
         )
         for item in items
-        if _item_matches_home_media_type(item, row.media_type)
     ]
     if status_filter:
         entries = [entry for entry in entries if entry.media is not None]
-    entries = _apply_progress_filter(
-        entries, row.media_type, normalized_filters.get("progress", "all")
-    )
-    return sort_home_entries(entries, row.sort_by, row.direction)
+    return entries
 
 
 def _custom_list_entries(user, row: HomeScreenRow) -> list[HomeRowEntry]:
@@ -2460,6 +2468,83 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
 _HOME_ROW_EMPTY_SENTINEL = "__home_row_empty__"
 
 
+def _supports_compact_home_order(row: HomeScreenRow) -> bool:
+    if row.row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY:
+        return False
+    if row.media_type != MediaTypes.MUSIC.value:
+        return True
+    normalized = _normalized_filter_payload(row.filters or {}, row.media_type)
+    return _canonical_music_subview(normalized.get("subview")) == MUSIC_SUBVIEW_TRACKS
+
+
+def _cache_home_row_order(user, row: HomeScreenRow, entries: list[HomeRowEntry]) -> None:
+    if not _supports_compact_home_order(row):
+        return
+
+    from django.core.cache import cache
+
+    from app import cache_utils
+
+    cache_key = cache_utils.build_home_row_order_cache_key(user.id, row.id)
+    cache.set(
+        cache_key,
+        {"item_ids": [entry.item.id for entry in entries], "total": len(entries)},
+        cache_utils.HOME_ROW_CACHE_TTL,
+    )
+    cache_utils.register_home_row_cache_key(user.id, cache_key)
+
+
+def _section_from_entry_slice(
+    user,
+    row: HomeScreenRow,
+    media_type: str,
+    section_entries: list[HomeRowEntry],
+    total: int,
+    batch_start: int,
+    consumed_count: int | None = None,
+) -> dict | None:
+    if total == 0:
+        return None
+
+    prefill_display_release_years(section_entries)
+    consumed_count = len(section_entries) if consumed_count is None else consumed_count
+    loaded_count = min(total, batch_start + consumed_count)
+    title_main, title_detail = home_row_header_title_parts(row, user)
+
+    def _entry_missing_cover(entry):
+        if getattr(entry, "use_podcast_show", False) and getattr(
+            entry, "podcast_show", None
+        ):
+            image = entry.podcast_show.image
+        else:
+            image = getattr(entry.media, "card_image_override", None) or entry.item.image
+        return not image or image == settings.IMG_NONE
+
+    poll_for_covers = media_type in SQUARE_HOME_MEDIA_TYPES and any(
+        _entry_missing_cover(entry) for entry in section_entries
+    )
+    return {
+        "row_id": row.id,
+        "title": row_title(row, user),
+        "title_main": title_main,
+        "title_detail": title_detail,
+        "url": home_row_destination_url(row, user),
+        "summary": row_summary(row, user),
+        "summary_inline": home_row_inline_summary(row, user),
+        "direction": row.direction,
+        "items": section_entries,
+        "total": total,
+        "loaded_count": loaded_count,
+        "show_played_chip": row.row_type
+        == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        "card_width_class": "w-44",
+        "grid_class": "media-grid media-grid-square"
+        if media_type in SQUARE_HOME_MEDIA_TYPES
+        else "media-grid",
+        "poll_for_covers": poll_for_covers,
+    }
+
+
 def _build_row_section(
     user,
     row,
@@ -2467,6 +2552,7 @@ def _build_row_section(
     items_limit: int,
     batch_start: int = 0,
     collection_context_cache: dict | None = None,
+    cache_order: bool = False,
 ) -> dict | None:
     """Build a single home-row section dict, or None when the row is empty."""
     if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST:
@@ -2483,41 +2569,72 @@ def _build_row_section(
 
     batch_end = batch_start + items_limit
     section_entries = entries[batch_start:batch_end]
-    prefill_display_release_years(section_entries)
-    loaded_count = min(len(entries), batch_start + len(section_entries))
-    title_main, title_detail = home_row_header_title_parts(row, user)
-
-    def _entry_missing_cover(entry):
-        if getattr(entry, "use_podcast_show", False) and getattr(
-            entry, "podcast_show", None
-        ):
-            image = entry.podcast_show.image
-        else:
-            image = getattr(entry.media, "card_image_override", None) or entry.item.image
-        return not image or image == settings.IMG_NONE
-
-    poll_for_covers = media_type in SQUARE_HOME_MEDIA_TYPES and any(
-        _entry_missing_cover(e) for e in section_entries
+    if cache_order:
+        _cache_home_row_order(user, row, entries)
+    return _section_from_entry_slice(
+        user,
+        row,
+        media_type,
+        section_entries,
+        len(entries),
+        batch_start,
     )
-    return {
-        "row_id": row.id,
-        "title": row_title(row, user),
-        "title_main": title_main,
-        "title_detail": title_detail,
-        "url": home_row_destination_url(row, user),
-        "summary": row_summary(row, user),
-        "summary_inline": home_row_inline_summary(row, user),
-        "direction": row.direction,
-        "items": section_entries,
-        "total": len(entries),
-        "loaded_count": loaded_count,
-        "show_played_chip": row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
-        "card_width_class": "w-44",
-        "grid_class": "media-grid media-grid-square"
-        if media_type in SQUARE_HOME_MEDIA_TYPES
-        else "media-grid",
-        "poll_for_covers": poll_for_covers,
-    }
+
+
+def _cached_paginated_row_section(
+    user,
+    row: HomeScreenRow,
+    media_type: str,
+    items_limit: int,
+    batch_start: int,
+    collection_context_cache: dict | None = None,
+) -> dict | None:
+    """Hydrate one page from a cached compact order when the row supports it."""
+    if not _supports_compact_home_order(row):
+        return _build_row_section(
+            user,
+            row,
+            media_type,
+            items_limit,
+            batch_start=batch_start,
+            collection_context_cache=collection_context_cache,
+        )
+
+    from django.core.cache import cache
+
+    from app import cache_utils
+
+    cache_key = cache_utils.build_home_row_order_cache_key(user.id, row.id)
+    payload = cache.get(cache_key)
+    if not isinstance(payload, dict) or not isinstance(payload.get("item_ids"), list):
+        return _build_row_section(
+            user,
+            row,
+            media_type,
+            items_limit,
+            batch_start=batch_start,
+            collection_context_cache=collection_context_cache,
+            cache_order=True,
+        )
+
+    requested_ids = payload["item_ids"][batch_start : batch_start + items_limit]
+    items_by_id = Item.objects.in_bulk(requested_ids)
+    items = [items_by_id[item_id] for item_id in requested_ids if item_id in items_by_id]
+    normalized = _normalized_filter_payload(row.filters or {}, row.media_type)
+    entries = _library_entries_for_items(
+        user,
+        items,
+        normalized.get("status") or [],
+    )
+    return _section_from_entry_slice(
+        user,
+        row,
+        media_type,
+        entries,
+        int(payload.get("total", len(payload["item_ids"]))),
+        batch_start,
+        consumed_count=len(requested_ids),
+    )
 
 
 def _cached_row_section(
@@ -2547,6 +2664,7 @@ def _cached_row_section(
             media_type,
             items_limit,
             collection_context_cache=collection_context_cache,
+            cache_order=True,
         )
         cache.set(
             cache_key,
@@ -2592,8 +2710,7 @@ def build_home_page_groups(
         row_sections = []
         for row in rows_by_media_type.get(media_type, []):
             if load_row_id == row.id and append_only:
-                # Offset pagination ("load more") bypasses the row cache.
-                section = _build_row_section(
+                section = _cached_paginated_row_section(
                     user,
                     row,
                     media_type,

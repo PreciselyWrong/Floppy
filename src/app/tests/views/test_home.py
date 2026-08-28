@@ -3,11 +3,14 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
-from app import live_playback
+from app import cache_utils, live_playback
 from app.models import (
     TV,
     Anime,
@@ -753,6 +756,14 @@ class HomeViewTests(TestCase):
 
         initial_response = self.client.get(reverse("home"))
         season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
+        cached_order = cache.get(
+            cache_utils.build_home_row_order_cache_key(
+                self.user.id,
+                season_row["row_id"],
+            )
+        )
+        self.assertEqual(cached_order["total"], 29)
+        self.assertTrue(all(isinstance(item_id, int) for item_id in cached_order["item_ids"]))
         self.assertContains(initial_response, 'data-loaded-count="14"', html=False)
         self.assertContains(
             initial_response, 'data-home-row-sentinel="true"', html=False
@@ -769,10 +780,15 @@ class HomeViewTests(TestCase):
             html=False,
         )
 
-        response = self.client.get(
-            reverse("home") + f"?load_row={season_row['row_id']}&offset=14",
-            headers={"hx-request": "true"},
-        )
+        with patch(
+            "users.home_screen._library_query_entries",
+            side_effect=AssertionError("pagination rebuilt the full Home row"),
+        ):
+            with CaptureQueriesContext(connection) as queries:
+                response = self.client.get(
+                    reverse("home") + f"?load_row={season_row['row_id']}&offset=14",
+                    headers={"hx-request": "true"},
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "app/components/home_grid.html")
@@ -783,11 +799,20 @@ class HomeViewTests(TestCase):
         self.assertContains(response, 'class="home-row-card w-44 shrink-0"', html=False)
         self.assertEqual(response["X-Home-Row-Total"], "29")
         self.assertEqual(response["X-Home-Row-Loaded"], "28")
-
-        final_response = self.client.get(
-            reverse("home") + f"?load_row={season_row['row_id']}&offset=28",
-            headers={"hx-request": "true"},
+        self.assertLess(
+            len(queries),
+            10,
+            f"Home pagination used {len(queries)} SQL queries",
         )
+
+        with patch(
+            "users.home_screen._library_query_entries",
+            side_effect=AssertionError("pagination rebuilt the full Home row"),
+        ):
+            final_response = self.client.get(
+                reverse("home") + f"?load_row={season_row['row_id']}&offset=28",
+                headers={"hx-request": "true"},
+            )
 
         self.assertEqual(final_response.status_code, 200)
         self.assertEqual(len(final_response.context["media_list"]["items"]), 1)
@@ -855,6 +880,12 @@ class HomeViewTests(TestCase):
         initial_response = self.client.get(reverse("home"))
         season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
         duplicate_entry = season_row["items"][0]
+        cache.delete(
+            cache_utils.build_home_row_order_cache_key(
+                self.user.id,
+                season_row["row_id"],
+            )
+        )
 
         with patch(
             "users.home_screen._library_query_entries",

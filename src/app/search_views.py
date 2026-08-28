@@ -219,55 +219,66 @@ def media_search(request):
                 )
                 local_results_kind = "music"
             else:
-                local_queryset = BasicMedia.objects.get_media_list(
+                anime_mode = getattr(
+                    request.user,
+                    "anime_library_mode",
+                    MediaTypes.ANIME.value,
+                )
+                list_sql_filters = None
+                if (
+                    media_type == MediaTypes.TV.value
+                    and anime_mode == MediaTypes.ANIME.value
+                ):
+                    list_sql_filters = {
+                        "exclude_library_media_type": MediaTypes.ANIME.value,
+                    }
+                list_filter_kwargs = (
+                    {"list_sql_filters": list_sql_filters}
+                    if list_sql_filters
+                    else {}
+                )
+
+                local_results_total = BasicMedia.objects.count_media_list(
+                    request.user,
+                    media_type,
+                    MediaStatusChoices.ALL,
+                    search=query,
+                    **list_filter_kwargs,
+                )
+                local_media = BasicMedia.objects.get_media_list(
                     request.user,
                     media_type,
                     MediaStatusChoices.ALL,
                     "title",
                     search=query,
                     direction="asc",
+                    result_limit=local_results_limit,
+                    **list_filter_kwargs,
                 )
-                local_media = list(local_queryset)
-                if (
-                    media_type == MediaTypes.TV.value
-                    and getattr(
-                        request.user,
-                        "anime_library_mode",
-                        MediaTypes.ANIME.value,
-                    )
-                    == MediaTypes.ANIME.value
-                ):
-                    local_media = [
-                        media
-                        for media in local_media
-                        if getattr(
-                            getattr(media, "item", None), "library_media_type", None
-                        )
-                        != MediaTypes.ANIME.value
-                    ]
-                elif media_type == MediaTypes.ANIME.value and getattr(
-                    request.user,
-                    "anime_library_mode",
+                if media_type == MediaTypes.ANIME.value and anime_mode in {
                     MediaTypes.ANIME.value,
-                ) in {MediaTypes.ANIME.value, "both"}:
-                    grouped_local_media = list(
-                        BasicMedia.objects.get_media_list(
-                            request.user,
-                            MediaTypes.TV.value,
-                            MediaStatusChoices.ALL,
-                            "title",
-                            search=query,
-                            direction="asc",
-                        ),
+                    "both",
+                }:
+                    grouped_filters = {
+                        "library_media_type": MediaTypes.ANIME.value,
+                    }
+                    local_results_total += BasicMedia.objects.count_media_list(
+                        request.user,
+                        MediaTypes.TV.value,
+                        MediaStatusChoices.ALL,
+                        search=query,
+                        list_sql_filters=grouped_filters,
                     )
-                    grouped_local_media = [
-                        media
-                        for media in grouped_local_media
-                        if getattr(
-                            getattr(media, "item", None), "library_media_type", None
-                        )
-                        == MediaTypes.ANIME.value
-                    ]
+                    grouped_local_media = BasicMedia.objects.get_media_list(
+                        request.user,
+                        MediaTypes.TV.value,
+                        MediaStatusChoices.ALL,
+                        "title",
+                        search=query,
+                        direction="asc",
+                        list_sql_filters=grouped_filters,
+                        result_limit=local_results_limit,
+                    )
                     _mark_grouped_anime_route(grouped_local_media)
                     local_media.extend(grouped_local_media)
                     local_media.sort(
@@ -278,7 +289,6 @@ def media_search(request):
                         ).lower(),
                     )
 
-                local_results_total = len(local_media)
                 local_media = local_media[:local_results_limit]
                 BasicMedia.objects.annotate_max_progress(local_media, media_type)
                 local_results = [
@@ -459,41 +469,40 @@ def get_saved_suggestions(user, media_type, query, limit=8):
                 )
         return suggestions[:limit]
 
-    local_queryset = BasicMedia.objects.get_media_list(
+    anime_mode = getattr(user, "anime_library_mode", MediaTypes.ANIME.value)
+    list_sql_filters = None
+    if media_type == MediaTypes.TV.value and anime_mode == MediaTypes.ANIME.value:
+        list_sql_filters = {
+            "exclude_library_media_type": MediaTypes.ANIME.value,
+        }
+    list_filter_kwargs = (
+        {"list_sql_filters": list_sql_filters} if list_sql_filters else {}
+    )
+
+    local_media = BasicMedia.objects.get_media_list(
         user,
         media_type,
         MediaStatusChoices.ALL,
         "title",
         search=query,
         direction="asc",
+        result_limit=limit,
+        **list_filter_kwargs,
     )
-    local_media = list(local_queryset)
-
-    anime_mode = getattr(user, "anime_library_mode", MediaTypes.ANIME.value)
-    if media_type == MediaTypes.TV.value and anime_mode == MediaTypes.ANIME.value:
-        local_media = [
-            media
-            for media in local_media
-            if getattr(getattr(media, "item", None), "library_media_type", None)
-            != MediaTypes.ANIME.value
-        ]
-    elif media_type == MediaTypes.ANIME.value and anime_mode in {
+    if media_type == MediaTypes.ANIME.value and anime_mode in {
         MediaTypes.ANIME.value,
         "both",
     }:
-        grouped = [
-            media
-            for media in BasicMedia.objects.get_media_list(
-                user,
-                MediaTypes.TV.value,
-                MediaStatusChoices.ALL,
-                "title",
-                search=query,
-                direction="asc",
-            )
-            if getattr(getattr(media, "item", None), "library_media_type", None)
-            == MediaTypes.ANIME.value
-        ]
+        grouped = BasicMedia.objects.get_media_list(
+            user,
+            MediaTypes.TV.value,
+            MediaStatusChoices.ALL,
+            "title",
+            search=query,
+            direction="asc",
+            list_sql_filters={"library_media_type": MediaTypes.ANIME.value},
+            result_limit=limit,
+        )
         _mark_grouped_anime_route(grouped)
         local_media.extend(grouped)
         local_media.sort(
