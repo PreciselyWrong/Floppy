@@ -56,7 +56,7 @@
   - Rendre chaque intégration et section paramétrable dans les options.
   - Détailler la disponibilité par saison et ouvrir directement la fiche Plex quand sa clé est connue.
   - Tests à rédiger : lien direct, repli, absence, délai dépassé, erreur partielle et section désactivée.
-  - Vérifié : 56 tests ciblés, Ruff, migrations et contrôle Django verts; Ferrari TMDB 365620 correspond à la clé Plex 18264.
+  - Vérifié : 56 tests ciblés, Ruff, migrations et contrôle Django verts; Ferrari TMDB 365620 correspond à la clé Plex 18264; image `sha-f6346f9920926d40195104b25e6ebeab28f8f55c` saine sur Unraid.
 - [ ] Ouvrir directement la fiche Plex correspondante quand sa clé est connue.
   - Tests à rédiger : clé valide, clé absente, lien invalide et repli local.
 - [ ] Ajouter la barre d’actions persistante et les actions propres à chaque média.
