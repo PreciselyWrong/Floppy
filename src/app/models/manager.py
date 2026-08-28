@@ -216,6 +216,18 @@ class MediaManager(models.Manager):
         if media_status:
             queryset = queryset.filter(item__status=media_status)
 
+        library_media_type = str(filters.get("library_media_type") or "").strip()
+        if library_media_type:
+            queryset = queryset.filter(item__library_media_type=library_media_type)
+
+        excluded_library_media_type = str(
+            filters.get("exclude_library_media_type") or ""
+        ).strip()
+        if excluded_library_media_type:
+            queryset = queryset.exclude(
+                item__library_media_type=excluded_library_media_type
+            )
+
         if media_type in (
             MediaTypes.TV.value,
             MediaTypes.MOVIE.value,
@@ -294,28 +306,18 @@ class MediaManager(models.Manager):
 
         return queryset
 
-    def get_media_list(
+    def _filtered_media_queryset(
         self,
         user,
         media_type,
         status_filter,
-        sort_filter,
-        search=None,
-        direction=None,
-        *,
-        list_sql_filters=None,
+        search,
+        list_sql_filters,
     ):
-        """Get a media list by type with filtering and sorting."""
+        """Build the shared filtered queryset before deduplication and sorting."""
         model = apps.get_model(app_label="app", model_name=media_type)
-        direction = self.resolve_direction(sort_filter, direction)
-        dup_state = {}
-
-        # Build base queryset
         queryset = model.objects.filter(user=user.id)
 
-        # Apply status filter. Statusless media (an imported rating with no
-        # tracking state) is never part of a status view, including "All"; it is
-        # surfaced separately by the "No Status" filter.
         if isinstance(status_filter, (list, tuple, set, frozenset)):
             status_filters = [
                 value
@@ -332,15 +334,60 @@ class MediaManager(models.Manager):
         else:
             queryset = queryset.exclude(status__isnull=True)
 
-        # Apply search filter
         if search:
             queryset = queryset.filter(
                 models.Q(item__title__icontains=search)
                 | models.Q(item__media_id__icontains=search),
             )
 
-        queryset = self._apply_list_sql_filters(
-            queryset, user, media_type, list_sql_filters or {}
+        return self._apply_list_sql_filters(
+            queryset,
+            user,
+            media_type,
+            list_sql_filters or {},
+        )
+
+    def count_media_list(
+        self,
+        user,
+        media_type,
+        status_filter,
+        search=None,
+        *,
+        list_sql_filters=None,
+    ):
+        """Count unique matching library items without materializing them."""
+        queryset = self._filtered_media_queryset(
+            user,
+            media_type,
+            status_filter,
+            search,
+            list_sql_filters,
+        )
+        return queryset.values("item_id").distinct().count()
+
+    def get_media_list(
+        self,
+        user,
+        media_type,
+        status_filter,
+        sort_filter,
+        search=None,
+        direction=None,
+        *,
+        list_sql_filters=None,
+        result_limit=None,
+    ):
+        """Get a media list by type with filtering and sorting."""
+        model = apps.get_model(app_label="app", model_name=media_type)
+        direction = self.resolve_direction(sort_filter, direction)
+        dup_state = {}
+        queryset = self._filtered_media_queryset(
+            user,
+            media_type,
+            status_filter,
+            search,
+            list_sql_filters,
         )
 
         # Handle duplicate entries by selecting the most recent record for each item
@@ -418,6 +465,9 @@ class MediaManager(models.Manager):
             queryset = self._sort_media_list(
                 queryset, sort_filter, media_type, direction
             )
+
+        if result_limit is not None:
+            queryset = queryset[:result_limit]
 
         # Re-apply duplicate aggregation because SQL queryset operations in sorting
         # can materialize fresh model instances and drop dynamic aggregated attrs.

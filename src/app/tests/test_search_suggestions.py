@@ -1,9 +1,12 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from app.models import Item, MediaTypes, Movie, Sources
-from users.models import Status
+from app.models import BasicMedia, Item, MediaTypes, Movie, Sources
+from app.search_views import get_saved_suggestions
+from users.models import MediaStatusChoices, Status
 
 
 class SearchSuggestionsViewTests(TestCase):
@@ -84,3 +87,31 @@ class SearchSuggestionsViewTests(TestCase):
         self.client.logout()
         response = self._get("godfa")
         self.assertEqual(response.status_code, 302)
+
+    @patch.object(
+        BasicMedia.objects,
+        "get_media_list",
+        wraps=BasicMedia.objects.get_media_list,
+    )
+    def test_get_saved_suggestions_passes_result_limit_to_manager(
+        self,
+        mock_get_media_list,
+    ):
+        """Saved suggestions should pass explicit result_limit to media manager."""
+        suggestions = get_saved_suggestions(
+            self.user,
+            MediaTypes.MOVIE.value,
+            "godfa",
+            limit=3,
+        )
+        self.assertEqual(len(suggestions), 1)
+        self.assertEqual(suggestions[0]["title"], "The Godfather")
+        mock_get_media_list.assert_called_once_with(
+            self.user,
+            MediaTypes.MOVIE.value,
+            MediaStatusChoices.ALL,
+            "title",
+            search="godfa",
+            direction="asc",
+            result_limit=3,
+        )

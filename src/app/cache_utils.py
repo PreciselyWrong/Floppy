@@ -255,6 +255,7 @@ def build_media_list_filter_cache_key(
 
 
 HOME_ROW_CACHE_PREFIX = "home_row_v1"
+HOME_ROW_ORDER_CACHE_PREFIX = "home_row_order_v1"
 HOME_ROW_CACHE_TTL = 60  # seconds — matches the media-list cache horizon
 _HOME_ROW_REGISTRY_TEMPLATE = f"{HOME_ROW_CACHE_PREFIX}_registry_{{user_id}}"
 
@@ -262,6 +263,11 @@ _HOME_ROW_REGISTRY_TEMPLATE = f"{HOME_ROW_CACHE_PREFIX}_registry_{{user_id}}"
 def build_home_row_cache_key(user_id: int, row_id: int, items_limit: int) -> str:
     """Cache key for one built home-row section."""
     return f"{HOME_ROW_CACHE_PREFIX}_{user_id}_{row_id}_{items_limit}"
+
+
+def build_home_row_order_cache_key(user_id: int, row_id: int) -> str:
+    """Cache key for one compact, fully sorted Home row order."""
+    return f"{HOME_ROW_ORDER_CACHE_PREFIX}_{user_id}_{row_id}"
 
 
 def _home_row_registry_key(user_id: int) -> str:

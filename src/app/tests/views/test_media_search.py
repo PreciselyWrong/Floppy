@@ -9,13 +9,14 @@ from app.models import (
     AlbumTracker,
     Artist,
     ArtistTracker,
+    BasicMedia,
     MediaTypes,
     PodcastShow,
     PodcastShowTracker,
     Sources,
     Status,
 )
-from users.models import MetadataSourceDefaultChoices
+from users.models import MediaStatusChoices, MetadataSourceDefaultChoices
 
 
 class MediaSearchViewTests(TestCase):
@@ -230,4 +231,47 @@ class MediaSearchViewTests(TestCase):
             Sources.TVDB.value,
             language="en",
             user=self.user,
+        )
+
+    @patch.object(BasicMedia.objects, "count_media_list", return_value=31)
+    @patch.object(
+        BasicMedia.objects,
+        "get_media_list",
+        wraps=BasicMedia.objects.get_media_list,
+    )
+    @patch("app.providers.services.search")
+    def test_media_search_passes_result_limit_to_manager(
+        self,
+        mock_search,
+        mock_get_media_list,
+        mock_count_media_list,
+    ):
+        """Local media search passes result_limit=24 to BasicMedia.objects.get_media_list."""
+        mock_search.return_value = {
+            "page": 1,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+
+        response = self.client.get(
+            reverse("search") + "?media_type=movie&q=test",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["local_results_total"], 31)
+        mock_count_media_list.assert_called_once_with(
+            self.user,
+            MediaTypes.MOVIE.value,
+            MediaStatusChoices.ALL,
+            search="test",
+        )
+        mock_get_media_list.assert_called_once_with(
+            self.user,
+            MediaTypes.MOVIE.value,
+            MediaStatusChoices.ALL,
+            "title",
+            search="test",
+            direction="asc",
+            result_limit=24,
         )
