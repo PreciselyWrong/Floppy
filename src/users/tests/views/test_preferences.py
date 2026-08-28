@@ -24,6 +24,26 @@ class PreferencesViewTests(TestCase):
         self.assertEqual(self.user.date_format, "m_d_yyyy")
         self.assertEqual(self.user.time_format, "hh_mm")
 
+    def test_preferences_post_persists_person_known_for_limit(self):
+        response = self.client.post(
+            reverse("preferences"),
+            {"person_known_for_limit": "5"},
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.person_known_for_limit, 5)
+
+    def test_preferences_post_ignores_invalid_person_known_for_limit(self):
+        response = self.client.post(
+            reverse("preferences"),
+            {"person_known_for_limit": "11"},
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.person_known_for_limit, 3)
+
     def test_preferences_post_persists_theme(self):
         """POSTing a new theme should persist to the DB."""
         response = self.client.post(reverse("preferences"), {"theme": "light"})

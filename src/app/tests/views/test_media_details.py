@@ -141,6 +141,76 @@ class MediaDetailsViewTests(TestCase):
             user=self.user,
         )
 
+    @patch("app.providers.services.get_media_metadata")
+    def test_media_details_shows_credit_history_and_age_under_person_card(
+        self,
+        mock_get_metadata,
+    ):
+        person = Person.objects.create(
+            source=Sources.TMDB.value,
+            source_person_id="credit-person-1",
+            name="History Actor",
+            birth_date="1990-07-01",
+        )
+        history_item = Item.objects.create(
+            media_id="history-film",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="History Film",
+            provider_rating=9.0,
+            release_datetime=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        ItemPersonCredit.objects.create(
+            item=history_item,
+            person=person,
+            role_type=CreditRoleType.CAST.value,
+            role="Lead",
+        )
+        Movie.objects.create(
+            item=history_item,
+            user=self.user,
+            status=Status.PLANNING.value,
+            start_date=timezone.now(),
+            end_date=timezone.now(),
+        )
+        mock_get_metadata.return_value = {
+            "media_id": "credit-film",
+            "title": "Credit Film",
+            "media_type": MediaTypes.MOVIE.value,
+            "source": Sources.TMDB.value,
+            "image": "http://example.com/credit-film.jpg",
+            "max_progress": 1,
+            "details": {"release_date": "2024-06-01"},
+            "cast": [
+                {
+                    "person_id": "credit-person-1",
+                    "name": "History Actor",
+                    "image": "http://example.com/history-actor.jpg",
+                    "role": "Lead",
+                },
+            ],
+            "crew": [],
+            "related": {"recommendations": []},
+        }
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "credit-film",
+                    "title": "credit-film",
+                },
+            ),
+            {"fragment": "secondary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Age 33")
+        self.assertContains(response, "Known for")
+        self.assertContains(response, "History Film")
+
     @patch("integrations.tasks.fetch_collection_metadata_for_item.delay")
     @patch("app.views.helpers.enrich_items_with_user_data")
     @patch("app.views.run_retryable_db_operation")

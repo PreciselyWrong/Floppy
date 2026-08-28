@@ -267,6 +267,7 @@ class PersonDetailViewTests(TestCase):
         self.assertContains(response, "?person_source=tmdb&amp;person_id=123")
         self.assertContains(response, "media-card-subtitle-always")
         self.assertNotContains(response, "Tracked Titles")
+        self.assertNotContains(response, "Known for")
 
     @patch("app.providers.tmdb.person")
     def test_person_detail_dates_respect_user_preference(self, mock_person):

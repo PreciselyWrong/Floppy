@@ -4333,6 +4333,11 @@
       --tw-ring-color: var(--color-accent);
     }
   }
+  .focus\:ring-\[var\(--color-link\)\] {
+    &:focus {
+      --tw-ring-color: var(--color-link);
+    }
+  }
   .focus\:ring-indigo-200 {
     &:focus {
       --tw-ring-color: var(--color-indigo-200);

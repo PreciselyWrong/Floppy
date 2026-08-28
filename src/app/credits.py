@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from django.db import transaction
+from django.db.models import Q
 
 from app.models import (
     CREDITS_BACKFILL_VERSION,
@@ -62,6 +63,225 @@ def _as_int(value):
 def _as_text(value):
     """Normalize provider text fields that may arrive as non-string values."""
     return str(value or "").strip()
+
+
+def select_known_for(entries, limit=3):
+    """Select deduplicated works, prioritising watched and well-rated titles."""
+    unique = {}
+    for entry in entries or []:
+        key = (entry.get("media_type"), str(entry.get("media_id")))
+        current = unique.get(key)
+        if current is None or (
+            entry.get("is_watched") and not current.get("is_watched")
+        ):
+            unique[key] = entry
+    return sorted(
+        unique.values(),
+        key=lambda entry: (
+            not entry.get("is_watched"),
+            -(entry.get("vote_average") or 0),
+            -(entry.get("popularity") or 0),
+            -(entry.get("vote_count") or 0),
+        ),
+    )[:limit]
+
+
+def _coerce_credit_date(value):
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def person_age_at(birth_date, event_date):
+    """Return a person's age on the supplied calendar date."""
+    birth_date = _coerce_credit_date(birth_date)
+    event_date = _coerce_credit_date(event_date)
+    if not birth_date or not event_date:
+        return None
+    age = event_date.year - birth_date.year
+    if (event_date.month, event_date.day) < (birth_date.month, birth_date.day):
+        age -= 1
+    return age if age >= 0 else None
+
+
+def _detail_credit_date(media_metadata, item):
+    details = media_metadata.get("details") or {}
+    for key in (
+        "release_date",
+        "first_air_date",
+        "air_date",
+        "publish_date",
+    ):
+        value = details.get(key) or media_metadata.get(key)
+        if value:
+            return _coerce_credit_date(value)
+    return _coerce_credit_date(getattr(item, "release_datetime", None))
+
+
+def _historical_item_ids(user):
+    """Return item IDs with a dated local play/read/watch record."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return set()
+
+    from app.models.media import (
+        Anime,
+        BasicMedia,
+        BoardGame,
+        Book,
+        Comic,
+        ComicIssue,
+        Game,
+        Manga,
+        Movie,
+        MoviePlay,
+    )
+    from app.models.music import Music
+    from app.models.podcast import Podcast
+    from app.models.tv import Episode
+
+    item_ids = set()
+    media_models = (
+        Anime,
+        BasicMedia,
+        BoardGame,
+        Book,
+        Comic,
+        ComicIssue,
+        Game,
+        Manga,
+        Movie,
+        Music,
+        Podcast,
+    )
+    dated_record = Q(start_date__isnull=False) | Q(end_date__isnull=False)
+    for media_model in media_models:
+        field_names = {field.name for field in media_model._meta.fields}
+        if not {"start_date", "end_date"}.issubset(field_names):
+            continue
+        item_ids.update(
+            media_model.objects.filter(user=user)
+            .filter(dated_record)
+            .values_list("item_id", flat=True)
+        )
+    episode_item_ids = Episode.objects.filter(
+        related_season__user=user,
+        end_date__isnull=False,
+    ).values_list(
+        "item_id",
+        "related_season__item_id",
+        "related_season__related_tv__item_id",
+    )
+    for episode_item_id, season_item_id, show_item_id in episode_item_ids:
+        item_ids.add(episode_item_id)
+        if season_item_id:
+            item_ids.add(season_item_id)
+        if show_item_id:
+            item_ids.add(show_item_id)
+    item_ids.update(
+        MoviePlay.objects.filter(
+            movie__user=user,
+            end_date__isnull=False,
+        ).values_list("movie__item_id", flat=True)
+    )
+    return item_ids
+
+
+def _historical_credit_entries(person_ids, user):
+    if not person_ids:
+        return {}
+    historical_item_ids = _historical_item_ids(user)
+    if not historical_item_ids:
+        return {}
+
+    entries_by_person = {}
+    historical_credits = (
+        ItemPersonCredit.objects.filter(
+            person_id__in=person_ids,
+            item_id__in=historical_item_ids,
+        )
+        .select_related("item")
+        .order_by("person_id", "item__title", "item_id", "id")
+    )
+    for credit in historical_credits:
+        item = credit.item
+        release_date = _coerce_credit_date(item.release_datetime)
+        entry = {
+            "media_id": str(item.media_id),
+            "source": item.source,
+            "media_type": item.media_type,
+            "title": item.title,
+            "image": item.image,
+            "year": release_date.year if release_date else None,
+            "role": credit.role,
+            "department": credit.department,
+            "is_watched": True,
+            "vote_average": item.provider_rating or item.trakt_rating,
+            "popularity": item.provider_popularity or item.trakt_popularity_score,
+            "vote_count": item.provider_rating_count or item.trakt_rating_count,
+        }
+        entries_by_person.setdefault(credit.person_id, []).append(entry)
+    return entries_by_person
+
+
+def enrich_detail_credit_rows(
+    rows,
+    *,
+    source,
+    user=None,
+    item=None,
+    media_metadata=None,
+    known_for_limit=3,
+):
+    """Attach history highlights and age-at-release to detail credit rows."""
+    normalized_rows = [dict(row) for row in rows or [] if isinstance(row, dict)]
+    if not normalized_rows:
+        return normalized_rows
+
+    person_ids = {
+        str(row["person_id"])
+        for row in normalized_rows
+        if row.get("person_id") is not None
+    }
+    people_by_source_id = {
+        str(person.source_person_id): person
+        for person in Person.objects.filter(
+            source=source,
+            source_person_id__in=person_ids,
+        )
+    }
+    history_by_person = {}
+    if user and getattr(user, "is_authenticated", False):
+        try:
+            limit = max(0, int(known_for_limit))
+        except (TypeError, ValueError):
+            limit = 3
+        if limit:
+            history_by_person = _historical_credit_entries(
+                [person.id for person in people_by_source_id.values()],
+                user,
+            )
+    event_date = _detail_credit_date(media_metadata or {}, item)
+    for row in normalized_rows:
+        person = people_by_source_id.get(str(row.get("person_id")))
+        if not person:
+            continue
+        age_at_credit = person_age_at(person.birth_date, event_date)
+        if age_at_credit is not None:
+            row["age_at_credit"] = age_at_credit
+        if history_by_person:
+            known_for = select_known_for(
+                history_by_person.get(person.id),
+                limit,
+            )
+            if known_for:
+                row["known_for"] = known_for
+    return normalized_rows
 
 
 def is_regular_show_cast_credit(source, sort_order):

@@ -4,6 +4,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from django.templatetags.static import static
 from django.utils.text import slugify
 
+from app import credits as credits_module
 from app import helpers
 from app.models import MediaTypes, Sources
 from app.services import game_lengths as game_length_services
@@ -1279,13 +1280,13 @@ def _game_cast_and_crew_from_credits(item):
     return cast, crew
 
 
-def _build_detail_person_rows(media_metadata, item=None):
+def _build_detail_person_rows(media_metadata, item=None, user=None):
     """Build cast_row, crew_row, and recommendations_row dicts for _scrollable_row.html."""
     if not isinstance(media_metadata, dict):
         return {}
-    cast = media_metadata.get("cast") or []
-    guest = media_metadata.get("guest") or []
-    crew = media_metadata.get("crew") or []
+    cast = [row for row in media_metadata.get("cast") or [] if isinstance(row, dict)]
+    guest = [row for row in media_metadata.get("guest") or [] if isinstance(row, dict)]
+    crew = [row for row in media_metadata.get("crew") or [] if isinstance(row, dict)]
 
     if (
         not cast
@@ -1296,6 +1297,20 @@ def _build_detail_person_rows(media_metadata, item=None):
     ):
         cast, crew = _game_cast_and_crew_from_credits(item)
 
+    cast_count = len(cast)
+    guest_count = len(guest)
+    credit_source = media_metadata.get("source") or getattr(item, "source", None)
+    enriched_credit_rows = credits_module.enrich_detail_credit_rows(
+        cast + guest + crew,
+        source=credit_source,
+        user=user,
+        item=item,
+        media_metadata=media_metadata,
+        known_for_limit=getattr(user, "person_known_for_limit", 3),
+    )
+    cast = enriched_credit_rows[:cast_count]
+    guest = enriched_credit_rows[cast_count : cast_count + guest_count]
+    crew = enriched_credit_rows[cast_count + guest_count :]
     guest.extend(
         row for row in cast if row.get("credit_type") == "guest"
     )

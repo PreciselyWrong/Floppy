@@ -64,6 +64,7 @@ from users.media_type_chips import (
     normalize_media_type_chip_colors,
 )
 from users.models import (
+    PERSON_KNOWN_FOR_LIMIT_MAX,
     ActivityHistoryViewChoices,
     AnimeLibraryModeChoices,
     DateFormatChoices,
@@ -956,6 +957,7 @@ def preferences(request):
         remaining_time_raw = request.POST.get("show_remaining_time")
         person_sections_order_raw = request.POST.get("person_sections_order")
         person_hidden_sections_raw = request.POST.get("person_hidden_sections")
+        person_known_for_limit_raw = request.POST.get("person_known_for_limit")
         home_media_type_chips_present = request.POST.get(
             "home_media_type_chips_present"
         )
@@ -1173,8 +1175,20 @@ def preferences(request):
                 setattr(request.user, field_name, value)
                 fields_to_update.append(field_name)
 
+        if person_known_for_limit_raw is not None:
+            try:
+                person_known_for_limit = int(person_known_for_limit_raw)
+            except (TypeError, ValueError):
+                person_known_for_limit = None
+            if (
+                person_known_for_limit is not None
+                and 0 <= person_known_for_limit <= PERSON_KNOWN_FOR_LIMIT_MAX
+                and request.user.person_known_for_limit != person_known_for_limit
+            ):
+                request.user.person_known_for_limit = person_known_for_limit
+                fields_to_update.append("person_known_for_limit")
+
         valid_person_sections = {
-            "known_for",
             "tracked",
             "cast",
             "guest",
@@ -1356,8 +1370,16 @@ def preferences(request):
             ("show_skipped_episodes", "Skipped episode warnings", request.user.show_skipped_episodes),
             ("show_remaining_time", "Remaining time and estimated finish", request.user.show_remaining_time),
         ),
-        "person_sections_order_text": ", ".join(request.user.person_sections_order or []),
-        "person_hidden_sections_text": ", ".join(request.user.person_hidden_sections or []),
+        "person_sections_order_text": ", ".join(
+            value
+            for value in request.user.person_sections_order or []
+            if value != "known_for"
+        ),
+        "person_hidden_sections_text": ", ".join(
+            value
+            for value in request.user.person_hidden_sections or []
+            if value != "known_for"
+        ),
         "media_type_chip_styles": (
             ("solid", "Solid"),
             ("soft", "Soft"),
