@@ -1416,6 +1416,9 @@
       margin-block-end: calc(calc(var(--spacing) * 10) * calc(1 - var(--tw-space-y-reverse)));
     }
   }
+  .gap-x-1\.5 {
+    column-gap: calc(var(--spacing) * 1.5);
+  }
   .gap-x-2 {
     column-gap: calc(var(--spacing) * 2);
   }
@@ -3020,6 +3023,9 @@
   .text-\[var\(--color-link\)\] {
     color: var(--color-link);
   }
+  .text-\[var\(--color-page-bg\)\] {
+    color: var(--color-page-bg);
+  }
   .text-\[var\(--color-text\)\] {
     color: var(--color-text);
   }
@@ -3674,10 +3680,24 @@
       }
     }
   }
+  .hover\:border-\[var\(--color-link\)\] {
+    &:hover {
+      @media (hover: hover) {
+        border-color: var(--color-link);
+      }
+    }
+  }
   .hover\:border-\[var\(--color-surface-hover\)\] {
     &:hover {
       @media (hover: hover) {
         border-color: var(--color-surface-hover);
+      }
+    }
+  }
+  .hover\:border-\[var\(--color-text-muted\)\] {
+    &:hover {
+      @media (hover: hover) {
+        border-color: var(--color-text-muted);
       }
     }
   }
@@ -3698,13 +3718,6 @@
         @supports (color: color-mix(in lab, red, red)) {
           border-color: color-mix(in oklab, var(--color-gray-300) 28%, transparent);
         }
-      }
-    }
-  }
-  .hover\:border-gray-400 {
-    &:hover {
-      @media (hover: hover) {
-        border-color: var(--color-gray-400);
       }
     }
   }
