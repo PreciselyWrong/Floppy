@@ -64,6 +64,106 @@ class PlexAccount(models.Model):
         return bool(self.plex_token)
 
 
+class PlexLibrarySection(models.Model):
+    """Track whether one Plex library has a complete, trustworthy local index."""
+
+    class SyncStatus(models.TextChoices):
+        """Completeness of the latest attempted section scan."""
+
+        PENDING = "pending", "Pending"
+        COMPLETE = "complete", "Complete"
+        ERROR = "error", "Error"
+
+    account = models.ForeignKey(
+        PlexAccount,
+        on_delete=models.CASCADE,
+        related_name="library_sections",
+    )
+    machine_identifier = models.CharField(max_length=255)
+    section_id = models.CharField(max_length=50)
+    title = models.CharField(max_length=255, blank=True, default="")
+    media_type = models.CharField(max_length=20)
+    plex_uri = models.URLField(blank=True, default="")
+    sync_status = models.CharField(
+        max_length=10,
+        choices=SyncStatus.choices,
+        default=SyncStatus.PENDING,
+    )
+    last_synced_at = models.DateTimeField(blank=True, null=True)
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Model options."""
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "machine_identifier", "section_id"],
+                name="integrations_plexlibrarysection_unique_source",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["account", "media_type", "sync_status"],
+                name="plexsection_availability_idx",
+            ),
+        ]
+
+    def __str__(self):
+        """Return the server and library label."""
+        return f"{self.machine_identifier}:{self.section_id} ({self.title})"
+
+
+class PlexLibraryItem(models.Model):
+    """Store token-free Plex identities independently of tracked Floppy media."""
+
+    section = models.ForeignKey(
+        PlexLibrarySection,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    rating_key = models.CharField(max_length=50)
+    media_type = models.CharField(max_length=20)
+    title = models.CharField(max_length=500, blank=True, default="")
+    tmdb_id = models.CharField(max_length=32, blank=True, default="")
+    imdb_id = models.CharField(max_length=32, blank=True, default="")
+    tvdb_id = models.CharField(max_length=32, blank=True, default="")
+    season_number = models.PositiveIntegerField(blank=True, null=True)
+    episode_number = models.PositiveIntegerField(blank=True, null=True)
+    scan_token = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Model options."""
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["section", "rating_key"],
+                name="integrations_plexlibraryitem_unique_rating_key",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["media_type", "tmdb_id"],
+                name="plexitem_tmdb_idx",
+            ),
+            models.Index(
+                fields=["media_type", "imdb_id"],
+                name="plexitem_imdb_idx",
+            ),
+            models.Index(
+                fields=["media_type", "tvdb_id"],
+                name="plexitem_tvdb_idx",
+            ),
+        ]
+
+    def __str__(self):
+        """Return the indexed Plex identity."""
+        return f"{self.title} ({self.rating_key})"
+
+
 class PlexWebhookShare(models.Model):
     """Share one user's Plex webhook with another Floppy user."""
 

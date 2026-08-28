@@ -12,8 +12,8 @@
                   <div class="flex items-center justify-between gap-3">
                     <div class="min-w-0">
                       <span class="font-medium text-[var(--color-text-secondary)]">{{ instance.label }}</span>
-                      <span class="ml-1 text-xs {% if instance.status == 'available' %}text-emerald-400{% else %}text-[var(--color-text-muted)]{% endif %}">
-                        {% if instance.status == "available" %}Available{% else %}Not found{% endif %}
+                      <span class="ml-1 text-xs {% if instance.status == 'available' %}text-emerald-400{% elif instance.status == 'unknown' %}text-amber-400{% else %}text-[var(--color-text-muted)]{% endif %}">
+                        {% if instance.status == "available" %}Available{% elif instance.status == "unknown" %}Not indexed{% else %}Not found{% endif %}
                       </span>
                       {% if instance.detail %}<span class="ml-1 text-xs text-[var(--color-text-muted)]">{{ instance.detail }}</span>{% endif %}
                     </div>
@@ -39,14 +39,19 @@
             </div>
           {% else %}
             <div class="mt-2 flex items-center justify-between gap-3 text-sm">
-              <span class="{% if service.status == 'available' %}text-emerald-400{% else %}text-[var(--color-text-muted)]{% endif %}">
-                {% if service.status == "available" %}Available{% else %}Not found{% endif %}
+              <span class="{% if service.status == 'available' %}text-emerald-400{% elif service.status == 'unknown' %}text-amber-400{% else %}text-[var(--color-text-muted)]{% endif %}">
+                {% if service.status == "available" %}Available{% elif service.status == "unknown" %}Not indexed{% else %}Not found{% endif %}
               </span>
               <a href="{{ service.url }}"
                  target="_blank"
                  rel="noopener"
                  class="text-xs font-medium text-[var(--color-link)] hover:text-[var(--color-link-hover)]">{{ service.action_label }}</a>
             </div>
+            {% if service.sync_status != "current" %}
+              <p class="mt-1 text-xs text-amber-400">
+                {% if service.sync_status == "error" %}Library index failed{% elif service.sync_status == "stale" %}Library index delayed{% else %}Library index pending{% endif %}
+              </p>
+            {% endif %}
             {% if service.seasons %}
               <div class="mt-2 flex flex-wrap gap-1.5">
                 {% for season in service.seasons %}

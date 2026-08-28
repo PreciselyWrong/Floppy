@@ -5,12 +5,15 @@ from datetime import timedelta
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from app.models import CollectionEntry, MediaTypes, Sources
 from integrations.models import (
     CollectionSourceState,
     PlexAccount,
+    PlexLibraryItem,
+    PlexLibrarySection,
     RadarrInstance,
     SonarrInstance,
 )
@@ -42,6 +45,90 @@ def _season_counts(states) -> list[dict]:
     ]
 
 
+def _plex_index_media_type(media_type: str) -> str | None:
+    if media_type == MediaTypes.MOVIE.value:
+        return "movie"
+    if media_type in {
+        MediaTypes.TV.value,
+        MediaTypes.ANIME.value,
+        MediaTypes.SEASON.value,
+    }:
+        return "show"
+    if media_type == MediaTypes.EPISODE.value:
+        return "episode"
+    return None
+
+
+def _plex_external_id_query(item) -> Q:
+    external_ids = item.provider_external_ids or {}
+    identifiers = {
+        "tmdb_id": str(external_ids.get("tmdb_id") or ""),
+        "imdb_id": str(external_ids.get("imdb_id") or ""),
+        "tvdb_id": str(external_ids.get("tvdb_id") or ""),
+    }
+    source_field = {
+        Sources.TMDB.value: "tmdb_id",
+        Sources.IMDB.value: "imdb_id",
+        Sources.TVDB.value: "tvdb_id",
+    }.get(item.source)
+    if source_field:
+        identifiers[source_field] = str(item.media_id)
+
+    query = Q(pk__in=[])
+    for field_name, value in identifiers.items():
+        if value:
+            query |= Q(**{field_name: value})
+    return query
+
+
+def _plex_index_sync_status(account, media_type: str) -> str:
+    section_type = "movie" if media_type == "movie" else "show"
+    sections = list(account.library_sections.filter(media_type=section_type))
+    expected_sections = {
+        (
+            str(section.get("machine_identifier") or ""),
+            str(section.get("id") or section.get("key") or "").rsplit("/", 1)[-1],
+        )
+        for section in (account.sections or [])
+        if str(section.get("type") or "").lower() == section_type
+    }
+    indexed_sections = {
+        (section.machine_identifier, section.section_id) for section in sections
+    }
+    if expected_sections and not expected_sections.issubset(indexed_sections):
+        return "pending"
+    if not sections:
+        return "pending"
+    if any(section.sync_status == PlexLibrarySection.SyncStatus.ERROR for section in sections):
+        return "error"
+    if any(
+        section.sync_status != PlexLibrarySection.SyncStatus.COMPLETE
+        or section.last_synced_at is None
+        for section in sections
+    ):
+        return "pending"
+    stale_after = timedelta(hours=settings.PLEX_LIBRARY_INDEX_STALE_HOURS)
+    if any(section.last_synced_at < timezone.now() - stale_after for section in sections):
+        return "stale"
+    return "current"
+
+
+def _find_indexed_plex_item(account, item, media_type: str):
+    index_media_type = _plex_index_media_type(media_type)
+    if not index_media_type:
+        return None
+    matches = PlexLibraryItem.objects.filter(
+        section__account=account,
+        media_type=index_media_type,
+    ).filter(_plex_external_id_query(item))
+    if media_type == MediaTypes.EPISODE.value:
+        matches = matches.filter(
+            season_number=item.season_number,
+            episode_number=item.episode_number,
+        )
+    return matches.select_related("section").order_by("-updated_at", "-id").first()
+
+
 def _plex_availability(user, item, media_type: str, title: str) -> dict | None:
     try:
         account = user.plex_account
@@ -49,6 +136,14 @@ def _plex_availability(user, item, media_type: str, title: str) -> dict | None:
         return None
     if not account.is_connected:
         return None
+
+    indexed_item = _find_indexed_plex_item(account, item, media_type)
+    index_media_type = _plex_index_media_type(media_type)
+    sync_status = (
+        _plex_index_sync_status(account, index_media_type)
+        if index_media_type
+        else "pending"
+    )
 
     entry = (
         CollectionEntry.objects.filter(user=user, item=item)
@@ -85,6 +180,23 @@ def _plex_availability(user, item, media_type: str, title: str) -> dict | None:
             "key": "plex",
             "label": "Plex",
             "status": "available",
+            "sync_status": sync_status,
+            "seasons": seasons,
+            "action_label": "Open in Plex",
+            "url": (
+                "https://app.plex.tv/desktop/#!/server/"
+                f"{machine_id}/details?key=%2Flibrary%2Fmetadata%2F{rating_key}"
+            ),
+        }
+
+    if indexed_item:
+        rating_key = quote(str(indexed_item.rating_key), safe="")
+        machine_id = quote(str(indexed_item.section.machine_identifier), safe="")
+        return {
+            "key": "plex",
+            "label": "Plex",
+            "status": "available",
+            "sync_status": sync_status,
             "seasons": seasons,
             "action_label": "Open in Plex",
             "url": (
@@ -96,7 +208,14 @@ def _plex_availability(user, item, media_type: str, title: str) -> dict | None:
     return {
         "key": "plex",
         "label": "Plex",
-        "status": "available" if seasons else "not_found",
+        "status": (
+            "available"
+            if seasons
+            else "not_found"
+            if sync_status == "current"
+            else "unknown"
+        ),
+        "sync_status": sync_status,
         "seasons": seasons,
         "action_label": "Search Plex",
         "url": (

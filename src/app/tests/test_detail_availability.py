@@ -11,6 +11,8 @@ from app.models import CollectionEntry, Item, MediaTypes, Sources
 from integrations.models import (
     CollectionSourceState,
     PlexAccount,
+    PlexLibraryItem,
+    PlexLibrarySection,
     RadarrInstance,
     SonarrInstance,
 )
@@ -73,9 +75,103 @@ class DetailAvailabilityTests(TestCase):
 
         plex = self.build()["services"][0]
 
-        self.assertEqual(plex["status"], "not_found")
+        self.assertEqual(plex["status"], "unknown")
         self.assertEqual(plex["action_label"], "Search Plex")
         self.assertIn("query=The%20Godfather", plex["url"])
+
+    def test_plex_finds_untracked_tmdb_movie_in_fresh_library_index(self):
+        account = PlexAccount.objects.create(
+            user=self.user,
+            plex_token="encrypted-secret",
+            plex_username="nico",
+        )
+        section = PlexLibrarySection.objects.create(
+            account=account,
+            machine_identifier="5900941bbd24ca259470e3fca3cb650eff39b0fe",
+            section_id="1",
+            title="Movies",
+            media_type="movie",
+            plex_uri="http://plex.local:32400",
+            sync_status=PlexLibrarySection.SyncStatus.COMPLETE,
+            last_synced_at=timezone.now(),
+        )
+        PlexLibraryItem.objects.create(
+            section=section,
+            rating_key="18264",
+            media_type="movie",
+            title="Ferrari",
+            tmdb_id=self.movie.media_id,
+        )
+
+        plex = self.build()["services"][0]
+
+        self.assertEqual(plex["status"], "available")
+        self.assertEqual(plex["action_label"], "Open in Plex")
+        self.assertIn("server/5900941bbd24ca259470e3fca3cb650eff39b0fe", plex["url"])
+        self.assertIn("metadata%2F18264", plex["url"])
+
+    def test_plex_reports_unknown_before_a_complete_library_index(self):
+        PlexAccount.objects.create(
+            user=self.user,
+            plex_token="encrypted-secret",
+            plex_username="nico",
+        )
+
+        plex = self.build()["services"][0]
+
+        self.assertEqual(plex["status"], "unknown")
+        self.assertEqual(plex["sync_status"], "pending")
+
+    @override_settings(PLEX_LIBRARY_INDEX_STALE_HOURS=24)
+    def test_plex_only_reports_not_found_from_a_fresh_complete_index(self):
+        account = PlexAccount.objects.create(
+            user=self.user,
+            plex_token="encrypted-secret",
+            plex_username="nico",
+        )
+        section = PlexLibrarySection.objects.create(
+            account=account,
+            machine_identifier="machine-1",
+            section_id="1",
+            title="Movies",
+            media_type="movie",
+            sync_status=PlexLibrarySection.SyncStatus.COMPLETE,
+            last_synced_at=timezone.now(),
+        )
+
+        plex = self.build()["services"][0]
+        self.assertEqual(plex["status"], "not_found")
+        self.assertEqual(plex["sync_status"], "current")
+
+        section.last_synced_at = timezone.now() - timedelta(days=2)
+        section.save(update_fields=["last_synced_at"])
+        plex = self.build()["services"][0]
+        self.assertEqual(plex["status"], "unknown")
+        self.assertEqual(plex["sync_status"], "stale")
+
+    def test_plex_does_not_claim_absence_while_an_expected_library_is_unindexed(self):
+        account = PlexAccount.objects.create(
+            user=self.user,
+            plex_token="encrypted-secret",
+            plex_username="nico",
+            sections=[
+                {"id": "1", "type": "movie", "machine_identifier": "machine-1"},
+                {"id": "2", "type": "movie", "machine_identifier": "machine-1"},
+            ],
+        )
+        PlexLibrarySection.objects.create(
+            account=account,
+            machine_identifier="machine-1",
+            section_id="1",
+            media_type="movie",
+            sync_status=PlexLibrarySection.SyncStatus.COMPLETE,
+            last_synced_at=timezone.now(),
+        )
+
+        plex = self.build()["services"][0]
+
+        self.assertEqual(plex["status"], "unknown")
+        self.assertEqual(plex["sync_status"], "pending")
 
     def test_plex_reports_episode_presence_by_season(self):
         show = Item.objects.create(

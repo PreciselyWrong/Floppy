@@ -88,6 +88,10 @@ from integrations.tasks._plex_collection import (
     update_collection_metadata_from_plex,
     update_collection_metadata_from_plex_webhook,
 )
+from integrations.tasks._plex_library_index import (
+    refresh_all_plex_library_indexes,
+    refresh_plex_library_index,
+)
 from integrations.tasks._webhook import (
     WEBHOOK_PROCESSORS,
     _webhook_history_user,
@@ -193,6 +197,8 @@ __all__ = [
     "process_webhook",
     "pull_jellyfin_history",
     "push_jellyfin_watched",
+    "refresh_all_plex_library_indexes",
+    "refresh_plex_library_index",
     "refresh_plex_sections",
     "sync_plex_watchlist",
     "update_collection_metadata_from_plex",
