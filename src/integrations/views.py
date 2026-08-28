@@ -105,6 +105,8 @@ from integrations.webhooks.plex import extract_plex_webhook_usernames
 
 logger = logging.getLogger(__name__)
 ARR_SYNC_INTERVAL_HOURS = 2
+PLEX_LIBRARY_INDEX_INTERVAL_HOURS = 6
+PLEX_LIBRARY_INDEX_TASK_NAME = "Refresh Plex library index"
 RADARR_RECURRING_TASK_NAME = "Import from Radarr (Recurring)"
 JELLYFIN_PLAYBACK_REPORTING_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 SONARR_RECURRING_TASK_NAME = "Import from Sonarr (Recurring)"
@@ -293,6 +295,55 @@ def _disable_plex_watchlist_schedule(user):
     return PeriodicTask.objects.filter(
         _plex_watchlist_task_filter(user.id),
         task=WATCHLIST_TASK_NAME,
+    ).delete()
+
+
+def _ensure_plex_library_index_schedule(user, plex_account):
+    """Create or enable the recurring complete Plex library index."""
+    from django_celery_beat.models import IntervalSchedule, PeriodicTask
+
+    interval, _ = IntervalSchedule.objects.get_or_create(
+        every=PLEX_LIBRARY_INDEX_INTERVAL_HOURS,
+        period=IntervalSchedule.HOURS,
+    )
+    desired_name = (
+        f"{PLEX_LIBRARY_INDEX_TASK_NAME} for "
+        f"{plex_account.plex_username or user.username} "
+        f"(every {PLEX_LIBRARY_INDEX_INTERVAL_HOURS} hours)"
+    )
+    desired_kwargs = json.dumps({"user_id": user.id})
+    task = PeriodicTask.objects.filter(
+        _periodic_task_filter_for_user(user.id),
+        task=PLEX_LIBRARY_INDEX_TASK_NAME,
+    ).first()
+    if task:
+        task.name = desired_name
+        task.interval = interval
+        task.crontab = None
+        task.clocked = None
+        task.solar = None
+        task.one_off = False
+        task.kwargs = desired_kwargs
+        task.enabled = True
+        task.save()
+        return task
+    return PeriodicTask.objects.create(
+        name=desired_name,
+        task=PLEX_LIBRARY_INDEX_TASK_NAME,
+        interval=interval,
+        kwargs=desired_kwargs,
+        start_time=timezone.now(),
+        enabled=True,
+    )
+
+
+def _disable_plex_library_index_schedule(user):
+    """Delete the user's recurring Plex library index task."""
+    from django_celery_beat.models import PeriodicTask
+
+    return PeriodicTask.objects.filter(
+        _periodic_task_filter_for_user(user.id),
+        task=PLEX_LIBRARY_INDEX_TASK_NAME,
     ).delete()
 
 
@@ -803,10 +854,12 @@ def plex_callback(request):
         defaults["server_name"] = sections[0].get("server_name")
         defaults["machine_identifier"] = sections[0].get("machine_identifier")
 
-    PlexAccount.objects.update_or_create(
+    plex_account, _ = PlexAccount.objects.update_or_create(
         user=request.user,
         defaults=defaults,
     )
+    _ensure_plex_library_index_schedule(request.user, plex_account)
+    tasks.refresh_plex_library_index.delay(request.user.id)
 
     account_username = account.get("username") or "your Plex account"
     messages.success(request, f"Connected to Plex as {account_username}.")
@@ -823,6 +876,7 @@ def plex_callback(request):
 def plex_disconnect(request):
     """Remove stored Plex credentials."""
     _disable_plex_watchlist_schedule(request.user)
+    _disable_plex_library_index_schedule(request.user)
     PlexWebhookShare.objects.filter(owner=request.user).delete()
     PlexAccount.objects.filter(user=request.user).delete()
     messages.info(request, "Disconnected Plex.")
@@ -844,6 +898,7 @@ def import_plex(request):
     raw_usernames = request.POST.get("plex_usernames", "")
 
     _save_plex_usernames(request.user, raw_usernames)
+    _ensure_plex_library_index_schedule(request.user, plex_account)
 
     if mode == "watchlist":
         _ensure_plex_watchlist_schedule(request.user, plex_account)
@@ -874,6 +929,7 @@ def import_plex(request):
             library=library,
             user_id=request.user.id,
         )
+        tasks.refresh_plex_library_index.delay(request.user.id)
         messages.info(
             request, "The task to update collection metadata from Plex has been queued."
         )

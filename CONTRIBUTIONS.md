@@ -6,7 +6,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
-| DETAIL-003 | Plex, Radarr and Sonarr availability on details | `feat/detail-availability` | `b45b56b1` | `sha-3e8b0b1b60cc6a512e9c01f4877fa986fdc98e5e` | Pending | — | Deployed — disponibilité Sonarr exacte sur les épisodes; conteneur sain et préflight Unraid vert |
+| DETAIL-003 | Plex, Radarr and Sonarr availability on details | `feat/detail-availability` | `b8d7f206` | Pending | Pending | — | On custom — Plex indexe toutes les bibliothèques et ne signale une absence qu’après un scan complet et récent |
 | HISTORY-002 | Expandable cached episode groups | `fix/activity-journal-binge-cache` | `e6b879ac` | `sha-6457dc628bfa5f86f4235924b424f41b577bfa23` | Pending | — | Deployed — le groupe réel du 24 août affiche 3 épisodes, 151 minutes, la plage S03E01-E03 et son chevron; Home en 200 et préflight vert |
 | PERF-001 | Bounded Home pagination and local search | `feat/general-performance` | `b755b07b` | `sha-76bdd889c682f402158bdf4502b8b484e9911a66` | Pending | — | Deployed — Home hydrate seulement la page demandée et les recherches locales sont limitées en SQL; conteneur sain et préflight vert |
 | HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `b924851b` | `sha-1034e327588bf61e40aa1dc9a47b5eeb99305589` | Pending | — | Deployed — History suit l’accent du thème actif, y compris ses filtres et menus; conteneur sain et préflight vert |

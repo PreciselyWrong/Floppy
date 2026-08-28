@@ -1005,6 +1005,11 @@ DETAIL_AVAILABILITY_STALE_HOURS = config(
     default=48,
     cast=int,
 )
+PLEX_LIBRARY_INDEX_STALE_HOURS = config(
+    "PLEX_LIBRARY_INDEX_STALE_HOURS",
+    default=24,
+    cast=int,
+)
 
 BACKUP_DIR = config("BACKUP_DIR", default=str(BASE_DIR / "backups"))
 
