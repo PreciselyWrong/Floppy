@@ -200,8 +200,11 @@ class HomeScreenViewTests(TestCase):
         )
 
         section = home_screen.serialize_settings_sections(self.user)[0]
+        self.assertEqual(section["filter_fields"], [])
+
+        filter_fields = home_screen.serialize_settings_filter_fields(self.user, "all")
         media_types_field = next(
-            field for field in section["filter_fields"] if field["key"] == "media_types"
+            field for field in filter_fields if field["key"] == "media_types"
         )
 
         self.assertEqual(
@@ -1382,24 +1385,44 @@ class HomeScreenViewTests(TestCase):
     def test_home_screen_settings_do_not_expose_no_status_option(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
 
-        response = self.client.get(reverse("home_screen"))
+        response = self.client.get(
+            reverse("home_screen_filter_fields"),
+            {"media_type": MediaTypes.MOVIE.value},
+        )
 
         self.assertEqual(response.status_code, 200)
+        filter_fields = response.json()["filter_fields"]
+        status_field = next(
+            field for field in filter_fields if field["key"] == "status"
+        )
+        self.assertNotIn(
+            "no_status",
+            [option["value"] for option in status_field["options"]],
+        )
+
+    def test_home_screen_filter_fields_rejects_disabled_media_type(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+
+        response = self.client.get(
+            reverse("home_screen_filter_fields"),
+            {"media_type": MediaTypes.TV.value},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_home_screen_get_omits_filter_fields(self):
+        """Filter fields are fetched lazily per section, not baked into the GET."""
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+
+        response = self.client.get(reverse("home_screen"))
+
         sections = json.loads(response.context["home_screen_sections_json"])
         movie_section = next(
             section
             for section in sections
             if section["media_type"] == MediaTypes.MOVIE.value
         )
-        status_field = next(
-            field
-            for field in movie_section["filter_fields"]
-            if field["key"] == "status"
-        )
-        self.assertNotIn(
-            "no_status",
-            [option["value"] for option in status_field["options"]],
-        )
+        self.assertEqual(movie_section["filter_fields"], [])
 
     def test_home_filter_fields_include_collected_only_untracked_authors(self):
         self._set_enabled_media_types(MediaTypes.BOOK.value)

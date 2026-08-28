@@ -1200,15 +1200,17 @@ def _serialize_settings_row(user, row: HomeScreenRow, media_type: str) -> dict:
 
 
 def serialize_settings_sections(user) -> list[dict]:
-    """Return Home Screen settings sections for the enabled sidebar media types."""
+    """Return Home Screen settings sections for the enabled sidebar media types.
+
+    `filter_fields` is intentionally omitted here — it's expensive to compute
+    (full smart-rule facet scan per media type) and the UI only needs it for
+    whichever section the user actually expands, so it's fetched lazily via
+    `home_screen_filter_fields` instead of eagerly for every section.
+    """
     rows = ensure_home_screen_rows(user)
     rows_by_media_type: dict[str, list[HomeScreenRow]] = defaultdict(list)
     for row in rows:
         rows_by_media_type[row.media_type].append(row)
-
-    tag_names = list(
-        Tag.objects.filter(user=user).values_list("name", flat=True).order_by("name")
-    )
 
     sections = []
     for media_type in get_home_configurable_media_types(
@@ -1255,9 +1257,7 @@ def serialize_settings_sections(user) -> list[dict]:
                         HomeScreenRowTypeChoices.SHELF_FINISHED,
                     ),
                 },
-                "filter_fields": build_filter_field_data(
-                    user, media_type, precomputed_tags=tag_names
-                ),
+                "filter_fields": [],
                 "rows": [
                     _serialize_settings_row(user, row, media_type)
                     for row in media_rows
