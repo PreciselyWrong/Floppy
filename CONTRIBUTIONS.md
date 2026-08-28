@@ -6,7 +6,7 @@ Registre fork-only conservé sur `custom`. Git porte le détail technique; ce fi
 
 | ID | Feature | Branche | Commit | Image Unraid | Validation Nicolas | PR | État / cause |
 |---|---|---|---|---|---|---|---|
-| DETAIL-003 | Plex, Radarr and Sonarr availability on details | `feat/detail-availability` | `c937112e` | Pending | Pending | — | On custom — 10 tests ciblés, Ruff, contrôle Django, migration users et Tailwind verts |
+| DETAIL-003 | Plex, Radarr and Sonarr availability on details | `feat/detail-availability` | `c937112e` | `sha-3e7d093c846385fa0bd69a2954154849ebe39c9b` | Pending | — | Deployed — conteneur sain, migrations appliquées et préflight Unraid vert |
 | HISTORY-002 | Expandable cached episode groups | `fix/activity-journal-binge-cache` | `e6b879ac` | `sha-6457dc628bfa5f86f4235924b424f41b577bfa23` | Pending | — | Deployed — le groupe réel du 24 août affiche 3 épisodes, 151 minutes, la plage S03E01-E03 et son chevron; Home en 200 et préflight vert |
 | HOME-009 | Companion Home parity (Shelves, Activity Journal & Binge grouping) | `feat/home-all-media-in-progress` | `4ce6573f` | Pending build | Pending | — | On custom — `Stale` en mode `All media` affiche le type de chaque média; 3 tests ciblés, Ruff et contrôle Django verts |
 | DETAIL-001 | Weighted public rating breakdown | `feat/detail-rating-aggregate` | `c479bfb2` | `sha-39037960b0c72543ac9a62d93531f9e206aaccba` | Pending | — | Deployed — calcul, affichage, options et préflight vert |
