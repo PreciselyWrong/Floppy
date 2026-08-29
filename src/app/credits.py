@@ -192,24 +192,26 @@ def _historical_item_ids(user):
     return item_ids
 
 
-def _historical_credit_entries(person_ids, user):
+def _credit_entries_by_person(person_ids, user, *, current_item=None):
+    """Return local credited works, marking the user's dated history entries."""
     if not person_ids:
         return {}
     historical_item_ids = _historical_item_ids(user)
-    if not historical_item_ids:
-        return {}
 
     entries_by_person = {}
-    historical_credits = (
+    local_credits = (
         ItemPersonCredit.objects.filter(
             person_id__in=person_ids,
-            item_id__in=historical_item_ids,
         )
         .select_related("item")
         .order_by("person_id", "item__title", "item_id", "id")
     )
-    for credit in historical_credits:
+    current_item_id = getattr(current_item, "id", None)
+    for credit in local_credits:
         item = credit.item
+        is_watched = item.id in historical_item_ids
+        if not is_watched and item.id == current_item_id:
+            continue
         release_date = _coerce_credit_date(item.release_datetime)
         entry = {
             "media_id": str(item.media_id),
@@ -220,7 +222,7 @@ def _historical_credit_entries(person_ids, user):
             "year": release_date.year if release_date else None,
             "role": credit.role,
             "department": credit.department,
-            "is_watched": True,
+            "is_watched": is_watched,
             "vote_average": item.provider_rating or item.trakt_rating,
             "popularity": item.provider_popularity or item.trakt_popularity_score,
             "vote_count": item.provider_rating_count or item.trakt_rating_count,
@@ -255,16 +257,17 @@ def enrich_detail_credit_rows(
             source_person_id__in=person_ids,
         )
     }
-    history_by_person = {}
+    entries_by_person = {}
     if user and getattr(user, "is_authenticated", False):
         try:
             limit = max(0, int(known_for_limit))
         except (TypeError, ValueError):
             limit = 3
         if limit:
-            history_by_person = _historical_credit_entries(
+            entries_by_person = _credit_entries_by_person(
                 [person.id for person in people_by_source_id.values()],
                 user,
+                current_item=item,
             )
     event_date = _detail_credit_date(media_metadata or {}, item)
     for row in normalized_rows:
@@ -274,13 +277,20 @@ def enrich_detail_credit_rows(
         age_at_credit = person_age_at(person.birth_date, event_date)
         if age_at_credit is not None:
             row["age_at_credit"] = age_at_credit
-        if history_by_person:
+        if entries_by_person:
             known_for = select_known_for(
-                history_by_person.get(person.id),
+                entries_by_person.get(person.id),
                 limit,
             )
             if known_for:
                 row["known_for"] = known_for
+                watched_states = {entry["is_watched"] for entry in known_for}
+                if watched_states == {True}:
+                    row["known_for_label"] = "Your history"
+                elif watched_states == {False}:
+                    row["known_for_label"] = "Known for"
+                else:
+                    row["known_for_label"] = "History + known"
     return normalized_rows
 
 
