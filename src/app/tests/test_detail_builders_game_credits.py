@@ -168,6 +168,101 @@ class DetailPersonCreditEnrichmentTests(TestCase):
             [entry["title"] for entry in person_row["known_for"]],
             ["Watched Four", "Watched Two", "Watched One"],
         )
+        self.assertEqual(person_row["known_for_label"], "Your history")
+
+    def test_rows_fill_history_with_top_local_credits(self):
+        watched_item = Item.objects.create(
+            media_id="watched",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Watched",
+            provider_rating=6.0,
+        )
+        Movie.objects.create(
+            item=watched_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            end_date=timezone.now(),
+        )
+        fallback_items = [
+            Item.objects.create(
+                media_id=media_id,
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.MOVIE.value,
+                title=title,
+                provider_rating=rating,
+                provider_rating_count=100,
+            )
+            for media_id, title, rating in (
+                ("known-1", "Best Known", 9.0),
+                ("known-2", "Second Known", 8.0),
+                ("known-3", "Third Known", 7.0),
+            )
+        ]
+        for item in [self.current_item, watched_item, *fallback_items]:
+            ItemPersonCredit.objects.create(
+                item=item,
+                person=self.person,
+                role_type=CreditRoleType.CAST.value,
+                role="Lead",
+            )
+
+        rows = _build_detail_person_rows(
+            {
+                "source": Sources.TMDB.value,
+                "cast": [{"person_id": "person-1", "name": "Known Actor"}],
+            },
+            item=self.current_item,
+            user=self.user,
+        )
+
+        person_row = rows["cast_row"]["items"][0]
+        self.assertEqual(
+            [entry["title"] for entry in person_row["known_for"]],
+            ["Watched", "Best Known", "Second Known"],
+        )
+        self.assertEqual(
+            [entry["is_watched"] for entry in person_row["known_for"]],
+            [True, False, False],
+        )
+        self.assertEqual(person_row["known_for_label"], "History + known")
+
+    def test_rows_show_known_for_when_history_is_empty(self):
+        for media_id, title, rating in (
+            ("known-1", "Best Known", 9.0),
+            ("known-2", "Second Known", 8.0),
+            ("known-3", "Third Known", 7.0),
+        ):
+            credited_item = Item.objects.create(
+                media_id=media_id,
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.MOVIE.value,
+                title=title,
+                provider_rating=rating,
+                provider_rating_count=100,
+            )
+            ItemPersonCredit.objects.create(
+                item=credited_item,
+                person=self.person,
+                role_type=CreditRoleType.CAST.value,
+                role="Lead",
+            )
+
+        rows = _build_detail_person_rows(
+            {
+                "source": Sources.TMDB.value,
+                "cast": [{"person_id": "person-1", "name": "Known Actor"}],
+            },
+            item=self.current_item,
+            user=self.user,
+        )
+
+        person_row = rows["cast_row"]["items"][0]
+        self.assertEqual(
+            [entry["title"] for entry in person_row["known_for"]],
+            ["Best Known", "Second Known", "Third Known"],
+        )
+        self.assertEqual(person_row["known_for_label"], "Known for")
 
     def test_person_card_renders_age_and_known_for_under_the_poster(self):
         person_row = {
@@ -205,6 +300,8 @@ class DetailPersonCreditEnrichmentTests(TestCase):
         self.assertIn("Watched One", html)
         self.assertIn('data-person-credit-card="true"', html)
         self.assertIn('data-person-credit-details="true"', html)
+        self.assertIn('data-person-credit-known-for="true"', html)
+        self.assertNotIn("mt-auto", html)
         self.assertNotIn("search-result-card", html)
 
 

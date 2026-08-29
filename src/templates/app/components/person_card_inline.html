@@ -1,7 +1,7 @@
 {% load app_tags %}
 {% load user_tags %}
 <div class="w-36 shrink-0" data-person-credit-card="true">
-  <div class="person-credit-card flex h-full flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg transition-colors hover:border-[var(--color-link)] group">
+  <div class="person-credit-card flex flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg transition-colors hover:border-[var(--color-link)] group">
     <div class="relative">
       {% if person.person_id and person.name %}
         <a href="{% url 'person_detail' source=media.source person_id=person.person_id name=person.name|slug %}">
@@ -18,7 +18,7 @@
         </span>
       {% endif %}
     </div>
-    <div class="media-card-body flex flex-1 flex-col border-t border-[var(--color-border)] p-3" data-person-credit-details="true">
+    <div class="media-card-body border-t border-[var(--color-border)] p-3" data-person-credit-details="true">
       <div class="media-card-title-row">
         {% if person.person_id and person.name %}
           <a href="{% url 'person_detail' source=media.source person_id=person.person_id name=person.name|slug %}"
@@ -33,8 +33,8 @@
         {% if person.age_at_credit is not None %}<span class="rounded-full bg-[var(--color-surface-alt)] px-1.5 py-0.5">Age {{ person.age_at_credit }}</span>{% endif %}
       </div>
       {% if person.known_for %}
-        <div class="mt-auto pt-3">
-          <p class="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">Your history</p>
+        <div class="pt-3" data-person-credit-known-for="true">
+          <p class="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">{{ person.known_for_label|default:"Your history" }}</p>
           <div class="flex gap-1.5">
             {% for entry in person.known_for %}
               <a href="{% url 'media_details' source=entry.source media_type=entry.media_type media_id=entry.media_id title=entry.title|slug %}"
