@@ -83,7 +83,7 @@
 ## Done
 
 - Enrichissement des séries et saisons: reprise, sorties futures, ratings d’épisodes, spoilers, épisodes sautés et estimation sur 28 jours configurables.
-- Enrichissement des crédits et fiches personne: invités séparés, œuvres clés, âge, titres suivis et sections configurables.
+- Enrichissement des crédits et fiches personne: invités séparés, top 3 compact sous les crédits, complété par les œuvres connues, âge à la date du média, titres suivis et sections configurables (170 tests ciblés, Ruff, contrôle Django, migration users et CSS; correctif validé par 10 tests du module et QA visuelle).
 - Logo masquable ou personnalisable, avec mouvements et arrondis adaptés à chaque thème.
 - Moyenne publique pondérée configurable avec détail des sources et des votes.
 - Thèmes classiques et modernes distincts, avec mise en page configurable des fiches.
