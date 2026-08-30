@@ -2,6 +2,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
 from django.db.utils import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -28,6 +29,63 @@ class MetadataResolutionTests(TestCase):
             username="resolver",
             password="pw12345",
         )
+
+    def test_metadata_language_default_falls_back_to_global_without_item(self):
+        """No item should mean the user's global language preference applies."""
+        self.user.metadata_language = "fr"
+
+        language = metadata_resolution.metadata_language_default(self.user)
+
+        self.assertEqual(language, "fr")
+
+    def test_metadata_language_default_falls_back_to_global_without_preference(self):
+        """An item with no stored language preference should use the global default."""
+        self.user.metadata_language = "fr"
+        item = Item.objects.create(
+            media_id="1396",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Breaking Bad",
+        )
+
+        language = metadata_resolution.metadata_language_default(self.user, item)
+
+        self.assertEqual(language, "fr")
+
+    def test_metadata_language_default_uses_item_override(self):
+        """A per-item language preference should win over the global default."""
+        self.user.metadata_language = "fr"
+        item = Item.objects.create(
+            media_id="1396",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Breaking Bad",
+        )
+        MetadataProviderPreference.objects.create(
+            user=self.user,
+            item=item,
+            language="ja",
+        )
+
+        language = metadata_resolution.metadata_language_default(self.user, item)
+
+        self.assertEqual(language, "ja")
+
+    def test_metadata_language_default_ignores_item_for_unauthenticated_user(self):
+        """An unauthenticated user should never trigger a preference lookup."""
+        item = Item.objects.create(
+            media_id="1396",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Breaking Bad",
+        )
+
+        language = metadata_resolution.metadata_language_default(
+            AnonymousUser(),
+            item,
+        )
+
+        self.assertEqual(language, metadata_resolution.settings.TMDB_LANG)
 
     def test_metadata_default_source_falls_back_when_tvdb_is_disabled(self):
         """TV defaults should fall back to TMDB when TVDB is unavailable."""
@@ -60,6 +118,48 @@ class MetadataResolutionTests(TestCase):
     @override_settings(GOOGLE_BOOKS_API_KEY="google-key")
     def test_books_keep_hardcover_as_the_default_source(self):
         """Adding Google Books must not change the book default provider."""
+        self.assertEqual(
+            metadata_resolution.metadata_default_source(
+                self.user,
+                MediaTypes.BOOK.value,
+            ),
+            Sources.HARDCOVER.value,
+        )
+
+    @override_settings(HARDCOVER_API="")
+    def test_hardcover_is_hidden_without_a_token(self):
+        """Hardcover ships no default token, so it is opt-in (#1025)."""
+        sources = metadata_resolution.available_metadata_sources(MediaTypes.BOOK.value)
+
+        self.assertNotIn(Sources.HARDCOVER, sources)
+        self.assertFalse(metadata_resolution.provider_is_enabled("hardcover"))
+
+    @override_settings(HARDCOVER_API="")
+    def test_books_fall_back_to_open_library_without_a_hardcover_token(self):
+        """The reported bug: an unconfigured default left book search dead."""
+        self.assertEqual(
+            metadata_resolution.metadata_default_source(
+                self.user,
+                MediaTypes.BOOK.value,
+            ),
+            Sources.OPENLIBRARY.value,
+        )
+
+    @override_settings(HARDCOVER_API="")
+    def test_a_personal_token_puts_hardcover_back(self):
+        """A member with their own key is not held back by the instance."""
+        self.user.hardcover_api_key = "encrypted-personal-token"
+
+        self.assertTrue(
+            metadata_resolution.provider_is_enabled("hardcover", self.user),
+        )
+        self.assertIn(
+            Sources.HARDCOVER,
+            metadata_resolution.available_metadata_sources(
+                MediaTypes.BOOK.value,
+                self.user,
+            ),
+        )
         self.assertEqual(
             metadata_resolution.metadata_default_source(
                 self.user,
@@ -503,6 +603,87 @@ class MetadataResolutionTests(TestCase):
             result.grouped_preview["related"]["seasons"][0]["mapped_episode_end"],
             28,
         )
+
+    @patch("app.services.metadata_resolution.anime_mapping.find_entries_for_mal_id")
+    @patch("app.services.metadata_resolution.services.get_media_metadata")
+    def test_resolve_detail_metadata_grouped_preview_target_falls_back_to_tvdb_mapping_for_tmdb(
+        self,
+        mock_get_media_metadata,
+        mock_find_entries,
+    ):
+        """TMDB display should still get a grouped target from a TVDB-only mapping entry.
+
+        Community mapping data (Kometa Anime-IDs) is TVDB-first: most entries carry
+        a tvdb_id/tvdb_season but no tmdb_*id field at all. Requiring an exact
+        provider-ID match on the entry meant picking TMDB as the display provider
+        could never produce a grouped_preview_target for those titles, so the
+        episode-cards section silently rendered nothing (#reported: "no episode
+        cards" after mapping MAL -> TMDB).
+        """
+        item = Item.objects.create(
+            media_id="31964",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="My Hero Academia",
+            image="https://example.com/mha.jpg",
+            provider_external_ids={"tmdb_id": "65930"},
+        )
+        MetadataProviderPreference.objects.create(
+            user=self.user,
+            item=item,
+            provider=Sources.TMDB.value,
+        )
+        mock_find_entries.return_value = [
+            {"tvdb_id": "305074", "tvdb_season": 1, "tvdb_epoffset": 0},
+        ]
+        base_metadata = {
+            "media_id": "31964",
+            "source": Sources.MAL.value,
+            "media_type": MediaTypes.ANIME.value,
+            "title": "My Hero Academia",
+            "image": "https://example.com/mha.jpg",
+            "details": {"episodes": 13},
+            "related": {},
+        }
+        mock_get_media_metadata.side_effect = [
+            {
+                "media_id": "65930",
+                "source": Sources.TMDB.value,
+                "media_type": MediaTypes.ANIME.value,
+                "title": "My Hero Academia",
+                "related": {"seasons": [{"season_number": 1}]},
+                "external_links": {},
+            },
+            {
+                "media_id": "65930",
+                "source": Sources.TMDB.value,
+                "media_type": MediaTypes.ANIME.value,
+                "title": "My Hero Academia",
+                "related": {
+                    "seasons": [{"season_number": 1, "episode_count": 13}],
+                },
+                "season/1": {
+                    "season_number": 1,
+                    "season_title": "Season 1",
+                    "details": {"episodes": 13},
+                },
+            },
+        ]
+
+        result = metadata_resolution.resolve_detail_metadata(
+            self.user,
+            item=item,
+            route_media_type=MediaTypes.ANIME.value,
+            media_id=item.media_id,
+            source=item.source,
+            base_metadata=base_metadata,
+        )
+
+        self.assertEqual(result.mapping_status, "mapped")
+        self.assertIsNotNone(result.grouped_preview_target)
+        self.assertEqual(result.grouped_preview_target["season_number"], 1)
+        self.assertEqual(result.grouped_preview_target["episode_start"], 1)
+        self.assertEqual(result.grouped_preview_target["episode_end"], 13)
 
     @patch("app.db_retry.time.sleep")
     @patch("app.services.metadata_resolution.ItemProviderLink.objects.update_or_create")

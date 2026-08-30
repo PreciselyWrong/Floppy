@@ -63,21 +63,29 @@ class MetadataProviderOption:
     label: str
 
 
-def provider_is_enabled(provider: str) -> bool:
-    """Return whether a provider is configured for live use."""
+def provider_is_enabled(provider: str, user=None) -> bool:
+    """Return whether a provider is configured for live use.
+
+    ``user`` opts a provider back in when the credential can be personal rather
+    than instance-wide; callers with no user get the instance-level answer.
+    """
     if provider == Sources.TVDB.value:
         return bool(settings.TVDB_API_KEY)
     if provider == Sources.GOOGLEBOOKS.value:
         return bool(settings.GOOGLE_BOOKS_API_KEY)
+    if provider == Sources.HARDCOVER.value:
+        return bool(settings.HARDCOVER_API) or bool(
+            getattr(user, "hardcover_api_key", None),
+        )
     return True
 
 
-def available_metadata_sources(media_type: str) -> list[Sources]:
+def available_metadata_sources(media_type: str, user=None) -> list[Sources]:
     """Return configured metadata sources for a route media type."""
     candidates = []
     for source in config.get_sources(media_type) or []:
         provider = source.value if isinstance(source, Sources) else str(source)
-        if provider_is_enabled(provider):
+        if provider_is_enabled(provider, user):
             candidates.append(
                 source if isinstance(source, Sources) else Sources(provider),
             )
@@ -146,15 +154,23 @@ def metadata_default_source(user, media_type: str) -> str:
             provider = getattr(user, "anime_metadata_source_default", None)
 
     provider = provider or config.get_default_source_name(media_type).value
-    if provider_is_enabled(provider):
+    if provider_is_enabled(provider, user):
         return provider
 
-    available = available_metadata_sources(media_type)
+    available = available_metadata_sources(media_type, user)
     return available[0].value if available else provider
 
 
-def metadata_language_default(user) -> str:
-    """Return the effective preferred metadata language for a user."""
+def metadata_language_default(user, item: Item | None = None) -> str:
+    """Return the effective preferred metadata language for a user/item."""
+    if item is not None and user and getattr(user, "is_authenticated", False):
+        preference = MetadataProviderPreference.objects.filter(
+            user=user,
+            item=item,
+        ).only("language").first()
+        if preference and preference.language:
+            return preference.language
+
     language = None
     if user and getattr(user, "is_authenticated", False):
         language = getattr(user, "metadata_language", None) or None
@@ -930,11 +946,17 @@ def _grouped_preview_target(
     ):
         return None
 
+    # Community mapping entries are TVDB-first: most carry a tvdb_id but no
+    # tmdb_*id field at all. Require an exact match when the entry *does*
+    # carry this provider's ID (a real conflict), but don't reject an entry
+    # just because it's silent on this provider - its season/episode-offset
+    # data is still valid, since _provider_season_number/_episode_offset
+    # already fall back to the TVDB fields for TMDB.
     mapping_entries = anime_mapping.find_entries_for_mal_id(media_id)
     matching_entries = [
         entry
         for entry in mapping_entries
-        if _provider_series_id(entry, provider) == str(provider_media_id)
+        if _provider_series_id(entry, provider) in (None, str(provider_media_id))
     ]
     if not matching_entries:
         return None
@@ -1089,7 +1111,7 @@ def resolve_detail_metadata(
                 provider_route_media_type(route_media_type, provider),
                 provider_media_id,
                 provider,
-                language=metadata_language_default(user),
+                language=metadata_language_default(user, item),
             )
             header_metadata = _overlay_header_metadata(
                 base_metadata,
@@ -1113,7 +1135,7 @@ def resolve_detail_metadata(
                         for season in related_seasons
                         if season.get("season_number") is not None
                     ],
-                    language=metadata_language_default(user),
+                    language=metadata_language_default(user, item),
                 )
                 grouped_preview = _enrich_grouped_preview(grouped_preview)
                 grouped_preview_target = _grouped_preview_target(

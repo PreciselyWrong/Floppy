@@ -1,8 +1,12 @@
+import contextvars
+import hashlib
 import logging
 import os
 import re
 import sys
 import time
+from collections.abc import Mapping
+from contextlib import contextmanager
 from difflib import SequenceMatcher
 from http import HTTPStatus
 from pathlib import Path
@@ -51,6 +55,33 @@ RATE_LIMIT_MAX_RETRIES = 3
 # concurrency 1, so the whole queue stalls for that long.
 RATE_LIMIT_MAX_WAIT_SECONDS = 60
 RATE_LIMIT_DEFAULT_WAIT_SECONDS = 5
+# Callers serving an interactive request (detail page, add-to-tracker modal)
+# already have a fast stored-metadata fallback for ProviderAPIError, so they
+# don't need the patient background-job retry budget above — sleeping up to
+# 3x60s in a gunicorn worker just makes the page look like it never loads,
+# and can exceed the worker timeout entirely (#1008).
+# Upper bound on how long a 429 may silence a provider. Retry-After is
+# attacker-ish input, and a bad value must not disable a provider for days.
+RATE_LIMIT_MAX_COOLDOWN_SECONDS = 60 * 60
+RATE_LIMIT_MAX_RETRIES_INTERACTIVE = 1
+RATE_LIMIT_MAX_WAIT_SECONDS_INTERACTIVE = 5
+
+_interactive_request = contextvars.ContextVar("_interactive_request", default=False)
+
+
+@contextmanager
+def interactive_request_scope():
+    """Cap rate-limit retry waits for a synchronous, request-serving call.
+
+    Wrap a get_media_metadata()/api_request() call made while a user is
+    waiting on the HTTP response so a 429 fails fast into the caller's
+    existing fallback instead of blocking the request thread for minutes.
+    """
+    token = _interactive_request.set(True)
+    try:
+        yield
+    finally:
+        _interactive_request.reset(token)
 
 # MusicBrainz MBIDs are UUIDs (36 chars); shorter values are not valid
 # recording IDs and should be treated as not found.
@@ -189,8 +220,8 @@ def build_limiter_session():
 
     An in-process bucket is a worse rate limiter (each process gets its own
     budget, so the aggregate can overshoot) but a much better failure mode than
-    no outbound requests at all. The per-host adapters mounted below are already
-    in-memory, so this is the existing pattern rather than a new one.
+    no outbound requests at all. The per-host adapters mounted below share this
+    same Redis-backed pattern via _build_host_limiter_adapter().
     """
     try:
         return LimiterSession(
@@ -206,6 +237,41 @@ def build_limiter_session():
             error,
         )
         return LimiterSession(per_second=_GLOBAL_PER_SECOND)
+
+
+def _build_host_limiter_adapter(**limits):
+    """Return a per-host LimiterAdapter backed by a bucket shared across processes.
+
+    Mirrors build_limiter_session()'s RedisBucket fallback pattern, but for the
+    per-host adapters mounted below. Without this, each adapter defaults to an
+    in-memory bucket private to one process, so every gunicorn worker and
+    Celery process gets its own separate budget for the same host - the real
+    aggregate request rate becomes (process count) x the configured limit,
+    easily enough to trip a provider's actual server-side rate limit even
+    though the configured per-host limit looks conservative (#1025).
+
+    Unlike bucket_key, this bucket name is not partitioned by process role:
+    the limit represents an external provider's real ceiling, not an internal
+    fairness split, so web, interactive, and background processes must all
+    draw from the same counter for a given host.
+    """
+    try:
+        return LimiterAdapter(
+            bucket_class=RedisBucket,
+            bucket_kwargs={
+                "redis_pool": _host_limiter_redis_pool,
+                "bucket_name": _host_limiter_bucket_name,
+            },
+            **limits,
+        )
+    except Exception as error:
+        logger.warning(
+            "Redis rate-limit bucket unavailable (%s); falling back to a "
+            "per-process limiter for this host. Its provider budget is only "
+            "enforced per-process until Redis recovers and Floppy restarts.",
+            error,
+        )
+        return LimiterAdapter(**limits)
 
 
 def get_process_role():
@@ -243,8 +309,9 @@ bucket_key = f"{settings.REDIS_PREFIX}_api" if settings.REDIS_PREFIX else "api"
 
 # Background workers draw from their own, smaller bucket so bulk backfills and
 # imports can never exhaust the shared per-second budget that web requests and
-# the interactive worker rely on. Per-host adapters below are in-memory (one
-# per process), so provider-specific ceilings are unaffected by this split.
+# the interactive worker rely on. Per-host adapters below draw from one shared,
+# role-agnostic bucket instead, so provider-specific ceilings are unaffected by
+# this split.
 if PROCESS_ROLE == "background":
     bucket_key = f"{bucket_key}_background"
     _GLOBAL_PER_SECOND = 3
@@ -258,44 +325,64 @@ else:
 
 session = build_limiter_session()
 
+# Shared across every per-host adapter below: one Redis pool and one bucket
+# namespace, so nine hosts don't each open their own connection pool.
+try:
+    _host_limiter_redis_pool = get_redis_pool()
+except Exception as _host_pool_error:
+    logger.warning(
+        "Redis rate-limit pool unavailable (%s); per-host provider budgets "
+        "will fall back to a per-process limiter until Redis recovers and "
+        "Floppy restarts.",
+        _host_pool_error,
+    )
+    _host_limiter_redis_pool = None
+_host_limiter_bucket_name = (
+    f"{settings.REDIS_PREFIX}_api_hosts" if settings.REDIS_PREFIX else "api_hosts"
+)
+
 session.mount("http://", HTTPAdapter(max_retries=3))
 session.mount("https://", HTTPAdapter(max_retries=3))
 
 session.mount(
     "https://api.myanimelist.net/v2",
-    LimiterAdapter(per_minute=30),
+    _build_host_limiter_adapter(per_minute=30),
 )
 session.mount(
     "https://graphql.anilist.co",
-    LimiterAdapter(per_minute=85),
+    _build_host_limiter_adapter(per_minute=85),
 )
 session.mount(
     "https://api.igdb.com/v4",
-    LimiterAdapter(per_second=3),
+    _build_host_limiter_adapter(per_second=3),
 )
 session.mount(
     "https://api4.thetvdb.com",
-    LimiterAdapter(per_second=2),
+    _build_host_limiter_adapter(per_second=2),
 )
 session.mount(
     "https://comicvine.gamespot.com/api",
-    LimiterAdapter(per_hour=190),
+    _build_host_limiter_adapter(per_hour=190),
 )
 session.mount(
     "https://openlibrary.org",
-    LimiterAdapter(per_minute=20),
+    _build_host_limiter_adapter(per_minute=20),
 )
 session.mount(
     "https://api.hardcover.app/v1/graphql",
-    LimiterAdapter(per_minute=50),
+    _build_host_limiter_adapter(per_minute=50),
 )
 session.mount(
     "https://boardgamegeek.com/xmlapi2",
-    LimiterAdapter(per_second=2),
+    _build_host_limiter_adapter(per_second=2),
 )
 session.mount(
     "https://xbl.io/api",
-    LimiterAdapter(per_hour=120),
+    _build_host_limiter_adapter(per_hour=120),
+)
+session.mount(
+    "https://api.tvmaze.com",
+    _build_host_limiter_adapter(per_second=2),
 )
 
 
@@ -318,7 +405,10 @@ class ProviderAPIError(Exception):
         content_type = None
         if response is not None:
             raw_headers = getattr(response, "headers", None)
-            headers = raw_headers if isinstance(raw_headers, dict) else {}
+            # requests uses CaseInsensitiveDict, which is a Mapping but NOT a
+            # dict subclass - an isinstance(..., dict) check here silently
+            # discarded the headers of every real response (#1025).
+            headers = raw_headers if isinstance(raw_headers, Mapping) else {}
             raw_content_type = headers.get("Content-Type")
             if isinstance(raw_content_type, str):
                 content_type = raw_content_type.split(";", 1)[0]
@@ -424,8 +514,8 @@ def _get_tmdb_proxy_url():
     return proxy_url or None
 
 
-def _rate_limit_wait_seconds(response) -> int:
-    """Return how long to wait after a 429, clamped and never raising.
+def _retry_after_seconds(response) -> int | None:
+    """Return the provider's requested wait, or None when it did not give one.
 
     Retry-After may legitimately be an HTTP date rather than a number, and some
     providers send neither; an unguarded int() would throw out of the exception
@@ -433,12 +523,73 @@ def _rate_limit_wait_seconds(response) -> int:
     """
     raw = response.headers.get("Retry-After") if response is not None else None
     try:
-        seconds = int(raw)
+        return int(raw)
     except (TypeError, ValueError):
+        return None
+
+
+def _rate_limit_wait_seconds(response, max_wait=RATE_LIMIT_MAX_WAIT_SECONDS) -> int:
+    """Return how long to wait after a 429, clamped and never raising."""
+    seconds = _retry_after_seconds(response)
+    if seconds is None:
         seconds = RATE_LIMIT_DEFAULT_WAIT_SECONDS
     # A small margin over what the provider asked for, so a clock skew of a
     # second doesn't earn another 429 immediately.
-    return max(1, min(seconds + 3, RATE_LIMIT_MAX_WAIT_SECONDS))
+    return max(1, min(seconds + 3, max_wait))
+
+
+def _rate_limit_cooldown_key(provider, headers=None) -> str:
+    """Return the cooldown key for the credential this request authenticates as.
+
+    Providers meter per account, not per host: Hardcover's daily quota belongs
+    to whichever token signed the request. Keying on a digest of the
+    Authorization header keeps a member's personal token from being silenced by
+    the instance token's exhausted quota. Only the digest is stored.
+    """
+    authorization = (headers or {}).get("Authorization") or ""
+    if not authorization:
+        return f"provider_cooldown:{provider}"
+    digest = hashlib.sha256(authorization.encode("utf-8", "replace")).hexdigest()
+    return f"provider_cooldown:{provider}:{digest[:16]}"
+
+
+def _rate_limit_headers(response) -> dict[str, str]:
+    """Return the provider's rate-limit headers for logging."""
+    headers = getattr(response, "headers", None)
+    if not isinstance(headers, Mapping):
+        return {}
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower().startswith(("ratelimit", "x-ratelimit", "retry-after"))
+    }
+
+
+def _raise_rate_limited(provider, error, retry_after, headers=None):
+    """Arm the provider cooldown and fail without retrying.
+
+    A Retry-After longer than the retry budget means the provider is telling us
+    the quota will not recover in time - Hardcover answers an exhausted daily
+    quota with hours (#1025). Retrying into that only spends more quota and
+    sleeps a worker, so record the cooldown and short-circuit every later call
+    until it elapses.
+    """
+    logger.warning(
+        "%s rate limited beyond the retry budget, cooling down %s seconds %s",
+        provider,
+        retry_after,
+        _rate_limit_headers(getattr(error, "response", None)),
+    )
+    cache.set(
+        _rate_limit_cooldown_key(provider, headers),
+        True,
+        min(retry_after, RATE_LIMIT_MAX_COOLDOWN_SECONDS),
+    )
+    raise ProviderAPIError(
+        provider,
+        error,
+        f"rate limit exceeded, retry in {retry_after} seconds",
+    )
 
 
 def api_request(
@@ -465,6 +616,14 @@ def api_request(
     Returns:
         Parsed JSON dict or ElementTree for XML
     """
+    if cache.get(_rate_limit_cooldown_key(provider, headers)):
+        logger.warning("%s request skipped: provider is in rate-limit cooldown", provider)
+        raise ProviderAPIError(
+            provider,
+            requests.exceptions.RequestException("rate-limit cooldown"),
+            "rate limit exceeded, still cooling down",
+        )
+
     try:
         request_kwargs = {
             "url": url,
@@ -497,32 +656,43 @@ def api_request(
         status_code = error_resp.status_code
 
         # handle rate limiting
-        if (
-            status_code == requests.codes.too_many_requests
-            and _retry_attempt < RATE_LIMIT_MAX_RETRIES
-        ):
-            seconds_to_wait = _rate_limit_wait_seconds(error_resp)
-            logger.warning(
-                "%s rate limited, waiting %s seconds (attempt %s/%s)",
-                provider,
-                seconds_to_wait,
-                _retry_attempt + 1,
-                RATE_LIMIT_MAX_RETRIES,
+        interactive = _interactive_request.get()
+        max_retries = (
+            RATE_LIMIT_MAX_RETRIES_INTERACTIVE if interactive else RATE_LIMIT_MAX_RETRIES
+        )
+        if status_code == requests.codes.too_many_requests:
+            max_wait = (
+                RATE_LIMIT_MAX_WAIT_SECONDS_INTERACTIVE
+                if interactive
+                else RATE_LIMIT_MAX_WAIT_SECONDS
             )
-            time.sleep(seconds_to_wait)
-            return api_request(
-                provider,
-                method,
-                url,
-                params=params,
-                data=data,
-                headers=headers,
-                response_format=response_format,
-                # Previously passed through unchanged, so a provider that kept
-                # returning 429 recursed and slept forever, holding a worker
-                # (#521).
-                _retry_attempt=_retry_attempt + 1,
-            )
+            retry_after = _retry_after_seconds(error_resp)
+            if retry_after is not None and retry_after > max_wait:
+                _raise_rate_limited(provider, error, retry_after, headers)
+
+            if _retry_attempt < max_retries:
+                seconds_to_wait = _rate_limit_wait_seconds(error_resp, max_wait)
+                logger.warning(
+                    "%s rate limited, waiting %s seconds (attempt %s/%s)",
+                    provider,
+                    seconds_to_wait,
+                    _retry_attempt + 1,
+                    max_retries,
+                )
+                time.sleep(seconds_to_wait)
+                return api_request(
+                    provider,
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                    headers=headers,
+                    response_format=response_format,
+                    # Previously passed through unchanged, so a provider that
+                    # kept returning 429 recursed and slept forever, holding a
+                    # worker (#521).
+                    _retry_attempt=_retry_attempt + 1,
+                )
 
         if (
             status_code in TRANSIENT_HTTP_STATUS_CODES

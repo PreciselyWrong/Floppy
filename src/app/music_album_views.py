@@ -32,7 +32,7 @@ from app.music_views import (
 )
 from app.providers import musicbrainz
 from app.services import bulk_music_tracking
-from app.services.music import ensure_album_has_release_id
+from app.services.music import ensure_album_has_release_id, sync_album_release_tracks
 from app.track_modal_views import _track_modal_release_date_shortcut
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,25 @@ def set_music_release(request, album_id):
                 album=album,
                 defaults={"release_id": release_id},
             )
-            messages.success(request, "Release updated.")
+            try:
+                track_count = sync_album_release_tracks(album, release_id)
+            except Exception as exc:  # pragma: no cover - defensive provider boundary
+                logger.warning(
+                    "Failed to sync release %s for album %s: %s",
+                    release_id,
+                    album.id,
+                    exc,
+                )
+                messages.warning(
+                    request,
+                    "Saved your release choice, but couldn't refresh the "
+                    "tracklist from MusicBrainz.",
+                )
+            else:
+                messages.success(
+                    request,
+                    f"Release updated - synced {track_count} tracks.",
+                )
 
     return _music_release_redirect(request, album, return_url)
 
@@ -480,12 +498,22 @@ def sync_album_metadata_view(request, album_id):
     """Manually trigger metadata sync for an album."""
     album = get_object_or_404(Album, id=album_id)
 
+    from django.core.cache import cache as django_cache
+
+    if album.musicbrainz_release_group_id:
+        # Force re-derivation of the release: a previous sync may have
+        # locked in the wrong pressing (e.g. a partial reissue instead of
+        # the full release), so drop the cached group->release pick and
+        # the release_id itself before re-resolving.
+        django_cache.delete(
+            f"musicbrainz_release_for_group_{album.musicbrainz_release_group_id}"
+        )
+        album.musicbrainz_release_id = ""
+
     ensure_album_has_release_id(album)
 
     if album.musicbrainz_release_id:
         try:
-            from django.core.cache import cache as django_cache
-
             django_cache.delete(f"musicbrainz_release_{album.musicbrainz_release_id}")
             release_data = musicbrainz.get_release(album.musicbrainz_release_id)
 
@@ -536,6 +564,9 @@ def sync_album_metadata_view(request, album_id):
                 album.genres = release_data.get("genres")
 
             tracks_data = release_data.get("tracks", [])
+            # Clear any tracks left over from a previous, differently-shaped
+            # release (e.g. fewer discs/tracks) before rebuilding.
+            Track.objects.filter(album=album).delete()
             for track_data in tracks_data:
                 Track.objects.update_or_create(
                     album=album,

@@ -55,11 +55,11 @@
                       </button>
 
                       <div x-show="trackOpen"
+                           @mousedown.self="trackOpen = false"
                            @keydown.escape.window="trackOpen = false"
                            class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
                         <div class="modal-max-height overflow-y-auto px-4 md:px-0 relative z-60 w-full"
-                             style="width: min(96vw, 72rem);"
-                             @click.outside="trackOpen = false">
+                             style="width: min(96vw, 72rem);">
                           <div id="{% component_id 'track' media user_media.id %}"></div>
                         </div>
                       </div>
@@ -260,9 +260,9 @@
             {# Collection Modal #}
             <div x-show="collectionOpen"
                  @keydown.escape.window="collectionOpen = false"
-                 class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-              <div class="w-152 modal-max-height overflow-y-auto px-4 md:px-0 relative z-60"
-                   @click.outside="if (!$event.target.closest('[data-cf-dropdown-menu]')) collectionOpen = false">
+                 class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+                 @mousedown.self="if (!$event.target.closest('[data-cf-dropdown-menu]')) collectionOpen = false">
+              <div class="w-152 modal-max-height overflow-y-auto px-4 md:px-0 relative z-60">
                 <div id="{% component_id 'collection' media %}"></div>
               </div>
             </div>
@@ -339,10 +339,12 @@
 
     {# Related Media #}
     {% if media_type != MediaTypes.PODCAST.value %}
-      {% if notes_entry or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes %}
+      {% if show_notes|default:False or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes %}
         <div class="w-full md:w-3/4"
              style="display: flex; flex-direction: column;">
-        {% if show_notes|default:False and notes_entry %}
+        {# Rendered even with no notes yet: the empty section is the anchor the #}
+        {# post-save OOB swap replaces, so it must pre-exist in the DOM. #}
+        {% if show_notes|default:False %}
           <div {% detail_section_attrs user detail_family "content" "notes" %}>
             {% include "app/components/detail_notes_section.html" %}
           </div>
@@ -442,7 +444,7 @@
                       {% url 'media_details' source=episode.source media_type=episode.media_type media_id=episode.media_id title=episode.title|default:episode.issue_number|slug as ep_detail_url %}
                       {% include "app/components/issue_row.html" %}
                     {% else %}
-                      {% if media_type == MediaTypes.SEASON.value and media.source and media.media_id and media.season_number %}{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% else %}{% url 'episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% endif %}{% elif media_type == MediaTypes.ANIME.value and episode.source and episode.media_id and episode.episode_number %}{% url 'anime_episode_details' source=episode.source media_id=episode.media_id title=media.title|slug season_number=episode.season_number|default:0 episode_number=episode.episode_number as ep_detail_url %}{% endif %}
+                      {% if media_type == MediaTypes.SEASON.value and media.source and media.media_id and media.season_number is not None %}{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% else %}{% url 'episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% endif %}{% elif media_type == MediaTypes.ANIME.value and episode.source and episode.media_id and episode.episode_number %}{% url 'anime_episode_details' source=episode.source media_id=episode.media_id title=media.title|slug season_number=episode.season_number|default:0 episode_number=episode.episode_number as ep_detail_url %}{% endif %}
                       {% include "app/components/episode_row.html" %}
                     {% endif %}
                   {% endfor %}

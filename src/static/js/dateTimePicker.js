@@ -10,16 +10,20 @@ if (!window.__floppyDateTimePickerBound) {
     suggestionLabel: config.suggestionLabel || "",
     suggestionDate: config.suggestionDate || "",
     suggestionRuntimeMinutes: config.suggestionRuntimeMinutes || "",
+    copyFrom: config.copyFrom || "",
+    copyAvailable: false,
 
     value: config.initialValue || "",
     open: false,
     isMobile: false,
     popoverStyle: "",
+    pickerView: "days", // "days" | "months" | "years"
     viewYear: 0,
     viewMonth: 0,
     focusYear: 0,
     focusMonth: 0,
     focusDay: 1,
+    yearInput: "",
     hour24: 0,
     minute: 0,
     second: 0,
@@ -172,14 +176,20 @@ if (!window.__floppyDateTimePickerBound) {
     },
 
     parts() {
-      if (!this.value) {
+      return this.partsFor(this.value);
+    },
+
+    // Parses any value in this field's own format, not just the current one,
+    // so the copy-from-the-other-field path can reuse it.
+    partsFor(value) {
+      if (!value) {
         return null;
       }
 
       // Django renders bound DateTimeField values with a space separator,
       // while values selected in this picker use the HTML datetime-local
       // format with a `T` separator.
-      const [datePart, timePart] = this.value.trim().split(/[T ]/, 2);
+      const [datePart, timePart] = value.trim().split(/[T ]/, 2);
       const [y, m, d] = datePart.split("-").map(Number);
       if ([y, m, d].some(Number.isNaN)) {
         return null;
@@ -344,6 +354,63 @@ if (!window.__floppyDateTimePickerBound) {
       }
     },
 
+    showMonthsView() {
+      this.pickerView = "months";
+    },
+
+    showYearsView() {
+      this.yearInput = String(this.viewYear);
+      this.pickerView = "years";
+    },
+
+    showDaysView() {
+      this.pickerView = "days";
+    },
+
+    gotoMonth(monthIndex) {
+      this.viewMonth = monthIndex;
+      this.pickerView = "days";
+    },
+
+    gotoPrevYear() {
+      this.viewYear -= 1;
+      this.yearInput = String(this.viewYear);
+    },
+
+    gotoNextYear() {
+      this.viewYear += 1;
+      this.yearInput = String(this.viewYear);
+    },
+
+    onYearInput(event) {
+      const digits = event.target.value.replace(/\D/g, "").slice(0, 4);
+      this.yearInput = digits;
+      if (digits.length === 4) {
+        this.viewYear = Number(digits);
+      }
+    },
+
+    applyYearInput() {
+      const year = Number(this.yearInput);
+      if (Number.isInteger(year) && year >= 1000 && year <= 9999) {
+        this.viewYear = year;
+      } else {
+        this.yearInput = String(this.viewYear);
+      }
+      this.pickerView = "months";
+    },
+
+    monthShortLabel(monthIndex) {
+      return new Date(this.viewYear, monthIndex, 1).toLocaleDateString(undefined, {
+        month: "short",
+      });
+    },
+
+    yearRange() {
+      const start = Math.floor(this.viewYear / 20) * 20;
+      return Array.from({ length: 20 }, (_, i) => start + i);
+    },
+
     selectDay(cell) {
       if (!cell) {
         return;
@@ -468,6 +535,39 @@ if (!window.__floppyDateTimePickerBound) {
       this.backfillStartDateIfNeeded();
     },
 
+    copySourceValue() {
+      if (!this.copyFrom) {
+        return "";
+      }
+      const form = this.$refs.hiddenInput?.closest("form");
+      return form?.querySelector(`[name="${this.copyFrom}"]`)?.value || "";
+    },
+
+    copyFromOther() {
+      const sourceParts = this.partsFor(this.copySourceValue());
+      if (!sourceParts) {
+        return;
+      }
+      // No backfill on this path. The runtime-based auto-fill recomputes
+      // start_date from end_date, which would immediately overwrite a copy
+      // into start_date with end minus the runtime. commit() already marks
+      // start_date as manually set when that is the field being written, and
+      // backfillStartDateIfNeeded honours that flag, so a copy into start_date
+      // also survives later edits to end_date. A copy into end_date leaves the
+      // flag alone: the user has not touched start_date, so the auto-fill must
+      // stay armed for it.
+      this.commit(
+        this.formatValueFromParts(
+          sourceParts.y,
+          sourceParts.m,
+          sourceParts.d,
+          sourceParts.h,
+          sourceParts.min,
+          sourceParts.s,
+        ),
+      );
+    },
+
     backfillStartDateIfNeeded() {
       const runtimeMinutes = Number.parseInt(this.suggestionRuntimeMinutes, 10);
       if (
@@ -483,6 +583,15 @@ if (!window.__floppyDateTimePickerBound) {
       const startInput = form?.querySelector('[name="start_date"]');
       if (!startInput || startInput === this.$refs.hiddenInput) {
         return;
+      }
+      if (form && window.Alpine) {
+        try {
+          if (Alpine.$data(form).manualStartDate) {
+            return;
+          }
+        } catch {
+          // Ignore Alpine lookup failures.
+        }
       }
 
       const parts = this.parts();
@@ -564,6 +673,11 @@ if (!window.__floppyDateTimePickerBound) {
 
     openPicker() {
       this.open = true;
+      this.pickerView = "days";
+      // Recomputed per open rather than watched: the copy button only exists
+      // while the picker is open, and opening one picker closes the other, so
+      // the source field cannot change underneath it.
+      this.copyAvailable = Boolean(this.copySourceValue());
       this.positionPopover();
       this.$nextTick(() => {
         this.positionPopover();

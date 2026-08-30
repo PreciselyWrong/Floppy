@@ -143,6 +143,10 @@ SOURCES_CONFIG = {
         "name": "StoryGraph",
         "logo": static("img/storygraph-logo.svg"),
     },
+    "tvtime": {
+        "name": "TV Time",
+        "logo": static("img/tvtime-logo.png"),
+    },
     "radarr": {
         "name": "Radarr",
         "logo": static("img/plex-logo.svg"),

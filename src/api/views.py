@@ -864,14 +864,18 @@ def _media_list_response(request, media_type=None):
 
     try:
         filters = parse_media_list_filters(request)
-        entries = get_media_list_entries(request.user, media_type, filters)
+        entries, total = get_media_list_entries(
+            request.user, media_type, filters, limit=limit, offset=offset,
+        )
     except MediaListFilterError as error:
         return Response(
             {"detail": f"Invalid {error.parameter}: {error}"},
             status=HTTP.BAD_REQUEST,
         )
 
-    paginated_data = paginate_data(request, entries, limit, offset)
+    paginated_data = paginate_data(
+        request, entries, limit, offset, total=total, already_sliced=total is not None,
+    )
     page_entries = paginated_data["results"]
     _rehydrate_deferred_items(page_entries)
     lists_by_item_id = build_lists_by_item_id(request.user, page_entries)
@@ -1294,7 +1298,12 @@ class MediaDetailView(drf_views.APIView):
             game_length_item = (
                 user_medias[0].item
                 if user_medias
-                else resolve_item_queryset(media_id, source, media_type).first()
+                else resolve_item_queryset(
+                    media_id,
+                    source,
+                    media_type,
+                    library_media_type=library_media_type,
+                ).first()
             )
             if game_length_item is None and source == Sources.IGDB.value:
                 try:
@@ -1340,7 +1349,12 @@ class MediaDetailView(drf_views.APIView):
             top_level_item = (
                 user_medias[0].item
                 if user_medias
-                else resolve_item_queryset(media_id, source, media_type).first()
+                else resolve_item_queryset(
+                    media_id,
+                    source,
+                    media_type,
+                    library_media_type=library_media_type,
+                ).first()
             )
 
         data = {
@@ -1349,6 +1363,7 @@ class MediaDetailView(drf_views.APIView):
             "seasons": seasons_by_number,
             "lists": lists,
             "item": top_level_item,
+            "library_media_type": library_media_type,
         }
 
         serialized = serialize_data(
@@ -2510,6 +2525,7 @@ class MediaSeasonDetailView(drf_views.APIView):
                 source,
                 MediaTypes.SEASON.value,
                 season_number=season_number,
+                library_media_type=library_media_type,
             ).first()
         )
 
@@ -2519,6 +2535,7 @@ class MediaSeasonDetailView(drf_views.APIView):
             "episodes": episodes_by_number,
             "lists": lists,
             "item": season_item,
+            "library_media_type": library_media_type,
         }
 
         serialized = serialize_data(
@@ -3667,6 +3684,7 @@ class MediaEpisodeDetailView(drf_views.APIView):
                 MediaTypes.EPISODE.value,
                 season_number=season_number,
                 episode_number=episode_number,
+                library_media_type=request.query_params.get("library_media_type"),
             ).first()
         )
 

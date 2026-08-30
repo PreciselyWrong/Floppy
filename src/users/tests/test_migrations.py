@@ -14,8 +14,8 @@ migration_0067 = import_module(
 migration_0090 = import_module(
     "users.migrations.0090_homescreenrow",
 )
-migration_0128 = import_module(
-    "users.migrations.0128_user_appearance",
+migration_0129 = import_module(
+    "users.migrations.0129_user_appearance",
 )
 
 
@@ -250,11 +250,11 @@ class Migration0090HomeScreenSeedTests(SimpleTestCase):
         self.assertEqual(rows[1].direction, "desc")
 
 
-class Migration0128AppearanceTests(SimpleTestCase):
+class Migration0129AppearanceTests(SimpleTestCase):
     def test_adds_all_appearance_fields_in_one_migration(self):
         added_fields = {
             operation.name
-            for operation in migration_0128.Migration.operations
+            for operation in migration_0129.Migration.operations
             if isinstance(operation, migrations.AddField)
         }
 

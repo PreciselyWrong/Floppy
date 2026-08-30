@@ -228,25 +228,21 @@ def build_item_id(item):
 # TODO: move to lists/models.py
 def build_lists_by_item_id(user, objects):
     """Build a map of item id to list membership payload for serializer context."""
-    lists_by_item_id = {}
+    if user is None:
+        return {}
 
+    item_ids = []
+    seen_item_ids = set()
     for obj in objects:
         item = obj if isinstance(obj, Item) else getattr(obj, "item", None)
-        if item is None:
+        if item is None or item.id in seen_item_ids:
             continue
+        seen_item_ids.add(item.id)
+        item_ids.append(item.id)
 
-        if item.id in lists_by_item_id:
-            continue
-
-        # FORK: we already hold the exact Item row — query membership directly
-        # instead of re-resolving by media_id (which can cross library buckets).
-        lists_by_item_id[item.id] = (
-            []
-            if user is None
-            else CustomListItem.objects.get_user_item_lists(user, item)
-        )
-
-    return lists_by_item_id
+    # FORK: batched by item id in one query instead of one query per item —
+    # a page of N media entries used to issue N CustomListItem queries.
+    return CustomListItem.objects.get_user_item_lists_map(user, item_ids)
 
 
 def build_parent_id(item):
@@ -338,9 +334,25 @@ def fetch_results_all_types(user, status, sort, search, exclude):
 # have two rows differing only in that field (grouped anime stored on TV rows).
 # Raw get()/get_or_create()/first() on media_id+source+media_type alone can raise
 # MultipleObjectsReturned or silently pick/clobber the wrong bucket's row. This
-# resolver mirrors the fork's canonical pattern (app/metadata_sync_views.py):
+# filter mirrors the fork's canonical pattern (app/metadata_sync_views.py):
 # explicit bucket filter when requested, exclude the anime bucket by default for
 # tv/season/episode, and deterministic ordering.
+def filter_item_bucket(queryset, media_type, *, library_media_type=None):  # FORK
+    """Apply bucket filtering to an Item queryset for the given media_type."""
+    if media_type in (
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+        MediaTypes.EPISODE.value,
+    ):
+        if library_media_type:
+            queryset = queryset.filter(library_media_type=library_media_type)
+        else:
+            queryset = queryset.exclude(
+                library_media_type=MediaTypes.ANIME.value,
+            )
+    return queryset
+
+
 def resolve_item_queryset(  # FORK
     media_id,
     source,
@@ -358,17 +370,11 @@ def resolve_item_queryset(  # FORK
         season_number=season_number,
         episode_number=episode_number,
     )
-    if media_type in (
-        MediaTypes.TV.value,
-        MediaTypes.SEASON.value,
-        MediaTypes.EPISODE.value,
-    ):
-        if library_media_type:
-            queryset = queryset.filter(library_media_type=library_media_type)
-        else:
-            queryset = queryset.exclude(
-                library_media_type=MediaTypes.ANIME.value,
-            )
+    queryset = filter_item_bucket(
+        queryset,
+        media_type,
+        library_media_type=library_media_type,
+    )
     return queryset.order_by("id")
 
 
@@ -455,16 +461,23 @@ def make_page_url(request, limit, new_offset):
     return request.build_absolute_uri(request.path + "?" + params.urlencode())
 
 
-def paginate_data(request, results, limit, offset, *, total=None):
+def paginate_data(request, results, limit, offset, *, total=None, already_sliced=False):
     """Paginate the results based on the limit and offset.
 
     Returns raw paginated data without serialization.
     Serialization should be handled by the view.
+
+    `already_sliced=True` skips the results[offset:offset+limit] slice —
+    for callers (the media-list SQL fast path, #1004) whose `results` were
+    already paginated at the database layer, where re-slicing by `offset`
+    against an already-page-sized list would wrongly return nothing.
+    `total` must be passed alongside it, since len(results) is no longer
+    the true total in that case.
     """
     total_count = len(results) if total is None else total
     start = offset
     end = offset + limit
-    paginated = results[start:end]
+    paginated = results if already_sliced else results[start:end]
 
     next_url = None
     prev_url = None
@@ -543,6 +556,32 @@ def parse_limit_offset(request):
 
     limit = min(limit, MAX_RESULT_LIMIT)
     return limit, offset, None
+
+
+def parse_max_entries_per_day(request):
+    """Parse and validate the optional /history max_entries_per_day override.
+
+    Returns `(value, error_response)`; `value` is None (caller falls back to
+    the HISTORY_ENTRIES_PER_DAY_PAGE default) when the param is absent.
+    Clamped to MAX_RESULT_LIMIT — the same ceiling `parse_limit_offset` uses
+    — so this can't reintroduce the unbounded per-day response #1004 fixed.
+    """
+    raw_value = request.GET.get("max_entries_per_day")
+    if raw_value in (None, ""):
+        return None, None
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None, Response(
+            {"detail": "Invalid max_entries_per_day parameter"},
+            status=HTTP.BAD_REQUEST,
+        )
+    if value <= 0:
+        return None, Response(
+            {"detail": "max_entries_per_day must be >0"},
+            status=HTTP.BAD_REQUEST,
+        )
+    return min(value, MAX_RESULT_LIMIT), None
 
 
 def parse_status_param(status):
