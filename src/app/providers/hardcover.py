@@ -6,7 +6,7 @@ from django.core.cache import cache
 
 from app import helpers
 from app.models import MediaTypes, Sources
-from app.providers import services
+from app.providers import credentials, services
 from app.public_reviews import ProviderReviewPage
 
 logger = logging.getLogger(__name__)
@@ -116,20 +116,35 @@ def public_reviews(media_id, user=None, *, page=1, page_size=PUBLIC_REVIEW_LIMIT
     return ProviderReviewPage(**result)
 
 
+def enabled() -> bool:
+    """Return whether an instance-wide Hardcover token is configured.
+
+    Background jobs have no user context and must never spend a member's
+    personal token, so they gate on this rather than on a per-user key.
+    """
+    return bool(credentials.get("hardcover", "api_key"))
+
+
 def _resolve_api_token(user):
     """Return the user's personal Hardcover token if set, else the instance default."""
-    if user is not None and getattr(user, "hardcover_api_key", None):
-        from integrations.imports.helpers import decrypt
-
-        return decrypt(user.hardcover_api_key)
-    return None
+    return credentials.get("hardcover", "api_key", user=user)
 
 
 def _authorization_header(user=None):
-    """Return the Hardcover auth header, normalizing raw tokens."""
-    api_token = (_resolve_api_token(user) or settings.HARDCOVER_API or "").strip()
+    """Return the Hardcover auth header, normalizing raw tokens.
+
+    Hardcover ships no default token (#1025), so an unconfigured instance would
+    otherwise send an empty Authorization header and spend a request earning a
+    401. Fail before the network call instead.
+    """
+    api_token = (_resolve_api_token(user) or "").strip()
     if not api_token:
-        return api_token
+        logger.warning("Hardcover request skipped: no API token configured")
+        raise services.ProviderAPIError(
+            Sources.HARDCOVER.value,
+            requests.exceptions.RequestException("no Hardcover API token"),
+            "add a Hardcover token in Settings > Metadata",
+        )
     if api_token.lower().startswith("bearer "):
         return api_token
     return f"Bearer {api_token}"
@@ -147,7 +162,7 @@ def handle_error(error):
         raise services.ProviderAPIError(Sources.HARDCOVER.value, error) from json_error
 
     if status_code == requests.codes.unauthorized:
-        details = error_json["error"]
+        details = error_json.get("error")
         raise services.ProviderAPIError(Sources.HARDCOVER.value, error, details)
 
     raise services.ProviderAPIError(Sources.HARDCOVER.value, error)

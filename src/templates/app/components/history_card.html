@@ -1,3 +1,5 @@
+
+{% load i18n %}
 {% load app_tags %}
 {% load user_tags %}
 
@@ -6,7 +8,11 @@
 
 <div class="media-card bg-[var(--color-surface)] rounded-lg overflow-hidden shadow-lg relative {{ card_class }}{% if user.media_card_subtitle_display == 'always' %} media-card-subtitle-always{% endif %}"
      data-media-type="{{ entry.media_type }}"
-     x-data="{ trackOpen: false, historyOpen: false, listsOpen: false }">
+     x-data="{ trackOpen: false, historyOpen: false, listsOpen: false, revealed: false, tapToReveal(e) { if (this.revealed) { if (e.target.closest('button, a, input, select, textarea')) { return; } const link = this.$root.querySelector('.media-card-overlay a[href]') || this.$root.querySelector('a.media-card-title[href]'); if (link) { e.preventDefault(); e.stopPropagation(); link.click(); } return; } if (!window.matchMedia('(pointer: coarse)').matches) { return; } e.preventDefault(); e.stopPropagation(); this.revealed = true; window.dispatchEvent(new CustomEvent('media-card-revealed', { detail: this.$root })); } }"
+     @click.capture="tapToReveal($event)"
+     @media-card-revealed.window="if ($event.detail !== $root) revealed = false"
+           @click.window="if (revealed && !$root.contains($event.target)) revealed = false"
+     :class="revealed ? 'media-card-revealed' : ''">
   <div class="media-card-visual relative">
     {% with entry.item|display_title:user as preferred_entry_title %}
     <a hx-boost="true"
@@ -22,7 +28,7 @@
     {% if entry.status or entry.media_type == MediaTypes.EPISODE.value and history_mode != "release" %}
       {% with status_value=entry.status|default:"Completed" %}
         <div class="media-status-chip absolute top-2 left-2 bg-gray-900/90 text-white text-xs px-2 py-1 rounded-md flex items-center gap-1.5 shadow-md">
-          <span class="sr-only">Status: {{ status_value }}</span>
+          <span class="sr-only">{% blocktranslate trimmed with value_1=status_value %}Status: {{ value_1 }}{% endblocktranslate %}</span>
           <div class="w-4 h-4 {{ status_value|status_color }}" aria-hidden="true">
             {% if status_value == "Completed" %}
               {% include "app/icons/states/completed.svg" with classes="w-full h-full" %}
@@ -49,7 +55,8 @@
 
     {# Hover overlay with history-specific buttons #}
     {% if entry.item and entry.item.media_type %}
-      <div class="media-card-overlay absolute inset-0 flex items-center justify-center opacity-0 hover-tap:opacity-100 transition-opacity duration-200{% if user.clickable_media_cards %} pointer-coarse:hidden{% endif %}">
+      <div class="media-card-overlay absolute inset-0 flex items-center justify-center transition-opacity duration-200{% if user.clickable_media_cards %} pointer-coarse:hidden{% endif %}"
+                :class="revealed ? 'opacity-100 pointer-events-auto media-card-overlay-revealed' : 'opacity-0 pointer-events-none'">
         {# Darkening background layer #}
         <div class="absolute inset-0 bg-black/50 z-0"></div>
         
@@ -62,7 +69,7 @@
             {# Edit Tracking Button #}
             {% if not entry.is_episode_group %}
             <button class="p-2.5 bg-indigo-600 text-white rounded-full hover:bg-indigo-500 hover:scale-110 hover:shadow-[0_0_15px_rgba(99,102,241,0.5)] transition-all duration-200 cursor-pointer"
-                    title="Edit tracking"
+                    title="{% translate "Edit tracking" %}"
                     hx-get="{% media_view_url 'track_modal' entry.item %}"
                     hx-vals='{"return_url": "{{ request.get_full_path|urlencode }}"{% if entry.instance_id %}, "instance_id": "{{ entry.instance_id }}"{% endif %}, "standard_modal": "1"}'
                     hx-target="#{% component_id 'track' entry.item entry.entry_key %}"
@@ -74,7 +81,7 @@
 
             {# Lists Button #}
             <button class="p-2.5 bg-emerald-600 text-white rounded-full hover:bg-emerald-500 hover:scale-110 hover:shadow-[0_0_15px_rgba(16,185,129,0.5)] transition-all duration-200 cursor-pointer"
-                    title="Add to custom lists"
+                    title="{% translate "Add to custom lists" %}"
                     hx-get="{% media_view_url 'lists_modal' entry.item %}"
                     hx-vals='{"return_url": "{{ request.get_full_path|urlencode }}"}'
                     hx-target="#{% component_id 'lists' entry.item entry.entry_key %}"
@@ -85,7 +92,7 @@
 
             {# History View Button #}
             <a class="p-2.5 bg-amber-600 text-white rounded-full hover:bg-amber-500 hover:scale-110 hover:shadow-[0_0_15px_rgba(245,158,11,0.5)] transition-all duration-200 cursor-pointer"
-               title="View your activity history"
+               title="{% translate "View your activity history" %}"
                href="{% url 'history' %}?{% if entry.media_type == MediaTypes.MUSIC.value and entry.album %}album={{ entry.album.id }}{% elif entry.media_type == MediaTypes.PODCAST.value and entry.show %}media_type={{ MediaTypes.PODCAST.value }}&podcast_show={{ entry.show.id }}{% elif entry.media_type == MediaTypes.EPISODE.value %}media_type={{ MediaTypes.TV.value }}&media_id={{ entry.item.media_id|urlencode }}&source={{ entry.item.source|urlencode }}{% if entry.item.season_number %}&season_number={{ entry.item.season_number }}{% endif %}{% else %}media_type={{ entry.media_type }}&media_id={{ entry.item.media_id|urlencode }}&source={{ entry.item.source|urlencode }}{% endif %}{% if entry.media_type == MediaTypes.GAME.value or entry.media_type == MediaTypes.BOARDGAME.value %}&logging_style=sessions{% endif %}">
               {% include "app/icons/history.svg" with classes="w-4 h-4" %}
             </a>
@@ -160,7 +167,7 @@
                   @click.prevent.stop="toggleTooltip()"
                   class="text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors cursor-pointer inline-flex items-center"
                   type="button"
-                  aria-label="Show alternative title">
+                  aria-label="{% translate "Show alternative title" %}">
             {% include "app/icons/info.svg" with classes="w-3.5 h-3.5" %}
           </button>
           <template x-teleport="body">
@@ -194,20 +201,20 @@
     <p class="media-card-year text-xs text-[var(--color-text-muted)] mt-1">
       {# History-specific info: episode label, play count, or timestamp #}
       {% if history_mode == "release" %}
-        <span class="text-[var(--color-link)] font-medium">Released</span>
+        <span class="text-[var(--color-link)] font-medium">{% translate "Released" %}</span>
         <span class="ml-1">{{ entry.played_at_local|user_date_format:user }}</span>
       {% else %}
         {% if entry.progress_display and entry.media_type == MediaTypes.GAME.value or entry.progress_display and entry.media_type == MediaTypes.BOARDGAME.value %}
           <span class="text-[var(--color-link)] font-medium">{{ entry.progress_display }}</span>
           <span class="ml-1">{{ entry.date_range_display }}</span>
         {% elif entry.media_type == MediaTypes.MOVIE.value %}
-          <span class="text-[var(--color-link)] font-medium">{{ entry.play_count|default:1 }} play{{ entry.play_count|default:1|pluralize }}</span>
+          <span class="text-[var(--color-link)] font-medium">{% blocktranslate trimmed with value_1=entry.play_count|default:1 count count=entry.play_count|default:1 %}{{ value_1 }} play{% plural %}{{ value_1 }} plays{% endblocktranslate %}</span>
           <span class="ml-1">{{ entry.played_at_local|user_datetime_format:user }}</span>
         {% elif entry.media_type == MediaTypes.MUSIC.value %}
-          <span class="text-[var(--color-link)] font-medium">{{ entry.play_count|default:1 }} play{{ entry.play_count|default:1|pluralize }}</span>
+          <span class="text-[var(--color-link)] font-medium">{% blocktranslate trimmed with value_1=entry.play_count|default:1 count count=entry.play_count|default:1 %}{{ value_1 }} play{% plural %}{{ value_1 }} plays{% endblocktranslate %}</span>
           <span class="ml-1">{{ entry.time_range_display }}</span>
         {% elif entry.media_type == MediaTypes.PODCAST.value %}
-          <span class="text-[var(--color-link)] font-medium">{{ entry.play_count|default:1 }} play{{ entry.play_count|default:1|pluralize }}</span>
+          <span class="text-[var(--color-link)] font-medium">{% blocktranslate trimmed with value_1=entry.play_count|default:1 count count=entry.play_count|default:1 %}{{ value_1 }} play{% plural %}{{ value_1 }} plays{% endblocktranslate %}</span>
           <span class="ml-1">{{ entry.played_at_local|user_datetime_format:user }}</span>
         {% elif entry.episode_label %}
           <span class="text-[var(--color-link)] font-medium">{{ entry.episode_label }}</span>
@@ -226,21 +233,23 @@
   {% if entry.item and entry.item.media_type and history_mode != "release" %}
     {# Track Modal #}
     <div x-show="trackOpen"
+    @mousedown.self="trackOpen = false"
+         x-cloak
          @keydown.escape.window="trackOpen = false"
          class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div class="modal-max-height overflow-y-auto px-4 md:px-0 relative z-60 w-full"
-           style="width: min(96vw, 72rem);"
-           @click.outside="trackOpen = false">
+           style="width: min(96vw, 72rem);">
         <div id="{% component_id 'track' entry.item entry.entry_key %}"></div>
       </div>
     </div>
 
     {# Lists Modal #}
     <div x-show="listsOpen"
+    @mousedown.self="listsOpen = false"
+         x-cloak
          @keydown.escape.window="listsOpen = false"
          class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div class="w-96 max-h-[90vh] px-4 md:px-0 relative z-60"
-           @click.outside="listsOpen = false">
+      <div class="w-96 max-h-[90vh] px-4 md:px-0 relative z-60">
         <div id="{% component_id 'lists' entry.item entry.entry_key %}"></div>
       </div>
     </div>

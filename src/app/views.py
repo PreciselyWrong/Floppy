@@ -36,6 +36,7 @@ from django.utils.dateparse import parse_date
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
 from django.utils.timezone import datetime
+from django.utils.translation import gettext
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -158,6 +159,7 @@ from app.history_views import (
     _can_use_cached_month_history,
     _filter_cached_history_days,
     _filter_history_by_enabled_media_types,
+    activity_sessions_modal,
     history,
     history_day_fragment,
     history_genres,
@@ -195,6 +197,7 @@ from app.metadata_sync_views import (
     sync_metadata,
     update_item_image,
     update_manual_item_metadata,
+    update_metadata_language_preference,
     update_metadata_provider_preference,
 )
 from app.models import (
@@ -426,8 +429,7 @@ def home(request):
             load_row_offset = 0
 
         # First paint renders only the first group; the rest hydrates via
-        # home_rest_fragment. Row-append (load_row) requests need the full
-        # row set, so they skip the deferral.
+        # home_rest_fragment. Row-append requests build only their target shelf.
         defer_remaining_groups = load_row_id is None
         home_groups = build_home_page_groups(
             request.user,
@@ -435,6 +437,7 @@ def home(request):
             load_row_id=load_row_id,
             load_row_offset=load_row_offset,
             append_only=bool(request.headers.get("HX-Request") and load_row_id),
+            only_row_id=load_row_id if request.headers.get("HX-Request") else None,
             first_group_only=defer_remaining_groups,
         )
 
@@ -830,12 +833,18 @@ def episode_details(
         current_season_instance = None
         episodes_in_db = []
     else:
+        season_library_media_type = (
+            MediaTypes.ANIME.value
+            if parent_media_type == MediaTypes.ANIME.value
+            else None
+        )
         user_seasons = BasicMedia.objects.filter_media_prefetch(
             request.user,
             media_id,
             MediaTypes.SEASON.value,
             source,
             season_number=season_number,
+            library_media_type=season_library_media_type,
         )
         current_season_instance = user_seasons[0] if user_seasons else None
         episodes_in_db = (
@@ -957,17 +966,16 @@ def episode_details(
     )
 
     # Surface the note from the most recent watch that has one, the same way
-    # the movie/season pages do (issue #377).
+    # the movie/season pages do (issue #377). Keep all notes-holding watches
+    # so the notes section can list every watch (see notes_entries).
     notes_entry = None
+    notes_entries = []
     if not public_view:
-        notes_entry = next(
-            (
-                watch
-                for watch in (episode_data or {}).get("history", [])
-                if watch.notes and watch.notes.strip()
-            ),
-            None,
-        )
+        history = (episode_data or {}).get("history", [])
+        notes_entries = [
+            watch for watch in history if watch.notes and watch.notes.strip()
+        ]
+        notes_entry = notes_entries[0] if notes_entries else None
     elif public_notes_view and list_owner:
         public_user_medias = list(
             BasicMedia.objects.filter_media_prefetch(
@@ -982,19 +990,16 @@ def episode_details(
                 ),
             ),
         )
-        notes_entry = next(
-            (
-                entry
-                for entry in public_user_medias
-                if entry.notes and entry.notes.strip()
-            ),
-            None,
-        )
+        notes_entries = [
+            entry for entry in public_user_medias if entry.notes and entry.notes.strip()
+        ]
+        notes_entry = notes_entries[0] if notes_entries else None
 
     context = {
         "user": request.user,
         "episode": episode_data,
         "notes_entry": notes_entry,
+        "notes_entries": notes_entries,
         "episode_notes_modal_target_id": (
             f"episode-notes-modal-{source}-{media_id}-{season_number}-{episode_number}"
         ),
@@ -1184,13 +1189,13 @@ def music_bulk_save(request):
             response["HX-Trigger"] = json.dumps(
                 {
                     "showToast": {
-                        "message": "Start and end dates are required.",
+                        "message": gettext("Start and end dates are required."),
                         "type": "error",
                     },
                 }
             )
             return response
-        messages.error(request, "Start and end dates are required.")
+        messages.error(request, gettext("Start and end dates are required."))
         return redirect(request.POST.get("return_url") or "/")
 
     try:
@@ -1204,13 +1209,13 @@ def music_bulk_save(request):
             response["HX-Trigger"] = json.dumps(
                 {
                     "showToast": {
-                        "message": "Invalid track range.",
+                        "message": gettext("Invalid track range."),
                         "type": "error",
                     },
                 }
             )
             return response
-        messages.error(request, "Invalid track range.")
+        messages.error(request, gettext("Invalid track range."))
         return redirect(request.POST.get("return_url") or "/")
 
     track_count = max(int(request.POST.get("episode_count") or 0), 0)
@@ -1257,7 +1262,10 @@ def music_bulk_save(request):
         )
         return response
 
-    messages.info(request, f"Adding plays to {track_count} tracks.")
+    messages.info(
+        request,
+        gettext("Adding plays to %(value_1)s tracks.") % {"value_1": track_count},
+    )
     return redirect(request.POST.get("return_url") or "/")
 
 
@@ -1288,7 +1296,11 @@ def create_entry(request):
             media_name += f" - Episode {form.cleaned_data['episode_number']}"
 
         logger.exception("%s already exists in the database.", media_name)
-        messages.error(request, f"{media_name} already exists in the database.")
+        messages.error(
+            request,
+            gettext("%(value_1)s already exists in the database.")
+            % {"value_1": media_name},
+        )
         return redirect("create_entry")
 
     # Prepare and validate the media form
@@ -1319,7 +1331,7 @@ def create_entry(request):
     media_form.save()
 
     # Success message
-    msg = f"{item} added successfully."
+    msg = gettext("%(value_1)s added successfully.") % {"value_1": item}
     messages.success(request, msg)
     logger.info(msg)
 
@@ -1957,9 +1969,9 @@ def cache_status(request):
         refresh_scheduled = False
         if cache_entry:
             built_at = cache_entry.get("built_at")
-            history_version = cache_entry.get("history_version")
-            current_version = statistics_cache._get_history_version(request.user.id)
-            is_stale = False
+            is_stale = statistics_cache.is_statistics_cache_stale(
+                cache_entry, request.user.id
+            )
             recently_built = False
             age = None
             if built_at:
@@ -1967,10 +1979,6 @@ def cache_status(request):
                 # Consider cache "recently built" if it was built in the last 60 seconds
                 # This helps catch refreshes that completed just before or during page load
                 recently_built = age < timedelta(seconds=60)
-            if history_version:
-                is_stale = history_version != current_version
-            elif age:
-                is_stale = age > statistics_cache.STATISTICS_STALE_AFTER
 
             if not is_stale and refresh_lock:
                 cache.delete(refresh_lock_key)
@@ -2249,6 +2257,7 @@ __all__ = [
     "_track_modal_release_runtime_minutes",
     "_tracked_media_entries",
     "_user_tags_for_item",
+    "activity_sessions_modal",
     "album_delete",
     "album_detail",
     "album_save",
@@ -2384,6 +2393,7 @@ __all__ = [
     "update_item_image",
     "update_manual_item_metadata",
     "update_media_score",
+    "update_metadata_language_preference",
     "update_metadata_provider_preference",
     "update_statistics_compare_mode",
     "update_statistics_preferences",

@@ -21,7 +21,7 @@ from app.models import (
     Sources,
     Status,
 )
-from app.providers import services
+from app.providers import credentials, services
 from integrations import anime_mapping
 
 GROUPED_ANIME_PROVIDERS = {
@@ -63,21 +63,24 @@ class MetadataProviderOption:
     label: str
 
 
-def provider_is_enabled(provider: str) -> bool:
-    """Return whether a provider is configured for live use."""
-    if provider == Sources.TVDB.value:
-        return bool(settings.TVDB_API_KEY)
-    if provider == Sources.GOOGLEBOOKS.value:
-        return bool(settings.GOOGLE_BOOKS_API_KEY)
-    return True
+def provider_is_enabled(provider: str, user=None) -> bool:
+    """Return whether a provider is configured for live use.
+
+    ``user`` opts a provider back in when the credential can be personal rather
+    than instance-wide; callers with no user get the instance-level answer.
+    """
+    spec = credentials.get_spec(provider)
+    if spec is None:
+        return True
+    return credentials.is_configured(provider, user)
 
 
-def available_metadata_sources(media_type: str) -> list[Sources]:
+def available_metadata_sources(media_type: str, user=None) -> list[Sources]:
     """Return configured metadata sources for a route media type."""
     candidates = []
     for source in config.get_sources(media_type) or []:
         provider = source.value if isinstance(source, Sources) else str(source)
-        if provider_is_enabled(provider):
+        if provider_is_enabled(provider, user):
             candidates.append(
                 source if isinstance(source, Sources) else Sources(provider),
             )
@@ -146,15 +149,39 @@ def metadata_default_source(user, media_type: str) -> str:
             provider = getattr(user, "anime_metadata_source_default", None)
 
     provider = provider or config.get_default_source_name(media_type).value
-    if provider_is_enabled(provider):
+    if provider_is_enabled(provider, user):
         return provider
 
-    available = available_metadata_sources(media_type)
+    available = available_metadata_sources(media_type, user)
+
+    if media_type == MediaTypes.ANIME.value and provider in GROUPED_ANIME_PROVIDERS:
+        # For anime the provider decides the library's storage shape, not just
+        # which API supplies the metadata. Anime's source order is
+        # [MAL, TMDB, TVDB], so the generic "first available" fallback below
+        # would send a user who picked TVDB-but-has-no-API-key to flat MAL
+        # rows, silently changing the shape of their library. Keep them on a
+        # grouped provider whenever one is usable.
+        grouped = [
+            source
+            for source in available
+            if source.value in GROUPED_ANIME_PROVIDERS
+        ]
+        if grouped:
+            return grouped[0].value
+
     return available[0].value if available else provider
 
 
-def metadata_language_default(user) -> str:
-    """Return the effective preferred metadata language for a user."""
+def metadata_language_default(user, item: Item | None = None) -> str:
+    """Return the effective preferred metadata language for a user/item."""
+    if item is not None and user and getattr(user, "is_authenticated", False):
+        preference = MetadataProviderPreference.objects.filter(
+            user=user,
+            item=item,
+        ).only("language").first()
+        if preference and preference.language:
+            return preference.language
+
     language = None
     if user and getattr(user, "is_authenticated", False):
         language = getattr(user, "metadata_language", None) or None
@@ -206,6 +233,106 @@ def is_grouped_anime_route(
         )
         == MediaTypes.ANIME.value
     )
+
+
+def anime_library_visibility(user) -> tuple[bool, bool]:
+    """Return whether grouped anime shows in the Anime and TV libraries.
+
+    Grouped anime is one Item (a TV row in the anime bucket). ``anime_library_mode``
+    decides which library surfaces it, so every list, search and filter path must
+    read it the same way or the same query returns different rows depending on
+    which code path served it.
+
+    Returns ``(include_in_anime, include_in_tv)``.
+    """
+    mode = getattr(user, "anime_library_mode", MediaTypes.ANIME.value)
+    return (
+        mode in {MediaTypes.ANIME.value, "both"},
+        mode in {MediaTypes.TV.value, "both"},
+    )
+
+
+def prefers_grouped_anime(user) -> bool:
+    """Return whether this user's Anime library stores TV-shaped grouped rows.
+
+    The Anime library's storage shape follows the provider the user chose for
+    it: MAL keeps flat per-cour Anime rows, TMDB/TVDB keep TV-shaped grouped
+    rows. Read through `metadata_default_source`, which falls back when the
+    chosen provider is disabled (e.g. TVDB with no API key).
+    """
+    if not getattr(user, "anime_enabled", False):
+        return False
+    return (
+        metadata_default_source(user, MediaTypes.ANIME.value)
+        in GROUPED_ANIME_PROVIDERS
+    )
+
+
+def find_existing_anime_home(user, tmdb_id=None, tvdb_id=None):
+    """Return the user's existing Anime-library home for this show.
+
+    Routing must be sticky. Once a show lives in the Anime library, every later
+    episode belongs there too - whether or not the grouped-anime snapshot
+    happened to load on this request, and whether or not the per-season mapping
+    covers this particular episode. Without this the same show oscillates
+    between libraries and accrues progress in both (discussion #967).
+
+    The `ItemProviderLink` table is global by design - it caches a content fact,
+    not user state - so the link lookup is unscoped while the Item queries are
+    scoped to this user's tracking rows.
+
+    Returns ``("grouped", item)`` for anime stored on TV rows, ``("flat", item)``
+    for a MAL-sourced Anime row, or ``None``.
+    """
+    from django.db.models import Q
+
+    identities = []
+    if tmdb_id:
+        identities.append((Sources.TMDB.value, str(tmdb_id)))
+    if tvdb_id:
+        identities.append((Sources.TVDB.value, str(tvdb_id)))
+    if not identities:
+        return None
+
+    link_filter = Q()
+    direct_filter = Q()
+    for provider, provider_media_id in identities:
+        link_filter |= Q(provider=provider, provider_media_id=provider_media_id)
+        direct_filter |= Q(source=provider, media_id=provider_media_id)
+
+    linked_item_ids = ItemProviderLink.objects.filter(
+        link_filter,
+        provider_media_type=MediaTypes.TV.value,
+    ).values("item_id")
+
+    # Grouped anime: a TV row this user tracks, sitting in the anime bucket.
+    grouped = (
+        Item.objects.filter(
+            Q(id__in=linked_item_ids) | direct_filter,
+            media_type=MediaTypes.TV.value,
+            library_media_type=MediaTypes.ANIME.value,
+            tv__user=user,
+        )
+        .order_by("id")
+        .first()
+    )
+    if grouped:
+        return "grouped", grouped
+
+    # Flat MAL: an Anime row this user tracks that is linked to this show.
+    flat = (
+        Item.objects.filter(
+            media_type=MediaTypes.ANIME.value,
+            anime__user=user,
+            id__in=linked_item_ids,
+        )
+        .order_by("id")
+        .first()
+    )
+    if flat:
+        return "flat", flat
+
+    return None
 
 
 def item_uses_grouped_anime(item: Item | None) -> bool:
@@ -930,11 +1057,17 @@ def _grouped_preview_target(
     ):
         return None
 
+    # Community mapping entries are TVDB-first: most carry a tvdb_id but no
+    # tmdb_*id field at all. Require an exact match when the entry *does*
+    # carry this provider's ID (a real conflict), but don't reject an entry
+    # just because it's silent on this provider - its season/episode-offset
+    # data is still valid, since _provider_season_number/_episode_offset
+    # already fall back to the TVDB fields for TMDB.
     mapping_entries = anime_mapping.find_entries_for_mal_id(media_id)
     matching_entries = [
         entry
         for entry in mapping_entries
-        if _provider_series_id(entry, provider) == str(provider_media_id)
+        if _provider_series_id(entry, provider) in (None, str(provider_media_id))
     ]
     if not matching_entries:
         return None
@@ -1089,7 +1222,7 @@ def resolve_detail_metadata(
                 provider_route_media_type(route_media_type, provider),
                 provider_media_id,
                 provider,
-                language=metadata_language_default(user),
+                language=metadata_language_default(user, item),
             )
             header_metadata = _overlay_header_metadata(
                 base_metadata,
@@ -1113,7 +1246,7 @@ def resolve_detail_metadata(
                         for season in related_seasons
                         if season.get("season_number") is not None
                     ],
-                    language=metadata_language_default(user),
+                    language=metadata_language_default(user, item),
                 )
                 grouped_preview = _enrich_grouped_preview(grouped_preview)
                 grouped_preview_target = _grouped_preview_target(

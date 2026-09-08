@@ -303,6 +303,71 @@ class EventManagerTests(TestCase):
             limited_events,
         )  # Past event, but filtered by active status
 
+    def test_get_user_events_hides_dropped_season_and_later(self):
+        """A dropped/paused season hides itself and every later season (regression for #1005 perf rewrite)."""
+        dropped_tv_item = Item.objects.create(
+            media_id="9999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Dropped Partway Show",
+        )
+        TV.objects.create(
+            user=self.user,
+            item=dropped_tv_item,
+            status=Status.IN_PROGRESS.value,
+        )
+
+        season1_item = Item.objects.create(
+            media_id="9999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Dropped Partway Show",
+            season_number=1,
+        )
+        season2_item = Item.objects.create(
+            media_id="9999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Dropped Partway Show",
+            season_number=2,
+        )
+        season3_item = Item.objects.create(
+            media_id="9999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Dropped Partway Show",
+            season_number=3,
+        )
+        Season.objects.create(
+            user=self.user,
+            item=season2_item,
+            status=Status.DROPPED.value,
+        )
+
+        season1_event = Event.objects.create(
+            item=season1_item,
+            content_number=1,
+            datetime=self.tomorrow,
+        )
+        season2_event = Event.objects.create(
+            item=season2_item,
+            content_number=1,
+            datetime=self.tomorrow,
+        )
+        season3_event = Event.objects.create(
+            item=season3_item,
+            content_number=1,
+            datetime=self.tomorrow,
+        )
+
+        today = self.base_date.date()
+        next_week = today + datetime.timedelta(days=7)
+        events = Event.objects.get_user_events(self.user, today, next_week)
+
+        self.assertIn(season1_event, events)
+        self.assertNotIn(season2_event, events)
+        self.assertNotIn(season3_event, events)
+
 
 class EventManagerCrossProviderDedupTests(TestCase):
     """The calendar must not show the same real episode twice (#639)."""
@@ -457,6 +522,80 @@ class EventManagerCrossProviderDedupTests(TestCase):
 
         self.assertCountEqual(list(events), [remake_event, tvdb_event])
 
+    def test_get_user_events_hides_absolute_numbered_show_seasons(self):
+        """TMDB absolute numbering vs TVDB split seasons must fully dedupe (#1007).
+
+        TMDB puts every episode under one absolute "Season 1"; TVDB splits the
+        same show into Seasons 1-2. Season-number matching alone only hides
+        TVDB Season 1 (leaving TVDB Season 2 to duplicate the calendar), so
+        the show-level dedupe in `_active_tv_show_media_ids` must exclude the
+        non-preferred show's media_id before its seasons are ever queried.
+        """
+        tvdb_id = "81189"
+        tmdb_show = Item.objects.create(
+            title="Re:Zero",
+            media_id="1396",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+            image="",
+            provider_external_ids={"tvdb_id": tvdb_id},
+        )
+        tvdb_show = Item.objects.create(
+            title="Re:Zero",
+            media_id=tvdb_id,
+            media_type=MediaTypes.TV.value,
+            source=Sources.TVDB.value,
+            image="",
+        )
+        TV.objects.create(
+            item=tmdb_show,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        TV.objects.create(
+            item=tvdb_show,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        tmdb_season1 = Item.objects.create(
+            title="Re:Zero",
+            media_id="1396",
+            media_type=MediaTypes.SEASON.value,
+            source=Sources.TMDB.value,
+            image="",
+            season_number=1,
+        )
+        tvdb_season1 = Item.objects.create(
+            title="Re:Zero",
+            media_id=tvdb_id,
+            media_type=MediaTypes.SEASON.value,
+            source=Sources.TVDB.value,
+            image="",
+            season_number=1,
+        )
+        tvdb_season2 = Item.objects.create(
+            title="Re:Zero",
+            media_id=tvdb_id,
+            media_type=MediaTypes.SEASON.value,
+            source=Sources.TVDB.value,
+            image="",
+            season_number=2,
+        )
+        self.user.tv_metadata_source_default = Sources.TMDB.value
+        self.user.save(update_fields=["tv_metadata_source_default"])
+        when = timezone.now() + datetime.timedelta(days=1)
+        tmdb_event = Event.objects.create(
+            item=tmdb_season1,
+            content_number=1,
+            datetime=when,
+        )
+        Event.objects.create(item=tvdb_season1, content_number=1, datetime=when)
+        Event.objects.create(item=tvdb_season2, content_number=1, datetime=when)
+
+        events = Event.objects.get_user_events(self.user, when.date(), when.date())
+
+        self.assertEqual(list(events), [tmdb_event])
+
     def test_get_user_events_stays_a_queryset_for_media_type_filtering(self):
         """download_calendar chains a media-type filter after get_user_events."""
         tmdb_season, _tvdb_season = self._tv_pair()
@@ -605,3 +744,57 @@ class EventManagerCrossBucketAnimeDedupTests(TestCase):
             events = Event.objects.get_user_events(self.user, when.date(), when.date())
 
         self.assertCountEqual(list(events), [anime_event, season_event])
+
+    def test_hides_anime_duplicate_via_title_fallback_when_mapping_misses(self):
+        anime_item = Item.objects.create(
+            title="Re:Zero Season 4",
+            media_id="63830",
+            media_type=MediaTypes.ANIME.value,
+            source=Sources.MAL.value,
+            image="",
+        )
+        Anime.objects.create(
+            item=anime_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        tv_item = Item.objects.create(
+            title="Re:Zero",
+            media_id="1396",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+            image="",
+        )
+        season_item = Item.objects.create(
+            title="Re:Zero - Season 4",
+            media_id="1396",
+            media_type=MediaTypes.SEASON.value,
+            source=Sources.TMDB.value,
+            image="",
+            season_number=4,
+        )
+        TV.objects.create(
+            item=tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        when = timezone.now() + datetime.timedelta(days=1)
+        anime_event = Event.objects.create(
+            item=anime_item,
+            content_number=1,
+            datetime=when,
+        )
+        season_event = Event.objects.create(
+            item=season_item,
+            content_number=1,
+            datetime=when,
+        )
+
+        with mock.patch(
+            "events.models.resolve_provider_series_id",
+            return_value=None,
+        ):
+            events = Event.objects.get_user_events(self.user, when.date(), when.date())
+
+        self.assertEqual(list(events), [season_event])
+        self.assertNotIn(anime_event, events)

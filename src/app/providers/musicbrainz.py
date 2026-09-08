@@ -14,7 +14,7 @@ from django.core.cache import cache
 from app import helpers
 from app.log_safety import exception_summary
 from app.models import MediaTypes, Sources
-from app.providers import services
+from app.providers import credentials, services
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ def get_lastfm_bio(mbid):
     Returns the bio text, or None if unavailable (no API key configured,
     artist not found, empty bio, or a request error).
     """
-    api_key = getattr(settings, "LASTFM_API_KEY", None)
+    api_key = credentials.get("lastfm", "api_key")
     if not api_key or not mbid:
         return None
 
@@ -1337,16 +1337,25 @@ def get_release_for_group(release_group_id):
         params = {
             "release-group": release_group_id,
             "status": "official",
-            "limit": 5,
+            "inc": "media",
+            "limit": 25,
         }
 
         response = _mb_request("release", params)
         releases = response.get("releases", [])
 
         if releases:
-            # Prefer releases with media/tracks info
-            # Just pick the first official release
-            release_id = releases[0].get("id")
+            # A release group can contain many pressings with differing
+            # tracklists (e.g. a partial vinyl reissue alongside the full
+            # digital release) - prefer the one with the most tracks rather
+            # than an arbitrary browse-order pick.
+            best = max(
+                releases,
+                key=lambda r: _release_summary(r, include_image=False)[
+                    "track_count"
+                ],
+            )
+            release_id = best.get("id")
             cache.set(cache_key, release_id, 60 * 60 * 24 * 7)
             return release_id
 
@@ -1357,14 +1366,21 @@ def get_release_for_group(release_group_id):
         )
         params = {
             "release-group": release_group_id,
-            "limit": 5,
+            "inc": "media",
+            "limit": 25,
         }
 
         response = _mb_request("release", params)
         releases = response.get("releases", [])
 
         if releases:
-            release_id = releases[0].get("id")
+            best = max(
+                releases,
+                key=lambda r: _release_summary(r, include_image=False)[
+                    "track_count"
+                ],
+            )
+            release_id = best.get("id")
             logger.info(
                 "Found non-official release %s for release_group %s",
                 release_id,

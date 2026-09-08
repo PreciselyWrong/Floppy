@@ -9,6 +9,16 @@ urlpatterns = [
         views.import_trakt_private,
         name="import_trakt_private",
     ),
+    path(
+        "import/trakt/device",
+        views.trakt_device_verify,
+        name="trakt_device_verify",
+    ),
+    path(
+        "import/trakt/device/poll",
+        views.trakt_device_poll,
+        name="trakt_device_poll",
+    ),
     path("import/trakt/public", views.import_trakt_public, name="import_trakt_public"),
     path(
         "import/trakt/export",
@@ -31,6 +41,11 @@ urlpatterns = [
         name="plex_disable_watchlist",
     ),
     path("import/plex", views.import_plex, name="import_plex"),
+    path(
+        "import/plex/cover/<str:token>",
+        views.plex_cover,
+        name="plex_cover",
+    ),
     path("import/simkl-oauth", views.simkl_oauth, name="simkl_oauth"),
     path(
         "import/simkl_private",
@@ -51,6 +66,7 @@ urlpatterns = [
     ),
     path("import/kitsu", views.import_kitsu, name="import_kitsu"),
     path("import/yamtrack", views.import_yamtrack, name="import_yamtrack"),
+    path("import/clz", views.import_clz, name="import_clz"),
     path("import/hltb", views.import_hltb, name="import_hltb"),
     path("import/grouvee", views.import_grouvee, name="import_grouvee"),
     path("import/steam", views.import_steam, name="import_steam"),
@@ -74,6 +90,7 @@ urlpatterns = [
     path("import/goodreads", views.import_goodreads, name="import_goodreads"),
     path("import/hardcover", views.import_hardcover, name="import_hardcover"),
     path("import/storygraph", views.import_storygraph, name="import_storygraph"),
+    path("import/tvtime", views.import_tvtime, name="import_tvtime"),
     path(
         "import/audiobookshelf/connect",
         views.audiobookshelf_connect,
@@ -109,6 +126,22 @@ urlpatterns = [
         name="storyteller_disconnect",
     ),
     path("import/storyteller", views.import_storyteller, name="import_storyteller"),
+    path(
+        "import/koreader/connect",
+        views.koreader_connect,
+        name="koreader_connect",
+    ),
+    path(
+        "import/koreader/disconnect",
+        views.koreader_disconnect,
+        name="koreader_disconnect",
+    ),
+    path(
+        "import/koreader/settings",
+        views.koreader_settings,
+        name="koreader_settings",
+    ),
+    path("import/koreader", views.import_koreader, name="import_koreader"),
     path("import/stremio/connect", views.stremio_connect, name="stremio_connect"),
     path(
         "import/stremio/disconnect", views.stremio_disconnect, name="stremio_disconnect"
@@ -199,16 +232,44 @@ urlpatterns = [
         views.stremio_addon_manifest,
         name="stremio_addon_manifest",
     ),
+    path(
+        "stremio-addon/<str:token>/configure",
+        views.stremio_addon_configure,
+        name="stremio_addon_configure",
+    ),
+    path(
+        "stremio-addon/<str:token>/c/<str:config>/configure",
+        views.stremio_addon_configure,
+        name="stremio_addon_configure_configured",
+    ),
+    path(
+        "stremio-addon/<str:token>/c/<str:config>/manifest.json",
+        views.stremio_addon_manifest,
+        name="stremio_addon_manifest_configured",
+    ),
+    re_path(
+        r"^stremio-addon/(?P<token>[^/]+)/c/(?P<config>[^/]+)/catalog/"
+        r"(?P<media_type>movie|series)/"
+        r"(?P<catalog_id>[^/]+?)(?:/(?P<extra>[^/]*))?\.json$",
+        views.stremio_addon_catalog,
+        name="stremio_addon_catalog_configured",
+    ),
+    re_path(
+        r"^stremio-addon/(?P<token>[^/]+)/c/(?P<config>[^/]+)/subtitles/"
+        r"(?P<media_type>movie|series)/(?P<media_id>[^/]+?)(?:/[^/]*)?\.json$",
+        views.stremio_addon_subtitles,
+        name="stremio_addon_subtitles_configured",
+    ),
     re_path(
         r"^stremio-addon/(?P<token>[^/]+)/catalog/"
         r"(?P<media_type>movie|series)/"
-        r"(?P<catalog_id>[^/]+?)(?:/(?P<extra>[^/]*))?\.json$",
+        r"(?P<catalog_id>[^/]+?)(?:/(?P<extra>.*))?\.json$",
         views.stremio_addon_catalog,
         name="stremio_addon_catalog",
     ),
     re_path(
         r"^stremio-addon/(?P<token>[^/]+)/subtitles/"
-        r"(?P<media_type>movie|series)/(?P<media_id>[^/]+?)(?:/[^/]*)?\.json$",
+        r"(?P<media_type>movie|series)/(?P<media_id>[^/]+?)(?:/.*)?\.json$",
         views.stremio_addon_subtitles,
         name="stremio_addon_subtitles",
     ),

@@ -8,7 +8,9 @@ from django.apps import apps
 from django.conf import settings
 from django.contrib.auth.decorators import login_not_required
 from django.core.cache import cache
+from django.http import HttpResponse
 from django.shortcuts import render
+from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
@@ -51,6 +53,7 @@ from app.detail_builders import (
     _build_trakt_popularity_context,
     enrich_season_cards,
 )
+from app.detail_related import enrich_detail_related_cards, enrich_detail_seasons
 from app.log_safety import exception_summary
 from app.media_list_views import _collect_reading_activity_day_keys
 from app.metadata_sync_views import _build_flat_anime_episode_preview
@@ -188,11 +191,20 @@ def media_details(
 ):
     """Return the details page for a media item."""
     if request.GET.get("fragment") == DETAIL_CAROUSEL_FRAGMENT:
-        return render(
-            request,
+        # .strip() matters: an empty carousel must render as a truly empty
+        # string, not whitespace, so input.css's #detail-carousel-wrap:not(:empty)
+        # rule (a whitespace-only text node still counts as a child for :empty)
+        # correctly falls back to the non-carousel layout.
+        html = render_to_string(
             "app/components/detail_carousel_fragment.html",
-            {"carousel": carousel_media.resolve_carousel_media(media_type, source, media_id)},
-        )
+            {
+                "carousel": carousel_media.resolve_carousel_media(
+                    media_type, source, media_id
+                )
+            },
+            request=request,
+        ).strip()
+        return HttpResponse(html)
 
     detail_view_started_at = time.perf_counter()
     carousel_supported = carousel_media.carousel_supported(
@@ -288,6 +300,7 @@ def media_details(
         Sources.AUDIOBOOKSHELF.value,
     }:
         from app.models import PodcastEpisode, PodcastShow, PodcastShowTracker
+        from app.providers.services import _podcast_external_links
 
         # Check if this is a show (podcast_uuid) or an episode (episode_uuid)
         show = PodcastShow.objects.filter(podcast_uuid=media_id).first()
@@ -338,82 +351,17 @@ def media_details(
                 else None
             )
 
-            # If show has RSS feed, check if we need to fetch more episodes
-            # This ensures we get the full episode list even if initial enrichment only got partial list
+            # Reconcile the catalog against the feed: pick up episodes
+            # published since the last visit, and backfill website_url on the
+            # ones already stored, which is the only path that repairs rows
+            # created before podcast website links existed (issue #1014).
             if show.rss_feed_url and not public_view:
-                try:
-                    import hashlib
+                from app.fork_services_podcast import refresh_show_from_rss
 
-                    from integrations import podcast_rss
-
-                    # Fetch all episodes from RSS to see what's available
-                    episodes_data = podcast_rss.fetch_episodes_from_rss(
-                        show.rss_feed_url, limit=None
-                    )
-
-                    # Get existing episode UUIDs
-                    existing_uuids = set(
-                        PodcastEpisode.objects.filter(show=show).values_list(
-                            "episode_uuid", flat=True
-                        ),
-                    )
-
-                    # Create any missing episodes
-                    new_episodes_count = 0
-                    for episode_data in episodes_data:
-                        episode_uuid = episode_data.get("guid")
-                        if not episode_uuid:
-                            uuid_str = f"{episode_data.get('title', '')}{episode_data.get('published', '')}"
-                            episode_uuid = hashlib.md5(
-                                uuid_str.encode(), usedforsecurity=False
-                            ).hexdigest()[:36]
-
-                        if episode_uuid in existing_uuids:
-                            continue
-
-                        # Check for a match within this show by title + date
-                        episode = None
-                        if episode_data.get("title") and episode_data.get("published"):
-                            episode = PodcastEpisode.objects.filter(
-                                show=show,
-                                title__iexact=episode_data["title"].strip(),
-                                published__date=episode_data["published"].date(),
-                            ).first()
-
-                        if not episode:
-                            try:
-                                PodcastEpisode.objects.create(
-                                    show=show,
-                                    episode_uuid=episode_uuid,
-                                    title=episode_data.get("title", "Unknown Episode"),
-                                    published=episode_data.get("published"),
-                                    duration=episode_data.get("duration"),
-                                    audio_url=episode_data.get("audio_url", ""),
-                                    episode_number=episode_data.get("episode_number"),
-                                    season_number=episode_data.get("season_number"),
-                                )
-                                new_episodes_count += 1
-                                existing_uuids.add(episode_uuid)
-                            except Exception:
-                                logger.debug(
-                                    "Skipping duplicate episode UUID %s for show %s",
-                                    episode_uuid,
-                                    show.title,
-                                )
-
-                    if new_episodes_count > 0:
-                        logger.info(
-                            "Fetched %d additional episodes for show %s (ID: %d)",
-                            new_episodes_count,
-                            show.title,
-                            show.id,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to refresh episode list from RSS feed for show %s: %s",
-                        show.title,
-                        exception_summary(e),
-                    )
+                _best_effort_detail_followup(
+                    lambda: refresh_show_from_rss(show),
+                    operation_name="podcast_show_rss_refresh",
+                )
 
             # Get all episodes for this show, ordered by published date (newest first)
             # Use Coalesce to handle None published dates (put them at the end)
@@ -713,6 +661,7 @@ def media_details(
                         "air_date": episode_obj.published,
                         "runtime": duration_str,
                         "overview": "",  # Podcast episodes don't have descriptions from API
+                        "website_url": episode_obj.website_url,
                         "history": episode_history,
                         "media": episode_media,
                         "item": episode_item,
@@ -739,7 +688,9 @@ def media_details(
                 "details": {
                     "author": show.author,
                     "language": show.language,
+                    "website_url": show.website_url,
                 },
+                "external_links": _podcast_external_links(show),
                 "episodes": episode_list,  # Use episodes key like TV seasons
             }
             media_metadata.setdefault("source_url", None)
@@ -813,6 +764,14 @@ def media_details(
                 "has_more": has_more,  # For fragment compatibility
                 "next_page": next_page,
                 "show_id": show.id,  # For API endpoint
+                # The show's website belongs in the same links popover every
+                # other detail page uses, rather than a podcast-only widget.
+                "detail_link_sections": _build_detail_link_sections(
+                    media_metadata,
+                    media_type,
+                    source,
+                    source,
+                ),
             }
             return render(request, "app/media_details.html", context)
 
@@ -866,14 +825,17 @@ def media_details(
         media_metadata = stored_metadata_fallback(detail_item)
     else:
         try:
-            media_metadata = services.get_media_metadata(
-                media_type,
-                media_id,
-                source,
-                language=metadata_resolution.metadata_language_default(request.user),
-                user=request.user,
-                **metadata_kwargs,
-            )
+            with services.interactive_request_scope():
+                media_metadata = services.get_media_metadata(
+                    media_type,
+                    media_id,
+                    source,
+                    language=metadata_resolution.metadata_language_default(
+                        request.user, detail_item
+                    ),
+                    user=request.user,
+                    **metadata_kwargs,
+                )
         except services.ProviderAPIError:
             if detail_item is None:
                 raise
@@ -938,7 +900,9 @@ def media_details(
             media_type,
             media_id,
             source,
-            language=metadata_resolution.metadata_language_default(request.user),
+            language=metadata_resolution.metadata_language_default(
+                request.user, detail_item
+            ),
             user=request.user,
         )
         if isinstance(media_metadata, dict):
@@ -958,7 +922,9 @@ def media_details(
             media_type,
             media_id,
             source,
-            language=metadata_resolution.metadata_language_default(request.user),
+            language=metadata_resolution.metadata_language_default(
+                request.user, detail_item
+            ),
             user=request.user,
         )
         if isinstance(media_metadata, dict):
@@ -1384,124 +1350,14 @@ def media_details(
         media_metadata,
         dict,
     ):
-        details = media_metadata.get("details")
-        if not isinstance(details, dict):
-            details = {}
-            media_metadata["details"] = details
-
-        related = media_metadata.setdefault("related", {})
-        seasons = related.setdefault("seasons", [])
-        has_specials = any(season.get("season_number") == 0 for season in seasons)
-        show_title = Item._normalize_title_value(media_metadata.get("title"))
-
-        if (
-            render_secondary_only
-            and source == Sources.TMDB.value
-            and media_metadata.get("tvdb_id")
-            and not has_specials
-        ):
-            try:
-                specials_metadata = services.get_media_metadata(
-                    "tv_with_seasons",
-                    media_id,
-                    source,
-                    [0],
-                    language=metadata_resolution.metadata_language_default(
-                        request.user
-                    ),
-                )
-                if isinstance(specials_metadata, dict) and specials_metadata.get(
-                    "season/0"
-                ):
-                    enriched_related = specials_metadata.get("related") or {}
-                    enriched_seasons = enriched_related.get("seasons")
-                    if isinstance(enriched_seasons, list):
-                        related["seasons"] = enriched_seasons
-                        seasons = enriched_seasons
-            except services.ProviderAPIError:
-                logger.warning(
-                    "Skipping specials enrichment for media_id=%s due to provider API error",
-                    media_id,
-                )
-
-        if (
-            render_secondary_only
-            and seasons
-            and source in {Sources.TMDB.value, Sources.TVDB.value}
-        ):
-            season_numbers = sorted(
-                {
-                    season_number
-                    for season in seasons
-                    for season_number in [season.get("season_number")]
-                    if season_number is not None
-                },
-            )
-            if season_numbers:
-                try:
-                    grouped_season_metadata = services.get_media_metadata(
-                        "tv_with_seasons",
-                        media_id,
-                        source,
-                        season_numbers,
-                        language=metadata_resolution.metadata_language_default(
-                            request.user
-                        ),
-                    )
-                except services.ProviderAPIError:
-                    grouped_season_metadata = None
-                    logger.warning(
-                        "Skipping season card enrichment for media_id=%s due to provider API error",
-                        media_id,
-                    )
-                if isinstance(grouped_season_metadata, dict):
-                    for season in seasons:
-                        season_number = season.get("season_number")
-                        season_payload = grouped_season_metadata.get(
-                            f"season/{season_number}",
-                        )
-                        if not isinstance(season_payload, dict):
-                            continue
-
-                        detailed_title = Item._normalize_title_value(
-                            season_payload.get("season_title"),
-                        )
-                        if detailed_title and detailed_title != show_title:
-                            season["season_title"] = detailed_title
-                        elif season_number == 0:
-                            season["season_title"] = "Specials"
-                        elif season_number is not None:
-                            season["season_title"] = f"Season {season_number}"
-
-                        payload_details = season_payload.get("details") or {}
-                        if season.get("episode_count") in (None, ""):
-                            season["episode_count"] = payload_details.get(
-                                "episodes"
-                            ) or season_payload.get("max_progress")
-                        if season.get("max_progress") in (None, ""):
-                            season["max_progress"] = season_payload.get(
-                                "max_progress",
-                            )
-                        merged_details = dict(season.get("details") or {})
-                        if merged_details.get("episodes") in (None, ""):
-                            merged_details["episodes"] = (
-                                season.get("episode_count")
-                                or payload_details.get("episodes")
-                                or season_payload.get("max_progress")
-                            )
-                        if merged_details.get("first_air_date") in (None, ""):
-                            merged_details["first_air_date"] = payload_details.get(
-                                "first_air_date",
-                            )
-                        season["details"] = merged_details
-                        if season.get("first_air_date") in (None, ""):
-                            season["first_air_date"] = payload_details.get(
-                                "first_air_date",
-                            )
-                        if season.get("image") in (None, "", settings.IMG_NONE):
-                            season["image"] = season_payload.get("image") or season.get(
-                                "image",
-                            )
+        details, seasons = enrich_detail_seasons(
+            media_metadata,
+            media_id=media_id,
+            source=source,
+            user=request.user,
+            detail_item=detail_item,
+            render_secondary_only=render_secondary_only,
+        )
 
         if not details.get("runtime"):
             fallback_runtime = _get_tv_runtime_display_fallback(
@@ -1701,65 +1557,20 @@ def media_details(
     # Enrich related items with user tracking data
     # For public views, use list owner's data if available
     if render_secondary_only and media_metadata.get("related"):
-        for section_name, related_items in media_metadata["related"].items():
-            if related_items:
-                enriched_related_items = helpers.enrich_items_with_user_data(
-                    request,
-                    related_items,
-                    section_name=section_name,
-                    user=list_owner,
-                    library_media_type=(
-                        MediaTypes.ANIME.value
-                        if media_type == MediaTypes.ANIME.value
-                        and section_name == "seasons"
-                        else None
-                    ),
-                )
-                if section_name == "seasons":
-                    for enriched_item, raw_item in zip(
-                        enriched_related_items,
-                        related_items,
-                        strict=False,
-                    ):
-                        if not isinstance(raw_item, dict):
-                            continue
-                        season_title = Item._normalize_title_value(
-                            raw_item.get("season_title"),
-                        )
-                        show_title = Item._normalize_title_value(raw_item.get("title"))
-                        if season_title and season_title != show_title:
-                            enriched_item["card_title"] = season_title
-                            continue
-
-                        season_number = raw_item.get("season_number")
-                        try:
-                            season_number = (
-                                int(season_number)
-                                if season_number is not None
-                                else None
-                            )
-                        except (TypeError, ValueError):
-                            season_number = None
-
-                        if season_number == 0:
-                            enriched_item["card_title"] = "Specials"
-                        elif season_number is not None:
-                            enriched_item["card_title"] = f"Season {season_number}"
-
-                # For anime shows, tag season items so media_url routes to anime season URLs
-                if section_name == "seasons" and media_type == MediaTypes.ANIME.value:
-                    for enriched_item in enriched_related_items:
-                        item_dict = enriched_item.get("item")
-                        if isinstance(item_dict, dict):
-                            item_dict["route_media_type"] = MediaTypes.ANIME.value
-
-                    if getattr(request.user, "show_season_enrichment", True):
-                        enriched_related_items = enrich_season_cards(
-                            enriched_related_items,
-                        )
-                        media_metadata["related"][section_name] = enriched_related_items
-
-                media_metadata["related"][section_name] = enriched_related_items
+        enrich_detail_related_cards(
+            request,
+            media_metadata,
+            media_type=media_type,
+            tracking_user=list_owner,
+        )
+        if (
+            media_type == MediaTypes.ANIME.value
+            and getattr(request.user, "show_season_enrichment", True)
+            and media_metadata.get("related", {}).get("seasons")
+        ):
+            media_metadata["related"]["seasons"] = enrich_season_cards(
+                media_metadata["related"]["seasons"],
+            )
 
     # For music tracks, get linked artist and album for navigation
     music_artist = None
@@ -1769,18 +1580,12 @@ def media_details(
         music_album = getattr(current_instance, "album", None)
 
     notes_entry = None
+    notes_entries = []
     if render_secondary_only and not public_view and user_medias:
-        if (
-            current_instance
-            and current_instance.notes
-            and current_instance.notes.strip()
-        ):
-            notes_entry = current_instance
-        else:
-            for entry in user_medias:
-                if entry.notes and entry.notes.strip():
-                    notes_entry = entry
-                    break
+        notes_entries = [
+            entry for entry in user_medias if entry.notes and entry.notes.strip()
+        ]
+        notes_entry = notes_entries[0] if notes_entries else None
     elif render_secondary_only and public_notes_view and list_owner:
         public_user_medias = list(
             BasicMedia.objects.filter_media_prefetch(
@@ -1790,29 +1595,32 @@ def media_details(
                 source,
             ),
         )
-        notes_entry = next(
-            (
-                entry
-                for entry in public_user_medias
-                if entry.notes and entry.notes.strip()
-            ),
-            None,
-        )
+        notes_entries = [
+            entry for entry in public_user_medias if entry.notes and entry.notes.strip()
+        ]
+        notes_entry = notes_entries[0] if notes_entries else None
 
     if (
         render_secondary_only
         and media_type == MediaTypes.ANIME.value
         and not media_metadata.get("episodes")
     ):
-        flat_anime_episode_preview = _build_flat_anime_episode_preview(
-            request,
-            detail_item=detail_item,
-            media_id=media_id,
-            base_metadata=media_metadata,
-            metadata_resolution_result=metadata_resolution_result,
-            retry_max_retries=detail_db_max_retries,
-            on_persistence_deferred=_mark_detail_persistence_deferred,
-        )
+        try:
+            flat_anime_episode_preview = _build_flat_anime_episode_preview(
+                request,
+                detail_item=detail_item,
+                media_id=media_id,
+                base_metadata=media_metadata,
+                metadata_resolution_result=metadata_resolution_result,
+                retry_max_retries=detail_db_max_retries,
+                on_persistence_deferred=_mark_detail_persistence_deferred,
+            )
+        except services.ProviderAPIError:
+            logger.warning(
+                "Skipping optional anime episode preview for media_id=%s due to provider API error",
+                media_id,
+            )
+            flat_anime_episode_preview = None
         if flat_anime_episode_preview:
             media_metadata["episodes"] = flat_anime_episode_preview
 
@@ -1919,7 +1727,7 @@ def media_details(
                         tmdb_media_id,
                         Sources.TMDB.value,
                         language=metadata_resolution.metadata_language_default(
-                            request.user
+                            request.user, detail_item
                         ),
                     )
                 except services.ProviderAPIError:
@@ -2139,6 +1947,7 @@ def media_details(
         "game_lengths_pending": game_lengths_refresh_pending
         and not (game_lengths and game_lengths.get("available")),
         "notes_entry": notes_entry,
+        "notes_entries": notes_entries,
         "collection_entry": collection_entry,
         "collection_entries": collection_entries,
         "collection_stats": collection_stats,

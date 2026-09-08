@@ -9,6 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.translation import gettext, ngettext
 from django.views.decorators.http import require_GET, require_POST
 
 from app import fork_services_music, helpers
@@ -32,7 +33,7 @@ from app.music_views import (
 )
 from app.providers import musicbrainz
 from app.services import bulk_music_tracking
-from app.services.music import ensure_album_has_release_id
+from app.services.music import ensure_album_has_release_id, sync_album_release_tracks
 from app.track_modal_views import _track_modal_release_date_shortcut
 
 logger = logging.getLogger(__name__)
@@ -126,9 +127,9 @@ def set_music_release(request, album_id):
     release_id = (request.POST.get("release_id") or "").strip()
 
     if not release_id:
-        messages.error(request, "Select a release to use.")
+        messages.error(request, gettext("Select a release to use."))
     elif not album.musicbrainz_release_group_id:
-        messages.error(request, "This album has no MusicBrainz release group.")
+        messages.error(request, gettext("This album has no MusicBrainz release group."))
     else:
         try:
             releases = musicbrainz.get_release_group_releases(
@@ -144,14 +145,34 @@ def set_music_release(request, album_id):
             releases = []
 
         if not any(release.get("release_id") == release_id for release in releases):
-            messages.error(request, "That release is not part of this album.")
+            messages.error(request, gettext("That release is not part of this album."))
         else:
             MusicReleasePreference.objects.update_or_create(
                 user=request.user,
                 album=album,
                 defaults={"release_id": release_id},
             )
-            messages.success(request, "Release updated.")
+            try:
+                track_count = sync_album_release_tracks(album, release_id)
+            except Exception as exc:  # pragma: no cover - defensive provider boundary
+                logger.warning(
+                    "Failed to sync release %s for album %s: %s",
+                    release_id,
+                    album.id,
+                    exc,
+                )
+                messages.warning(
+                    request,
+                    gettext(
+                        "Saved your release choice, but couldn't refresh the tracklist from MusicBrainz."
+                    ),
+                )
+            else:
+                messages.success(
+                    request,
+                    gettext("Release updated - synced %(value_1)s tracks.")
+                    % {"value_1": track_count},
+                )
 
     return _music_release_redirect(request, album, return_url)
 
@@ -187,9 +208,7 @@ def album_save(request):
         request,
         fallback_media_type=MediaTypes.MUSIC.value,
     )
-    home_row_id = request.GET.get("home_row_id") or request.POST.get(
-        "home_row_id", ""
-    )
+    home_row_id = request.GET.get("home_row_id") or request.POST.get("home_row_id", "")
 
     tracker = AlbumTracker.objects.filter(user=request.user, album=album).first()
     old_status = getattr(tracker, "status", None)
@@ -200,7 +219,9 @@ def album_save(request):
         tracker.user = request.user
         tracker.album = album
         tracker.save()
-        messages.success(request, f"Saved {album.title}")
+        messages.success(
+            request, gettext("Saved %(value_1)s") % {"value_1": album.title}
+        )
 
         if request.headers.get("HX-Request"):
             htmx_trigger = {
@@ -216,7 +237,11 @@ def album_save(request):
             response["HX-Trigger"] = json.dumps(htmx_trigger)
             return response
     else:
-        messages.error(request, f"Error saving {album.title}: {form.errors}")
+        messages.error(
+            request,
+            gettext("Error saving %(value_1)s: %(value_2)s")
+            % {"value_1": album.title, "value_2": form.errors},
+        )
 
     next_url = request.GET.get("next", "")
     if next_url:
@@ -237,7 +262,10 @@ def album_delete(request):
     tracker = AlbumTracker.objects.filter(user=request.user, album=album).first()
     if tracker:
         tracker.delete()
-        messages.success(request, f"Removed {album.title} from your library")
+        messages.success(
+            request,
+            gettext("Removed %(value_1)s from your library") % {"value_1": album.title},
+        )
 
     next_url = request.GET.get("next", "")
     if next_url:
@@ -268,11 +296,9 @@ def song_save(request):
         try:
             end_date = helpers.parse_completion_datetime(end_date_str)
         except (TypeError, ValueError):
-            message = (
-                f'Floppy cannot read the date "{end_date_str}". '
-                "Enter the date as YYYY-MM-DD. "
-                "To record this listen at the current time, keep the date empty."
-            )
+            message = gettext(
+                'Floppy cannot read the date "%(value_1)s". Enter the date as YYYY-MM-DD. To record this listen at the current time, keep the date empty.'
+            ) % {"value_1": end_date_str}
             if request.headers.get("HX-Request"):
                 # Do not swap and do not close the modal. The date the user
                 # typed stays on screen for them to correct.
@@ -305,11 +331,15 @@ def song_save(request):
 
     if existed_before:
         messages.success(
-            request, f"Added listen for {track.title if track else 'track'}"
+            request,
+            gettext("Added listen for %(value_1)s")
+            % {"value_1": track.title if track else gettext("track")},
         )
     else:
         messages.success(
-            request, f"Added {track.title if track else 'track'} to your library"
+            request,
+            gettext("Added %(value_1)s to your library")
+            % {"value_1": track.title if track else gettext("track")},
         )
 
     if request.headers.get("HX-Request"):
@@ -440,10 +470,18 @@ def delete_all_album_plays_view(request, album_id):
         music_entries.delete()
         messages.success(
             request,
-            f"Deleted {count} play{'s' if count != 1 else ''} for {album.title}",
+            ngettext(
+                "Deleted %(count)s play for %(title)s",
+                "Deleted %(count)s plays for %(title)s",
+                count,
+            )
+            % {"count": count, "title": album.title},
         )
     else:
-        messages.info(request, f"No plays found for {album.title}")
+        messages.info(
+            request,
+            gettext("No plays found for %(value_1)s") % {"value_1": album.title},
+        )
 
     response = HttpResponse(status=204)
     response["HX-Refresh"] = "true"
@@ -465,10 +503,18 @@ def delete_all_artist_plays_view(request, artist_id):
         music_entries.delete()
         messages.success(
             request,
-            f"Deleted {count} play{'s' if count != 1 else ''} for {artist.name}",
+            ngettext(
+                "Deleted %(count)s play for %(title)s",
+                "Deleted %(count)s plays for %(title)s",
+                count,
+            )
+            % {"count": count, "title": artist.name},
         )
     else:
-        messages.info(request, f"No plays found for {artist.name}")
+        messages.info(
+            request,
+            gettext("No plays found for %(value_1)s") % {"value_1": artist.name},
+        )
 
     response = HttpResponse(status=204)
     response["HX-Refresh"] = "true"
@@ -480,12 +526,22 @@ def sync_album_metadata_view(request, album_id):
     """Manually trigger metadata sync for an album."""
     album = get_object_or_404(Album, id=album_id)
 
+    from django.core.cache import cache as django_cache
+
+    if album.musicbrainz_release_group_id:
+        # Force re-derivation of the release: a previous sync may have
+        # locked in the wrong pressing (e.g. a partial reissue instead of
+        # the full release), so drop the cached group->release pick and
+        # the release_id itself before re-resolving.
+        django_cache.delete(
+            f"musicbrainz_release_for_group_{album.musicbrainz_release_group_id}"
+        )
+        album.musicbrainz_release_id = ""
+
     ensure_album_has_release_id(album)
 
     if album.musicbrainz_release_id:
         try:
-            from django.core.cache import cache as django_cache
-
             django_cache.delete(f"musicbrainz_release_{album.musicbrainz_release_id}")
             release_data = musicbrainz.get_release(album.musicbrainz_release_id)
 
@@ -512,7 +568,9 @@ def sync_album_metadata_view(request, album_id):
                         canonical.save(update_fields=["musicbrainz_release_id"])
                     album.delete()
                     messages.success(
-                        request, f"Merged duplicate into {canonical.title}"
+                        request,
+                        gettext("Merged duplicate into %(value_1)s")
+                        % {"value_1": canonical.title},
                     )
                     # Use HX-Redirect so HTMX performs a full browser navigation
                     # (plain redirect() returns 302, which HTMX follows internally
@@ -536,6 +594,9 @@ def sync_album_metadata_view(request, album_id):
                 album.genres = release_data.get("genres")
 
             tracks_data = release_data.get("tracks", [])
+            # Clear any tracks left over from a previous, differently-shaped
+            # release (e.g. fewer discs/tracks) before rebuilding.
+            Track.objects.filter(album=album).delete()
             for track_data in tracks_data:
                 Track.objects.update_or_create(
                     album=album,
@@ -554,13 +615,19 @@ def sync_album_metadata_view(request, album_id):
             album.save(update_fields=["tracks_populated", "image", "genres"])
 
             messages.success(
-                request, f"Synced {len(tracks_data)} tracks for {album.title}"
+                request,
+                gettext("Synced %(value_1)s tracks for %(value_2)s")
+                % {"value_1": len(tracks_data), "value_2": album.title},
             )
         except Exception as e:
             logger.warning("Failed to sync album %s: %s", album.title, e)
-            messages.error(request, f"Failed to sync album: {e}")
+            messages.error(
+                request, gettext("Failed to sync album: %(value_1)s") % {"value_1": e}
+            )
     else:
-        messages.warning(request, "Could not find a MusicBrainz release for this album")
+        messages.warning(
+            request, gettext("Could not find a MusicBrainz release for this album")
+        )
 
     response = HttpResponse(status=204)
     response["HX-Refresh"] = "true"

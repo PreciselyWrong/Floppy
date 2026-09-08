@@ -163,6 +163,11 @@ class TrackModalViewTests(TestCase):
         self.assertTrue(response.context["metadata_tab_available"])
         self.assertTrue(response.context["discover_tab_available"])
         self.assertFalse(response.context["is_hidden_from_discover"])
+        content = response.content.decode()
+        self.assertEqual(content.count("Start Now"), 2)
+        self.assertEqual(content.count("Just Finished"), 2)
+        self.assertEqual(content.count("Release Date"), 4)
+        self.assertEqual(content.count(':disabled="!resolvedSuggestionDate()"'), 2)
         general_field_names = [
             field.name for field in response.context["general_fields"]
         ]
@@ -181,7 +186,36 @@ class TrackModalViewTests(TestCase):
         self.assertContains(response, "Currently visible in Discover.")
         self.assertContains(response, 'hx-post="/discover/toggle-hidden"', html=False)
         self.assertContains(response, 'name="action"', html=False)
+        self.assertContains(response, "data-calendar-component", html=False)
+        self.assertContains(response, "showMonthsView", html=False)
+        self.assertContains(response, "showYearsView", html=False)
         self.assertNotContains(response, "Custom Metadata")
+
+    def test_session_history_row_opens_standard_modal_for_instance(self):
+        """Session rows preserve the tracked instance when opening the editor."""
+        request = RequestFactory().get(
+            "/history/sessions?media_type=movie&media_id=238&source=tmdb",
+        )
+        markup = render_to_string(
+            "app/components/session_history_row.html",
+            {
+                "entry": {
+                    "item": self.item,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "display_title": self.item.title,
+                    "title": self.item.title,
+                    "poster": self.item.image,
+                    "entry_key": str(self.movie.id),
+                    "instance_id": self.movie.id,
+                },
+                "user": self.user,
+                "request": request,
+            },
+            request=request,
+        )
+
+        self.assertIn(f'"instance_id": "{self.movie.id}"', markup)
+        self.assertIn('"standard_modal": "1"', markup)
 
     def test_track_modal_keeps_tracked_tmdb_show_deletable_when_provider_returns_404(
         self,
@@ -226,8 +260,18 @@ class TrackModalViewTests(TestCase):
         self.assertIn("bg-red-700", delete_button)
         self.assertNotIn("disabled", delete_button)
 
-    def test_track_modal_view_existing_episode_exposes_score(self):
+    @patch("app.providers.services.get_media_metadata")
+    def test_track_modal_view_existing_episode_exposes_score(self, mock_get_metadata):
         """Episode history edits should use the standard modal with rating support."""
+        mock_get_metadata.return_value = {
+            "media_id": "episode-show-1",
+            "media_type": MediaTypes.EPISODE.value,
+            "source": Sources.TMDB.value,
+            "title": "Episode Show",
+            "episode_title": "Episode Two",
+            "image": "http://example.com/episode.jpg",
+            "details": {},
+        }
         tv_item = Item.objects.create(
             media_id="episode-show-1",
             source=Sources.TMDB.value,
@@ -315,6 +359,131 @@ class TrackModalViewTests(TestCase):
         self.assertIn('hx-include="closest form"', content)
         self.assertIn("is_create=1", response.context["episode_create_url"])
         self.assertContains(response, "Add new entry")
+
+    def _create_tracked_episode(self):
+        """Create a show/season/episode chain and return the tracked episode."""
+        tv_item = Item.objects.create(
+            media_id="titled-show-1",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Titled Show",
+        )
+        tv = TV.objects.create(item=tv_item, user=self.user)
+        season_item = Item.objects.create(
+            media_id="titled-show-1",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Titled Show",
+            season_number=1,
+        )
+        season = Season.objects.create(item=season_item, user=self.user, related_tv=tv)
+        episode_item = Item.objects.create(
+            media_id="titled-show-1",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="Titled Show",
+            season_number=1,
+            episode_number=2,
+        )
+        return Episode.objects.create(
+            item=episode_item,
+            related_season=season,
+            end_date=datetime(2025, 1, 2, 12, 0, tzinfo=UTC),
+        )
+
+    @staticmethod
+    def _episode_metadata_payload():
+        """Provider payload for a single episode; ``title`` is the show title."""
+        return {
+            "media_id": "titled-show-1",
+            "media_type": MediaTypes.EPISODE.value,
+            "source": Sources.TMDB.value,
+            "title": "Titled Show",
+            "season_title": "Season 1",
+            "episode_title": "Failure's Contagious",
+            "image": "http://example.com/episode.jpg",
+            "details": {},
+        }
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_track_modal_titles_tracked_episode_by_episode_name(
+        self,
+        mock_get_metadata,
+    ):
+        """A tracked episode modal names the episode, not just the show."""
+        mock_get_metadata.return_value = self._episode_metadata_payload()
+        episode = self._create_tracked_episode()
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.EPISODE.value,
+                    "media_id": "titled-show-1",
+                    "season_number": 1,
+                },
+            )
+            + f"?instance_id={episode.id}&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["title"], "Failure's Contagious")
+        self.assertEqual(response.context["title_subtitle"], "Titled Show · S1E2")
+        self.assertContains(response, "Titled Show · S1E2")
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_track_modal_titles_untracked_episode_by_episode_name(
+        self,
+        mock_get_metadata,
+    ):
+        """An untracked episode used to render the bare show title. Issue #1070."""
+        mock_get_metadata.return_value = self._episode_metadata_payload()
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.EPISODE.value,
+                    "media_id": "titled-show-1",
+                    "season_number": 1,
+                },
+            )
+            + "?is_create=1&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["title"], "Failure's Contagious")
+        self.assertEqual(response.context["title_subtitle"], "Titled Show · S1E2")
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_track_modal_episode_title_falls_back_to_show_and_number(
+        self,
+        mock_get_metadata,
+    ):
+        """Without an episode name the header still says which episode it is."""
+        payload = self._episode_metadata_payload()
+        del payload["episode_title"]
+        mock_get_metadata.return_value = payload
+        episode = self._create_tracked_episode()
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.EPISODE.value,
+                    "media_id": "titled-show-1",
+                    "season_number": 1,
+                },
+            )
+            + f"?instance_id={episode.id}&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["title"], "Titled Show S1E2")
+        self.assertEqual(response.context["title_subtitle"], "")
 
     def test_track_modal_view_renders_release_date_shortcuts_for_existing_media(self):
         """Existing item-backed trackers should expose release-date shortcuts."""
@@ -1082,7 +1251,13 @@ class TrackModalViewTests(TestCase):
             response.context["episode_plays_form"]["distribution_mode"].value(),
             "air_date",
         )
-        self.assertContains(response, "Air date", count=2)
+        self.assertContains(response, "Release Date", count=6)
+        self.assertEqual(
+            response.context["episode_plays_domain"]["seasonEpisodeMap"]["1"][0][
+                "runtime_minutes"
+            ],
+            24,
+        )
 
     @patch("app.views.metadata_resolution.resolve_detail_metadata")
     @patch("app.providers.services.get_media_metadata")

@@ -261,7 +261,7 @@ def get_activity_version(user_id: int, media_type: str) -> str:
 
 def bump_activity_version(user_id: int, media_type: str) -> str:
     """Advance the activity version for a Discover media type."""
-    version = timezone.now().isoformat()
+    version = f"{timezone.now().isoformat()}:{uuid4().hex}"
     _cache_set(
         _activity_version_key(user_id, media_type),
         version,

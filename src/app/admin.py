@@ -116,8 +116,10 @@ SpecialModels = [
     "HardcoverEditionPreference",
     "MusicReleasePreference",
     "CollectionEntry",
+    "CollectionEntrySource",
     "CollectionField",
     "CollectionFieldGroup",
+    "CollectionFieldSource",
     "Tag",
     "ItemTag",
     "DiscoverFeedback",
@@ -127,6 +129,11 @@ SpecialModels = [
     "DeletedMedia",
     "PlaybackProgress",
     "ApplicationSettings",
+    "InstanceProviderCredential",
+    "UserProviderCredential",
+    "WatchState",
+    "WatchStateChange",
+    "WatchStateSequence",
 ]
 for model in app_models:
     if (
@@ -423,3 +430,68 @@ admin.site.register(DiscoverFeedback, DiscoverFeedbackAdmin)
 admin.site.register(DiscoverApiCache, DiscoverApiCacheAdmin)
 admin.site.register(DiscoverTasteProfile, DiscoverTasteProfileAdmin)
 admin.site.register(DiscoverRowCache, DiscoverRowCacheAdmin)
+
+
+class ProviderCredentialAdmin(admin.ModelAdmin):
+    """Admin for stored provider credentials.
+
+    The encrypted value is deliberately not listed or searchable.
+    """
+
+    list_display = ["provider", "field", "updated_at"]
+    list_filter = ["provider"]
+    search_fields = ["provider", "field"]
+
+
+class UserProviderCredentialAdmin(ProviderCredentialAdmin):
+    """Admin for personal provider credentials."""
+
+    list_display = ["user", "provider", "field", "updated_at"]
+    search_fields = ["user__username", "provider", "field"]
+    raw_id_fields = ["user"]
+
+
+from app.models import (  # noqa: E402
+    InstanceProviderCredential,
+    UserProviderCredential,
+)
+
+admin.site.register(InstanceProviderCredential, ProviderCredentialAdmin)
+admin.site.register(UserProviderCredential, UserProviderCredentialAdmin)
+
+
+class WatchStateAdmin(admin.ModelAdmin):
+    """Admin for canonical watched state."""
+
+    list_display = ["user", "item", "watched", "play_count", "revision", "conflicted"]
+    list_filter = ["watched", "conflicted", "origin_kind"]
+    search_fields = ["user__username", "item__title"]
+    raw_id_fields = ["user", "item"]
+
+
+class WatchStateChangeAdmin(admin.ModelAdmin):
+    """Admin for the ordered watched-state change log."""
+
+    list_display = ["user", "sequence", "item", "kind", "watched", "origin_kind"]
+    list_filter = ["kind", "origin_kind"]
+    search_fields = ["user__username", "item__title", "origin_key"]
+    raw_id_fields = ["user", "item"]
+
+
+class WatchStateSequenceAdmin(admin.ModelAdmin):
+    """Admin for the per-user change sequence allocator."""
+
+    list_display = ["user", "last_sequence"]
+    search_fields = ["user__username"]
+    raw_id_fields = ["user"]
+
+
+from app.models import (  # noqa: E402
+    WatchState,
+    WatchStateChange,
+    WatchStateSequence,
+)
+
+admin.site.register(WatchState, WatchStateAdmin)
+admin.site.register(WatchStateChange, WatchStateChangeAdmin)
+admin.site.register(WatchStateSequence, WatchStateSequenceAdmin)

@@ -1,7 +1,6 @@
 import json
 import logging
 from collections import defaultdict
-from datetime import timedelta
 
 import requests
 from django.conf import settings
@@ -11,10 +10,11 @@ from django_celery_beat.models import PeriodicTask
 from simple_history.utils import bulk_update_with_history
 
 import app
+from app import fork_services_play_dedupe as play_dedupe
 from app import helpers as app_helpers
 from app.models import MediaTypes, Sources, Status
-from app.providers import services, tvdb
-from app.services import item_merge
+from app.providers import credentials, services, tvdb
+from app.services import grouped_anime, item_merge
 from integrations import import_progress
 from integrations.imports import helpers
 from integrations.imports.helpers import MediaImportError, MediaImportUnexpectedError
@@ -22,15 +22,14 @@ from integrations.imports.helpers import MediaImportError, MediaImportUnexpected
 logger = logging.getLogger(__name__)
 
 TRAKT_API_BASE_URL = "https://api.trakt.tv"
+# Device-flow apps have no callback URL; Trakt still requires the field on
+# the token grants, and expects this well-known out-of-band value.
+TRAKT_OOB_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+# Trakt returns 5; clamp anything unexpected before it drives a poll loop.
+TRAKT_DEVICE_MIN_INTERVAL = 5
+TRAKT_DEVICE_MAX_INTERVAL = 60
 BULK_PAGE_SIZE = 1000
 TRAKT_UNKNOWN_DATE = "1970-01-01T00:00:00.000Z"
-
-# Plex's webhook fires at ~90% progress while Trakt's scrobbler waits for
-# playback to stop, so a webhook-recorded play and its later Trakt-imported
-# counterpart can land several minutes apart. Treat plays for the same item
-# within this window as the same watch instead of double-counting it.
-_DUPLICATE_PLAY_WINDOW = timedelta(minutes=15)
-
 
 def _parse_watched_at(watched_at: str):
     if watched_at == TRAKT_UNKNOWN_DATE:
@@ -55,9 +54,9 @@ def handle_oauth_callback(
             reverse("import_trakt_private"),
         )
     if not client_id:
-        client_id = settings.TRAKT_API
+        client_id = credentials.get("trakt", "client_id")
     if not client_secret:
-        client_secret = settings.TRAKT_API_SECRET
+        client_secret = credentials.get("trakt", "client_secret")
 
     params = {
         "client_id": client_id,
@@ -95,7 +94,7 @@ def get_username_from_oauth(access_token, client_id=None):
     url = "https://api.trakt.tv/users/me"
 
     if not client_id:
-        client_id = settings.TRAKT_API
+        client_id = credentials.get("trakt", "client_id")
 
     headers = {
         "Content-Type": "application/json",
@@ -121,6 +120,116 @@ def get_username_from_oauth(access_token, client_id=None):
     return request["username"]
 
 
+def _refresh_redirect_uri():
+    """Return the redirect URI to send with a refresh grant.
+
+    Falls back to the out-of-band value when this instance has no callback URL
+    Trakt would accept - either because nothing is configured (no request in a
+    Celery worker) or because it is plain HTTP on a non-loopback host, which is
+    also how the connection was made in the first place.
+    """
+    redirect_uri = app_helpers.build_absolute_app_url(
+        None,
+        reverse("import_trakt_private"),
+    )
+    if not app_helpers.supports_oauth_redirect(redirect_uri):
+        return TRAKT_OOB_REDIRECT_URI
+    return redirect_uri
+
+
+def request_device_code(client_id=None):
+    """Start Trakt's device authorization flow and return the new codes."""
+    if not client_id:
+        client_id = credentials.get("trakt", "client_id")
+
+    try:
+        response = app.providers.services.api_request(
+            "TRAKT",
+            "POST",
+            f"{TRAKT_API_BASE_URL}/oauth/device/code",
+            params={"client_id": client_id},
+        )
+    except (services.ProviderAPIError, requests.RequestException) as error:
+        logger.warning("Trakt device code request failed: %s", error)
+        msg = (
+            "Could not start Trakt authorization. "
+            "Check TRAKT_API and TRAKT_API_SECRET."
+        )
+        raise MediaImportError(msg) from error
+
+    interval = response.get("interval") or TRAKT_DEVICE_MIN_INTERVAL
+    response["interval"] = min(
+        max(int(interval), TRAKT_DEVICE_MIN_INTERVAL),
+        TRAKT_DEVICE_MAX_INTERVAL,
+    )
+    return response
+
+
+def poll_device_token(device_code, client_id=None, client_secret=None):
+    """Poll Trakt once for a device authorization result.
+
+    Returns the same shape as `handle_oauth_callback` on success, or None while
+    the user has not finished authorizing yet. Terminal outcomes raise.
+
+    This deliberately bypasses `services.api_request`: that helper raises on
+    every non-2xx and sleeps in-thread on 429/5xx, but here the status code is
+    the protocol - 400 means "keep waiting" and 418 means "denied" - and the
+    caller is a single HTMX poll that must answer promptly.
+    """
+    if not client_id:
+        client_id = credentials.get("trakt", "client_id")
+    if not client_secret:
+        client_secret = credentials.get("trakt", "client_secret")
+
+    try:
+        response = services.session.post(
+            f"{TRAKT_API_BASE_URL}/oauth/device/token",
+            json={
+                "code": device_code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=settings.REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as error:
+        logger.warning("Trakt device token poll failed: %s", error)
+        msg = "Could not reach Trakt. Try again."
+        raise MediaImportError(msg) from error
+
+    status_code = response.status_code
+
+    if status_code == requests.codes.ok:
+        payload = response.json()
+        access_token = payload["access_token"]
+        return {
+            "access_token": access_token,
+            "refresh_token": payload["refresh_token"],
+            "username": get_username_from_oauth(access_token, client_id=client_id),
+        }
+
+    # Pending, or polling faster than Trakt likes. The caller already waits the
+    # interval Trakt handed out, so both simply mean "not yet".
+    if status_code == requests.codes.bad_request:
+        return None
+    if status_code == requests.codes.too_many_requests:
+        logger.warning("Trakt asked us to slow down device token polling")
+        return None
+
+    terminal_errors = {
+        requests.codes.not_found: (
+            "This Trakt authorization request is no longer valid. Start again."
+        ),
+        requests.codes.conflict: "This Trakt authorization code was already used.",
+        requests.codes.gone: "The Trakt authorization code expired. Start again.",
+        requests.codes.im_a_teapot: "Trakt authorization was denied.",
+    }
+    msg = terminal_errors.get(status_code)
+    if msg is None:
+        logger.warning("Trakt device token poll returned status %s", status_code)
+        msg = "Trakt authorization failed."
+    raise MediaImportError(msg)
+
+
 def get_access_token(encrypted_refresh_token):
     """Get access token from encrypted refresh token."""
     url = "https://api.trakt.tv/oauth/token"
@@ -128,14 +237,11 @@ def get_access_token(encrypted_refresh_token):
     decrypted_token = helpers.decrypt_or_raise(encrypted_refresh_token)
 
     params = {
-        "client_id": settings.TRAKT_API,
-        "client_secret": settings.TRAKT_API_SECRET,
+        "client_id": credentials.get("trakt", "client_id"),
+        "client_secret": credentials.get("trakt", "client_secret"),
         "refresh_token": decrypted_token,
         "grant_type": "refresh_token",
-        "redirect_uri": app_helpers.build_absolute_app_url(
-            None,
-            reverse("import_trakt_private"),
-        ),
+        "redirect_uri": _refresh_redirect_uri(),
     }
 
     try:
@@ -265,6 +371,20 @@ class TraktMetadataResolverMixin:
                 raise MediaImportError(msg) from error
             raise
 
+    def _anime_bucket_for_show(self, tmdb_id, tv_metadata):
+        """Return the library bucket for a show, or None to leave it in TV.
+
+        Returns the sentinel string "skip" when the show's Anime home is a flat
+        MAL row: this importer only resolves TMDB identities and cannot write to
+        one, so importing it as TV would track the same show in both libraries.
+        """
+        route = self.anime_router.route_for_show(tv_metadata, tmdb_id=tmdb_id)
+        if route == "grouped":
+            return MediaTypes.ANIME.value
+        if route == "flat":
+            return "skip"
+        return None
+
     def _get_or_create_item(
         self,
         media_type,
@@ -272,6 +392,7 @@ class TraktMetadataResolverMixin:
         metadata,
         season_number=None,
         episode_number=None,
+        library_media_type=None,
     ):
         """Get or create an item in the database.
 
@@ -295,7 +416,14 @@ class TraktMetadataResolverMixin:
         if episode_number is not None:
             item_kwargs["episode_number"] = episode_number
 
-        desired_bucket = metadata.get("library_media_type") or media_type
+        # Trakt resolves everything through TMDB, whose metadata never carries a
+        # bucket, so the caller passes the show's anime route down to the season
+        # and episode rows.
+        desired_bucket = (
+            library_media_type
+            or metadata.get("library_media_type")
+            or media_type
+        )
 
         existing = list(app.models.Item.objects.filter(**item_kwargs))
         if existing:
@@ -379,6 +507,12 @@ class TraktImporter(TraktMetadataResolverMixin):
         self.user_base_url = f"{TRAKT_API_BASE_URL}/users/{user_identifier}"
         self.warnings = []
 
+        # One anime router for the whole run. Rows are buffered and flushed at
+        # the end, so a database lookup alone cannot see a home opened earlier
+        # in this same import.
+        self.anime_router = grouped_anime.AnimeRouteResolver(user)
+        self.skipped_flat_anime = set()
+
         # Track existing media to handle "new" mode correctly
         self.existing_media = helpers.get_existing_media(user)
         self.existing_children = helpers.get_existing_children(user)
@@ -391,10 +525,16 @@ class TraktImporter(TraktMetadataResolverMixin):
         self.existing_episode_watch_keys = self._get_existing_episode_watch_keys()
 
         # Track existing play timestamps so a play already recorded (e.g. via
-        # Plex webhook) isn't duplicated by a nearby Trakt-imported play for
-        # the same item. See _DUPLICATE_PLAY_WINDOW.
-        self.existing_episode_play_times = self._get_existing_episode_play_times()
-        self.existing_movie_play_times = self._get_existing_movie_play_times()
+        # Plex webhook or a Plex history import) isn't duplicated by a nearby
+        # Trakt-imported play for the same item. See fork_services_play_dedupe.
+        self.existing_episode_play_times = play_dedupe.existing_episode_play_times(
+            user,
+            source=Sources.TMDB.value,
+        )
+        self.existing_movie_play_times = play_dedupe.existing_movie_play_times(
+            user,
+            source=Sources.TMDB.value,
+        )
 
         # Track media IDs to delete in overwrite mode
         self.to_delete = defaultdict(lambda: defaultdict(set))
@@ -442,43 +582,6 @@ class TraktImporter(TraktMetadataResolverMixin):
                 "item__episode_number",
                 "end_date",
             ),
-        )
-
-    def _get_existing_episode_play_times(self):
-        """Return existing episode play end_dates keyed by (tmdb_id, season, episode)."""
-        play_times = defaultdict(list)
-        rows = app.models.Episode.objects.filter(
-            related_season__user=self.user,
-            end_date__isnull=False,
-        ).values_list(
-            "item__media_id",
-            "item__season_number",
-            "item__episode_number",
-            "end_date",
-        )
-        for media_id, season_number, episode_number, end_date in rows:
-            play_times[(media_id, season_number, episode_number)].append(end_date)
-        return play_times
-
-    def _get_existing_movie_play_times(self):
-        """Return existing movie play end_dates keyed by tmdb_id."""
-        play_times = defaultdict(list)
-        rows = app.models.Movie.objects.filter(
-            user=self.user,
-            end_date__isnull=False,
-        ).values_list("item__media_id", "end_date")
-        for media_id, end_date in rows:
-            play_times[media_id].append(end_date)
-        return play_times
-
-    @staticmethod
-    def _is_duplicate_play(existing_times, candidate_dt):
-        """Return True if candidate_dt is within _DUPLICATE_PLAY_WINDOW of an existing play."""
-        if candidate_dt is None:
-            return False
-        return any(
-            abs(candidate_dt - existing_dt) <= _DUPLICATE_PLAY_WINDOW
-            for existing_dt in existing_times
         )
 
     def _raise_for_user_error(self, error):
@@ -583,7 +686,7 @@ class TraktImporter(TraktMetadataResolverMixin):
             "Content-Type": "application/json",
             "User-Agent": f"Floppy/{settings.VERSION}",
             "trakt-api-version": "2",
-            "trakt-api-key": settings.TRAKT_API,
+            "trakt-api-key": credentials.get("trakt", "client_id"),
         }
         if self.refresh_token:
             try:
@@ -736,10 +839,8 @@ class TraktImporter(TraktMetadataResolverMixin):
         watched_at = entry["watched_at"]
         watched_at_dt = _parse_watched_at(watched_at)
 
-        if self._is_duplicate_play(
-            self.existing_movie_play_times[tmdb_id],
-            watched_at_dt,
-        ):
+        self.existing_movie_play_times.record_runtime(tmdb_id, item.runtime_minutes)
+        if self.existing_movie_play_times.is_duplicate(tmdb_id, watched_at_dt):
             logger.debug(
                 "Skipping Trakt movie watch for %s at %s: duplicate of an existing play",
                 movie["title"],
@@ -761,8 +862,7 @@ class TraktImporter(TraktMetadataResolverMixin):
 
         self.media_instances[MediaTypes.MOVIE.value][key].append(movie_obj)
         self.bulk_media[MediaTypes.MOVIE.value].append(movie_obj)
-        if watched_at_dt is not None:
-            self.existing_movie_play_times[tmdb_id].append(watched_at_dt)
+        self.existing_movie_play_times.add(tmdb_id, watched_at_dt)
 
     def process_watched_episode(self, entry):
         """Process a single episode watch event."""
@@ -796,10 +896,7 @@ class TraktImporter(TraktMetadataResolverMixin):
             return
 
         episode_key = (tmdb_id, season_number, episode_number)
-        if self._is_duplicate_play(
-            self.existing_episode_play_times[episode_key],
-            watched_at_dt,
-        ):
+        if self.existing_episode_play_times.is_duplicate(episode_key, watched_at_dt):
             logger.debug(
                 "Skipping Trakt episode watch for %s S%sE%s at %s: "
                 "duplicate of an existing play",
@@ -854,8 +951,24 @@ class TraktImporter(TraktMetadataResolverMixin):
             None,
         )
 
+        anime_bucket = self._anime_bucket_for_show(tmdb_id, tv_metadata)
+        if anime_bucket == "skip":
+            if tmdb_id not in self.skipped_flat_anime:
+                self.skipped_flat_anime.add(tmdb_id)
+                self.warnings.append(
+                    f"{tv_metadata['title']}: tracked as anime on "
+                    f"{Sources.MAL.label}; skipped so it is not also imported "
+                    "into TV",
+                )
+            return
+
         # Create or get TV show
-        tv_item = self._get_or_create_item(MediaTypes.TV.value, tmdb_id, tv_metadata)
+        tv_item = self._get_or_create_item(
+            MediaTypes.TV.value,
+            tmdb_id,
+            tv_metadata,
+            library_media_type=anime_bucket,
+        )
         tv_key = f"{tmdb_id}"
 
         if tv_key not in self.media_instances[MediaTypes.TV.value]:
@@ -897,6 +1010,7 @@ class TraktImporter(TraktMetadataResolverMixin):
             tmdb_id,
             season_metadata,
             season_number,
+            library_media_type=anime_bucket,
         )
 
         season_key = f"{tmdb_id}:{season_number}"
@@ -939,6 +1053,7 @@ class TraktImporter(TraktMetadataResolverMixin):
             episode_metadata,
             season_number,
             episode_number,
+            library_media_type=anime_bucket,
         )
 
         ep_key = f"{tmdb_id}:{season_number}:{episode_number}"
@@ -953,8 +1068,11 @@ class TraktImporter(TraktMetadataResolverMixin):
         self.media_instances[MediaTypes.EPISODE.value][ep_key].append(episode_obj)
         self.bulk_media[MediaTypes.EPISODE.value].append(episode_obj)
         self.existing_episode_watch_keys.add(episode_watch_key)
-        if watched_at_dt is not None:
-            self.existing_episode_play_times[episode_key].append(watched_at_dt)
+        self.existing_episode_play_times.add(
+            episode_key,
+            watched_at_dt,
+            episode_item.runtime_minutes,
+        )
 
         # Update status if this is the last episode, but only for rows Floppy
         # just created (or an explicit overwrite re-sync) — never clobber the
@@ -1153,7 +1271,17 @@ class TraktImporter(TraktMetadataResolverMixin):
         tv_metadata = self._get_metadata(MediaTypes.TV.value, tmdb_id, show["title"])
         if not tv_metadata:
             return
-        tv_item = self._get_or_create_item(MediaTypes.TV.value, tmdb_id, tv_metadata)
+
+        anime_bucket = self._anime_bucket_for_show(tmdb_id, tv_metadata)
+        if anime_bucket == "skip":
+            return
+
+        tv_item = self._get_or_create_item(
+            MediaTypes.TV.value,
+            tmdb_id,
+            tv_metadata,
+            library_media_type=anime_bucket,
+        )
 
         for season_entry in entry.get("seasons", []):
             season_number = season_entry["number"]
@@ -1170,6 +1298,7 @@ class TraktImporter(TraktMetadataResolverMixin):
                 tmdb_id,
                 season_metadata,
                 season_number,
+                library_media_type=anime_bucket,
             )
 
             for episode_entry in season_entry.get("episodes", []):
@@ -1201,6 +1330,7 @@ class TraktImporter(TraktMetadataResolverMixin):
                     episode_metadata,
                     season_number,
                     episode_number,
+                    library_media_type=anime_bucket,
                 )
                 trakt_collection.upsert_collection_entry(
                     self.user,

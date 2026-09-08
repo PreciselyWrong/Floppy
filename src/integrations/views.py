@@ -1,5 +1,7 @@
 """Contains views for importing and exporting media data from various sources."""
 
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -26,9 +28,11 @@ from django.http import (
     JsonResponse,
     StreamingHttpResponse,
 )
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
+from django.templatetags.static import static
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
@@ -36,6 +40,8 @@ import users
 from app import helpers as app_helpers
 from app import image_cache
 from app.log_safety import exception_summary
+from app.models import MediaTypes
+from app.providers import credentials
 from integrations import (
     audiobookshelf_cover as abs_cover_proxy,
 )
@@ -52,11 +58,17 @@ from integrations import (
     xbox_api,
 )
 from integrations import plex as plex_api
+from integrations import plex_cover as plex_cover_proxy
 from integrations.gpodder_api import GPodderAuthError, GPodderClientError
 from integrations.imports import anilist, helpers, mdblist, simkl, stremio, trakt
 from integrations.imports.audiobookshelf import (
     AudiobookshelfAuthError,
     AudiobookshelfClient,
+)
+from integrations.imports.koreader import (
+    KoreaderAuthError,
+    KoreaderClient,
+    KoreaderClientError,
 )
 from integrations.imports.radarr import RadarrClient
 from integrations.imports.sonarr import SonarrClient
@@ -84,6 +96,8 @@ from integrations.models import (
     GPodderAccount,
     JellyfinAccount,
     KoitoAccount,
+    KoreaderAccount,
+    KoreaderDocumentLink,
     LastFMAccount,
     MDBListAccount,
     PlexAccount,
@@ -113,6 +127,7 @@ SONARR_RECURRING_TASK_NAME = "Import from Sonarr (Recurring)"
 GPODDER_RECURRING_TASK_NAME = "Import from GPodder (Recurring)"
 # The upload rides in the Celery message, so bound what a single import can send.
 TRAKT_EXPORT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+TRAKT_DEVICE_SESSION_KEY = "trakt_device_auth"
 YAMTRACK_IMPORT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
@@ -625,6 +640,11 @@ def trakt_oauth(request):
         request,
         reverse("import_trakt_private"),
     )
+    if not app_helpers.supports_oauth_redirect(redirect_uri):
+        # Trakt refuses non-HTTPS callbacks, so this instance can only connect
+        # through the device code flow (#681).
+        return _start_trakt_device_flow(request)
+
     url = "https://trakt.tv/oauth/authorize"
     state = {
         "mode": request.POST["mode"],
@@ -636,8 +656,127 @@ def trakt_oauth(request):
     state_token = secrets.token_urlsafe(32)
     request.session[state_token] = state
     return redirect(
-        f"{url}?client_id={settings.TRAKT_API}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={credentials.get("trakt", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
+
+
+def _finish_trakt_connection(request, oauth_result, state_data):
+    """Encrypt the refresh token, then queue or schedule the Trakt import."""
+    enc_token = helpers.encrypt(oauth_result["refresh_token"])
+
+    frequency = state_data["frequency"]
+    mode = state_data["mode"]
+    import_time = state_data["time"]
+
+    if frequency == "once":
+        tasks.import_trakt.delay(
+            token=enc_token,
+            user_id=request.user.id,
+            mode=mode,
+            username=oauth_result["username"],
+        )
+        messages.info(request, "The task to import media from Trakt has been queued.")
+    else:
+        helpers.create_import_schedule(
+            oauth_result["username"],
+            request,
+            mode,
+            frequency,
+            import_time,
+            "Trakt",
+            token=enc_token,
+        )
+
+
+def _start_trakt_device_flow(request):
+    """Mint a Trakt device code and send the user to the code screen."""
+    try:
+        device = trakt.request_device_code()
+    except helpers.MediaImportError as error:
+        messages.error(request, str(error))
+        return _integration_redirect(request)
+
+    request.session[TRAKT_DEVICE_SESSION_KEY] = {
+        "device_code": device["device_code"],
+        "user_code": device["user_code"],
+        "verification_url": device["verification_url"],
+        "interval": device["interval"],
+        "expires_at": (
+            timezone.now() + timedelta(seconds=int(device["expires_in"]))
+        ).isoformat(),
+        "mode": request.POST["mode"],
+        "frequency": request.POST["frequency"],
+        "time": request.POST["time"],
+        "return_to": request.POST.get("next"),
+    }
+    return redirect("trakt_device_verify")
+
+
+def _trakt_device_state(request):
+    """Return the pending device authorization, or None if gone or expired."""
+    state = request.session.get(TRAKT_DEVICE_SESSION_KEY)
+    if not isinstance(state, dict):
+        return None
+    expires_at = parse_datetime(state.get("expires_at") or "")
+    if expires_at is None or timezone.now() >= expires_at:
+        return None
+    return state
+
+
+@require_GET
+def trakt_device_verify(request):
+    """Show the Trakt device code the user must enter at trakt.tv/activate."""
+    state = _trakt_device_state(request)
+    if state is None:
+        request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+        messages.error(request, "The Trakt authorization code expired. Start again.")
+        return _integration_redirect(request)
+
+    return render(
+        request,
+        "integrations/trakt_device_code.html",
+        {
+            "user_code": state["user_code"],
+            "verification_url": state["verification_url"],
+            "interval": state["interval"],
+            "poll_url": reverse("trakt_device_poll"),
+            "cancel_url": reverse("import_data"),
+        },
+    )
+
+
+def _htmx_redirect(location):
+    """Tell HTMX to navigate away without swapping anything in."""
+    return HttpResponse(status=HTTPStatus.NO_CONTENT, headers={"HX-Redirect": location})
+
+
+@require_GET
+def trakt_device_poll(request):
+    """Poll Trakt once for the pending device authorization."""
+    state = _trakt_device_state(request)
+    if state is None:
+        request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+        messages.error(request, "The Trakt authorization code expired. Start again.")
+        return _htmx_redirect(reverse("import_data"))
+
+    try:
+        result = trakt.poll_device_token(state["device_code"])
+    except helpers.MediaImportError as error:
+        request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+        messages.error(request, str(error))
+        return _htmx_redirect(reverse("import_data"))
+
+    if result is None:
+        return HttpResponse(status=HTTPStatus.NO_CONTENT)
+
+    request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+    _finish_trakt_connection(request, result, state)
+    redirect_response = _integration_redirect(
+        request,
+        connected_slug="trakt",
+        next_url=state.get("return_to"),
+    )
+    return _htmx_redirect(redirect_response["Location"])
 
 
 @require_GET
@@ -649,32 +788,12 @@ def import_trakt_private(request):
 
     redirect_uri = state_data.get("redirect_uri")
     oauth_callback = trakt.handle_oauth_callback(request, redirect_uri=redirect_uri)
-    enc_token = helpers.encrypt(oauth_callback["refresh_token"])
-
-    frequency = state_data["frequency"]
-    mode = state_data["mode"]
-    import_time = state_data["time"]
-    return_to = state_data.get("return_to")
-
-    if frequency == "once":
-        tasks.import_trakt.delay(
-            token=enc_token,
-            user_id=request.user.id,
-            mode=mode,
-            username=oauth_callback["username"],
-        )
-        messages.info(request, "The task to import media from Trakt has been queued.")
-    else:
-        helpers.create_import_schedule(
-            oauth_callback["username"],
-            request,
-            mode,
-            frequency,
-            import_time,
-            "Trakt",
-            token=enc_token,
-        )
-    return _integration_redirect(request, connected_slug="trakt", next_url=return_to)
+    _finish_trakt_connection(request, oauth_callback, state_data)
+    return _integration_redirect(
+        request,
+        connected_slug="trakt",
+        next_url=state_data.get("return_to"),
+    )
 
 
 @require_POST
@@ -867,7 +986,7 @@ def plex_callback(request):
     if return_to:
         # Arrived from the setup wizard: queue a sensible default import
         # rather than requiring a second visit to pick a library/mode.
-        tasks.import_plex.delay(user_id=request.user.id, mode="new", library="all")
+        tasks.import_plex.delay(user_id=request.user.id, mode="new", library=["all"])
 
     return _integration_redirect(request, connected_slug="plex", next_url=return_to)
 
@@ -883,6 +1002,27 @@ def plex_disconnect(request):
     return redirect("import_data")
 
 
+def _save_plex_content_kind(plex_account, library_content_kinds):
+    """Persist per-library content-kind choices (auto/music/audiobook).
+
+    Stored on the account rather than passed per-run so scheduled imports and
+    the live webhook honor the same choice. Each entry is a
+    "machine_identifier::section_id::content_kind" string.
+    """
+    changed = False
+    for entry in library_content_kinds:
+        try:
+            machine_identifier, section_id, content_kind = entry.split("::", 2)
+        except ValueError:
+            continue
+        changed = (
+            plex_account.set_content_kind(machine_identifier, section_id, content_kind)
+            or changed
+        )
+    if changed:
+        plex_account.save(update_fields=["section_settings"])
+
+
 @require_POST
 def import_plex(request):
     """Queue a Plex history import for the current user."""
@@ -891,14 +1031,16 @@ def import_plex(request):
         messages.error(request, "Connect Plex before importing.")
         return redirect("import_data")
 
-    library = request.POST.get("library") or "all"
+    library = request.POST.getlist("library") or ["all"]
     mode = request.POST.get("mode", "new")
     frequency = request.POST.get("frequency", "once")
     import_time = request.POST.get("time", "00:00")
     raw_usernames = request.POST.get("plex_usernames", "")
+    library_content_kinds = request.POST.getlist("library_content_kind")
 
     _save_plex_usernames(request.user, raw_usernames)
     _ensure_plex_library_index_schedule(request.user, plex_account)
+    _save_plex_content_kind(plex_account, library_content_kinds)
 
     if mode == "watchlist":
         _ensure_plex_watchlist_schedule(request.user, plex_account)
@@ -986,7 +1128,6 @@ def simkl_oauth(request):
         "mode": request.POST["mode"],
         "frequency": request.POST["frequency"],
         "time": request.POST["time"],
-        "anime_destination": request.POST.get("anime_destination", "anime"),
         "redirect_uri": redirect_uri,
         "return_to": request.POST.get("next"),
     }
@@ -994,7 +1135,7 @@ def simkl_oauth(request):
     request.session[state_token] = state
 
     return redirect(
-        f"{url}?client_id={settings.SIMKL_ID}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={credentials.get("simkl", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
 
 
@@ -1012,7 +1153,6 @@ def import_simkl_private(request):
     frequency = state_data["frequency"]
     mode = state_data["mode"]
     import_time = state_data["time"]
-    anime_destination = state_data.get("anime_destination", "anime")
     return_to = state_data.get("return_to")
 
     if frequency == "once":
@@ -1020,7 +1160,6 @@ def import_simkl_private(request):
             token=enc_token,
             user_id=request.user.id,
             mode=mode,
-            anime_destination=anime_destination,
         )
         messages.info(request, "The task to import media from Simkl has been queued.")
     else:
@@ -1032,7 +1171,6 @@ def import_simkl_private(request):
             import_time,
             "SIMKL",
             token=enc_token,
-            extra_kwargs={"anime_destination": anime_destination},
         )
 
     return _integration_redirect(request, connected_slug="simkl", next_url=return_to)
@@ -1088,7 +1226,7 @@ def anilist_oauth(request):
     request.session[state_token] = state
 
     return redirect(
-        f"{url}?client_id={settings.ANILIST_ID}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={credentials.get("anilist", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
 
 
@@ -1220,6 +1358,41 @@ def import_yamtrack(request):
         "The task to import media from the CSV file has been queued.",
     )
     return _integration_redirect(request, connected_slug="yamtrack")
+
+
+@require_POST
+def import_clz(request):
+    """View for importing a CLZ (Collectorz) CSV or XML export."""
+    file = request.FILES.get("clz_export")
+
+    if not file:
+        messages.error(request, "A CLZ CSV or XML export is required.")
+        return _integration_redirect(request)
+
+    if file.size > YAMTRACK_IMPORT_MAX_UPLOAD_BYTES:
+        messages.error(
+            request,
+            "That export file is too large to import "
+            f"(limit {YAMTRACK_IMPORT_MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
+        )
+        return _integration_redirect(request)
+
+    media_type = (request.POST.get("clz_media_type") or "").strip() or None
+    if media_type and media_type not in MediaTypes.values:
+        messages.error(request, "Unknown media type for the CLZ import.")
+        return _integration_redirect(request)
+
+    tasks.import_clz.delay(
+        user_id=request.user.id,
+        file=_read_uploaded_file(file),
+        mode=request.POST.get("mode", "new"),
+        media_type=media_type,
+    )
+    messages.info(
+        request,
+        "The task to import your CLZ export has been queued.",
+    )
+    return _integration_redirect(request, connected_slug="clz")
 
 
 @require_POST
@@ -1803,9 +1976,104 @@ AUDIOBOOKSHELF_COVER_TIMEOUT = 15
 # just compromised) returning e.g. text/html or image/svg+xml would have it
 # served as active content from Floppy's own origin to anyone holding the
 # signed proxy URL, since the account owner can share that URL freely.
+# The non-standard spellings are here because real ABS deployments behind a
+# reverse proxy do emit them, and rejecting one lost the poster (#861).
 AUDIOBOOKSHELF_COVER_CONTENT_TYPES = frozenset(
-    {"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"},
+    {
+        "image/jpeg",
+        "image/jpg",
+        "image/pjpeg",
+        "image/png",
+        "image/x-png",
+        "image/webp",
+        "image/gif",
+        "image/avif",
+        "image/bmp",
+        "image/tiff",
+        "image/heic",
+        "image/heif",
+    },
 )
+# Content types that mean "I don't know", where sniffing the body is the only
+# way to tell a real cover from something we must not serve.
+AUDIOBOOKSHELF_COVER_UNTYPED = frozenset({"", "application/octet-stream"})
+# Leading magic bytes for the raster formats above. WebP is RIFF....WEBP, so it
+# is matched on two separate offsets rather than a single prefix.
+COVER_MAGIC_PREFIXES = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"BM", "image/bmp"),
+    (b"II*\x00", "image/tiff"),
+    (b"MM\x00*", "image/tiff"),
+)
+COVER_SNIFF_BYTES = 16
+
+
+def _sniff_cover_content_type(body: bytes) -> str:
+    """Return the image type of `body` from its magic bytes, or "" if unknown.
+
+    Deliberately recognises raster formats only: an SVG or HTML body has no
+    magic number here and so stays rejected, exactly as an explicit
+    image/svg+xml content type would be.
+    """
+    for prefix, content_type in COVER_MAGIC_PREFIXES:
+        if body.startswith(prefix):
+            return content_type
+    if body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return "image/webp"
+    if body[4:8] == b"ftyp":
+        brand = body[8:12]
+        if brand in {b"avif", b"avis"}:
+            return "image/avif"
+        if brand in {b"heic", b"heix", b"heim", b"heis", b"mif1", b"msf1"}:
+            return "image/heic"
+    return ""
+
+
+def _placeholder_image_bytes():
+    """Decode settings.IMG_NONE into (body, content_type), or None.
+
+    IMG_NONE is a base64 data URI by default but is overridable to a plain URL,
+    which there is nothing to decode from. Decoded per call rather than cached
+    so an overridden setting is always honoured; this only runs on the failure
+    path, where one small base64 decode is not worth a staleness hazard.
+    """
+    prefix = "data:"
+    value = settings.IMG_NONE or ""
+    if not value.startswith(prefix):
+        return None
+    header, _, payload = value[len(prefix) :].partition(",")
+    if not payload:
+        return None
+    content_type, _, encoding = header.partition(";")
+    if encoding.strip().lower() != "base64":
+        return None
+    try:
+        return base64.b64decode(payload), content_type.strip() or "image/svg+xml"
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _placeholder_image_response():
+    """Return Floppy's own "no artwork" placeholder as a real image response.
+
+    A 404 here renders as the browser's broken-image glyph, because nothing in
+    the templates has an onerror fallback and the stored URL is a perfectly
+    valid proxy URL (#861). Serving the placeholder instead keeps the grid
+    looking the way it does for any other artless item. The bytes are Floppy's
+    own fixed SVG, never anything the upstream server influenced, and the TTL
+    is short so the real cover reappears once ABS recovers.
+    """
+    decoded = _placeholder_image_bytes()
+    if decoded is None:
+        return HttpResponseNotFound()
+    body, content_type = decoded
+    response = HttpResponse(body, content_type=content_type)
+    response["Cache-Control"] = "private, max-age=300"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @login_not_required
@@ -1821,24 +2089,44 @@ def audiobookshelf_cover(request, token):
     hard size cap and its content type is restricted to known-safe image
     types - matching the bounded, allow-listed fetch app.image_cache already
     does for provider artwork.
+
+    Every failure below is logged and answered with Floppy's own placeholder
+    rather than a bare 404: the 404s were both invisible in Settings > Advanced
+    and rendered as broken-image glyphs, which is what made #861 impossible to
+    diagnose from a bug report.
     """
     resolved = abs_cover_proxy.resolve_cover_proxy_token(token)
     if resolved is None:
+        # A tampered or malformed token is not something a Floppy page can
+        # produce, so this one stays a plain 404. It is logged at debug
+        # rather than warning because the view is anonymous: anyone could
+        # otherwise flood the log with junk tokens and bury the real
+        # Audiobookshelf failures below, which are the point of #861. Every
+        # other branch here needs a valid signature to reach.
+        logger.debug("Audiobookshelf cover proxy rejected an unsignable token")
         return HttpResponseNotFound()
     account_id, library_item_id = resolved
 
     account = AudiobookshelfAccount.objects.filter(pk=account_id).first()
     if account is None:
-        return HttpResponseNotFound()
+        logger.warning(
+            "Audiobookshelf cover unavailable: no account account=%s item=%s",
+            account_id,
+            library_item_id,
+        )
+        return _placeholder_image_response()
 
     try:
         api_token = helpers.decrypt(account.api_token)
-    except Exception:
+    except Exception as error:
         logger.warning(
-            "Failed to decrypt Audiobookshelf token for cover proxy account=%s",
+            "Audiobookshelf cover unavailable: token decrypt failed "
+            "account=%s item=%s error=%s",
             account_id,
+            library_item_id,
+            exception_summary(error),
         )
-        return HttpResponseNotFound()
+        return _placeholder_image_response()
 
     cover_url = f"{account.base_url.rstrip('/')}/api/items/{library_item_id}/cover"
     try:
@@ -1847,6 +2135,146 @@ def audiobookshelf_cover(request, token):
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=AUDIOBOOKSHELF_COVER_TIMEOUT,
             stream=True,
+        )
+    except requests.RequestException as error:
+        logger.warning(
+            "Audiobookshelf cover unavailable: request failed "
+            "account=%s item=%s error=%s",
+            account_id,
+            library_item_id,
+            exception_summary(error),
+        )
+        return _placeholder_image_response()
+
+    try:
+        if upstream.status_code != HTTPStatus.OK:
+            logger.warning(
+                "Audiobookshelf cover unavailable: upstream status=%s "
+                "account=%s item=%s",
+                upstream.status_code,
+                account_id,
+                library_item_id,
+            )
+            return _placeholder_image_response()
+
+        content_type = (
+            upstream.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        )
+        if (
+            content_type not in AUDIOBOOKSHELF_COVER_CONTENT_TYPES
+            and content_type not in AUDIOBOOKSHELF_COVER_UNTYPED
+        ):
+            logger.warning(
+                "Audiobookshelf cover unavailable: refused content_type=%s "
+                "account=%s item=%s",
+                content_type,
+                account_id,
+                library_item_id,
+            )
+            return _placeholder_image_response()
+
+        try:
+            content_length = int(upstream.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length > image_cache.MAX_IMAGE_BYTES:
+            logger.warning(
+                "Audiobookshelf cover unavailable: declared content_length=%s "
+                "over cap account=%s item=%s",
+                content_length,
+                account_id,
+                library_item_id,
+            )
+            return _placeholder_image_response()
+
+        body = bytearray()
+        oversized = False
+        for chunk in upstream.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            body.extend(chunk)
+            if len(body) > image_cache.MAX_IMAGE_BYTES:
+                oversized = True
+                break
+    finally:
+        upstream.close()
+
+    if oversized:
+        logger.warning(
+            "Audiobookshelf cover unavailable: body exceeded %s bytes "
+            "account=%s item=%s",
+            image_cache.MAX_IMAGE_BYTES,
+            account_id,
+            library_item_id,
+        )
+        return _placeholder_image_response()
+
+    body = bytes(body)
+    # An upstream that declares nothing useful still has to prove it sent a
+    # raster image; sniffing keeps SVG and HTML out just as the allow-list does.
+    if content_type in AUDIOBOOKSHELF_COVER_UNTYPED:
+        sniffed = _sniff_cover_content_type(body[:COVER_SNIFF_BYTES])
+        if not sniffed:
+            logger.warning(
+                "Audiobookshelf cover unavailable: untyped body was not an image "
+                "content_type=%s account=%s item=%s",
+                content_type,
+                account_id,
+                library_item_id,
+            )
+            return _placeholder_image_response()
+        content_type = sniffed
+
+    response = HttpResponse(body, content_type=content_type)
+    response["Cache-Control"] = "private, max-age=3600"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+PLEX_COVER_TIMEOUT = 15
+# Same allow-list as the Audiobookshelf proxy: a Plex server is an arbitrary
+# user-configured host, so anything but a plain raster type would be served as
+# active content from Floppy's own origin to whoever holds the signed URL.
+PLEX_COVER_CONTENT_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"},
+)
+
+
+@login_not_required
+@require_GET
+def plex_cover(request, token):
+    """Stream a Plex item's cover art using the account's own Plex token.
+
+    Plex art endpoints require an X-Plex-Token, which must never end up in an
+    `<img src>` or in a stored Item.image. This resolves the signed token to the
+    owning account and server, fetches the art server-side, and streams it back
+    under the same size cap and content-type allow-list as the Audiobookshelf
+    cover proxy.
+    """
+    resolved = plex_cover_proxy.resolve_cover_proxy_token(token)
+    if resolved is None:
+        return HttpResponseNotFound()
+    account_id, machine_identifier, thumb_path = resolved
+
+    account = PlexAccount.objects.filter(pk=account_id).first()
+    if account is None:
+        return HttpResponseNotFound()
+
+    uri, plex_token = plex_api.connection_for_machine(
+        account.sections,
+        machine_identifier,
+        account.plex_token,
+    )
+    if not uri or not plex_token:
+        return HttpResponseNotFound()
+
+    try:
+        upstream = requests.get(
+            f"{uri}{thumb_path}",
+            params={"X-Plex-Token": plex_token},
+            timeout=PLEX_COVER_TIMEOUT,
+            stream=True,
+            verify=settings.PLEX_SSL_VERIFY,
         )
     except requests.RequestException:
         return HttpResponseNotFound()
@@ -1858,7 +2286,7 @@ def audiobookshelf_cover(request, token):
         content_type = (
             upstream.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         )
-        if content_type not in AUDIOBOOKSHELF_COVER_CONTENT_TYPES:
+        if content_type not in PLEX_COVER_CONTENT_TYPES:
             return HttpResponseNotFound()
 
         try:
@@ -2053,6 +2481,226 @@ def import_storyteller(request):
     tasks.import_storyteller.delay(user_id=request.user.id, mode="new")
     _ensure_storyteller_schedule(request.user)
     messages.info(request, "Storyteller import queued.")
+    return redirect("import_data")
+
+
+KOREADER_IMPORT_TASK_NAME = "Import from KOReader"
+KOREADER_MAX_COMPLETION = 100
+
+
+def _parse_finished_threshold_percent(post):
+    """Return a 0-1 completion threshold from a percentage form field."""
+    raw = (post.get("finished_threshold_percent") or "").strip()
+    if not raw:
+        return 1.0
+    try:
+        percent = float(raw)
+    except ValueError as exc:
+        msg = "Completion threshold must be a number between 1 and 100."
+        raise ValueError(msg) from exc
+    if not 1 <= percent <= KOREADER_MAX_COMPLETION:
+        msg = "Completion threshold must be between 1 and 100 percent."
+        raise ValueError(msg)
+    return percent / 100.0
+
+
+def _koreader_options_from_post(post):
+    """Read KOReader account toggles from a form POST."""
+    return {
+        "verify_ssl": post.get("verify_ssl") == "on",
+        "create_missing": post.get("create_missing") == "on",
+        "skip_finished_books": post.get("skip_finished_books") == "on",
+        "finished_threshold": _parse_finished_threshold_percent(post),
+    }
+
+
+def _validate_koreader_connection(server_url, username, auth_key, verify_ssl):
+    """Verify credentials against the sync server or raise."""
+    client = KoreaderClient(server_url, username, auth_key, verify_ssl=verify_ssl)
+    client.auth()
+
+
+@require_POST
+def koreader_connect(request):
+    """Connect a KOReader sync server account."""
+    server_url = request.POST.get("server_url", "").strip().rstrip("/")
+    username = request.POST.get("username", "").strip()
+    password = request.POST.get("password", "")
+    try:
+        options = _koreader_options_from_post(request.POST)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+    mode = request.POST.get("mode", "new")
+    frequency = request.POST.get("frequency", "once")
+    import_time = request.POST.get("time", "00:00")
+
+    if not server_url or not username or not password:
+        messages.error(request, "Server URL, username, and password are required.")
+        return redirect("import_data")
+
+    auth_key = KoreaderClient.password_to_auth_key(password)
+    try:
+        _validate_koreader_connection(
+            server_url,
+            username,
+            auth_key,
+            options["verify_ssl"],
+        )
+    except KoreaderAuthError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+    except KoreaderClientError as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+    except requests.RequestException as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+
+    KoreaderAccount.objects.update_or_create(
+        user=request.user,
+        defaults={
+            "server_url": server_url,
+            "username": username,
+            "auth_key": helpers.encrypt(auth_key),
+            **options,
+            "connection_broken": False,
+            "last_error_message": "",
+        },
+    )
+
+    if frequency == "once":
+        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
+        messages.success(request, "Connected to KOReader. Import queued.")
+    else:
+        helpers.create_import_schedule(
+            username=username,
+            request=request,
+            mode=mode,
+            frequency=frequency,
+            import_time=import_time,
+            source="KOReader",
+            extra_kwargs={"user_id": request.user.id},
+        )
+        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
+        messages.success(request, "Connected to KOReader. Import scheduled.")
+    return redirect("import_data")
+
+
+@require_POST
+def koreader_settings(request):
+    """Update KOReader connection and sync options."""
+    account = getattr(request.user, "koreader_account", None)
+    if not account:
+        messages.error(request, "Connect KOReader before changing settings.")
+        return redirect("import_data")
+
+    server_url = request.POST.get("server_url", "").strip().rstrip("/")
+    username = request.POST.get("username", "").strip()
+    password = request.POST.get("password", "")
+    try:
+        options = _koreader_options_from_post(request.POST)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+
+    if not server_url or not username:
+        messages.error(request, "Server URL and username are required.")
+        return redirect("import_data")
+
+    if password:
+        auth_key = KoreaderClient.password_to_auth_key(password)
+    else:
+        try:
+            auth_key = helpers.decrypt_or_raise(account.auth_key)
+        except helpers.MediaImportError as exc:
+            messages.error(request, str(exc))
+            return redirect("import_data")
+
+    try:
+        _validate_koreader_connection(
+            server_url,
+            username,
+            auth_key,
+            options["verify_ssl"],
+        )
+    except KoreaderAuthError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+    except KoreaderClientError as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+    except requests.RequestException as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+
+    account.server_url = server_url
+    account.username = username
+    account.auth_key = helpers.encrypt(auth_key)
+    account.verify_ssl = options["verify_ssl"]
+    account.create_missing = options["create_missing"]
+    account.skip_finished_books = options["skip_finished_books"]
+    account.finished_threshold = options["finished_threshold"]
+    account.connection_broken = False
+    account.last_error_message = ""
+    account.save(
+        update_fields=[
+            "server_url",
+            "username",
+            "auth_key",
+            "verify_ssl",
+            "create_missing",
+            "skip_finished_books",
+            "finished_threshold",
+            "connection_broken",
+            "last_error_message",
+            "updated_at",
+        ],
+    )
+    messages.success(request, "KOReader settings saved.")
+    return redirect("import_data")
+
+
+@require_POST
+def koreader_disconnect(request):
+    """Disconnect the KOReader integration."""
+    from django_celery_beat.models import PeriodicTask
+
+    PeriodicTask.objects.filter(
+        task=KOREADER_IMPORT_TASK_NAME,
+        kwargs__contains=f'"user_id": {request.user.id}',
+    ).delete()
+    KoreaderDocumentLink.objects.filter(user=request.user).delete()
+    KoreaderAccount.objects.filter(user=request.user).delete()
+    messages.info(request, "Disconnected KOReader.")
+    return redirect("import_data")
+
+
+@require_POST
+def import_koreader(request):
+    """Queue a KOReader import or update its schedule."""
+    account = getattr(request.user, "koreader_account", None)
+    if not account:
+        messages.error(request, "Connect KOReader before importing.")
+        return redirect("import_data")
+
+    mode = request.POST["mode"]
+    frequency = request.POST["frequency"]
+    import_time = request.POST["time"]
+
+    if frequency == "once":
+        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
+        messages.info(request, "KOReader import queued.")
+    else:
+        helpers.create_import_schedule(
+            username=account.username,
+            request=request,
+            mode=mode,
+            frequency=frequency,
+            import_time=import_time,
+            source="KOReader",
+            extra_kwargs={"user_id": request.user.id},
+        )
     return redirect("import_data")
 
 
@@ -3150,8 +3798,7 @@ def import_hardcover(request):
         return _integration_redirect(request)
 
     if api_key:
-        request.user.hardcover_api_key = helpers.encrypt(api_key)
-        request.user.save(update_fields=["hardcover_api_key"])
+        credentials.set_user("hardcover", request.user, {"api_key": api_key})
         messages.success(request, "Hardcover API key saved.")
 
     if file:
@@ -3189,6 +3836,39 @@ def import_storygraph(request):
         "The task to import media from StoryGraph CSV file has been queued.",
     )
     return _integration_redirect(request, connected_slug="storygraph")
+
+
+@require_POST
+def import_tvtime(request):
+    """View for importing watch history from TV Time's GDPR export CSVs."""
+    shows_file = request.FILES.get("tvtime_shows_csv")
+    movies_file = request.FILES.get("tvtime_movies_csv")
+
+    if not shows_file and not movies_file:
+        messages.error(
+            request,
+            "Select at least one TV Time CSV file (shows and/or movies).",
+        )
+        return _integration_redirect(request)
+
+    mode = request.POST["mode"]
+    if shows_file:
+        tasks.import_tvtime_shows.delay(
+            user_id=request.user.id,
+            file=_read_uploaded_file(shows_file),
+            mode=mode,
+        )
+    if movies_file:
+        tasks.import_tvtime_movies.delay(
+            user_id=request.user.id,
+            file=_read_uploaded_file(movies_file),
+            mode=mode,
+        )
+    messages.info(
+        request,
+        "The task to import media from TV Time CSV file(s) has been queued.",
+    )
+    return _integration_redirect(request, connected_slug="tvtime")
 
 
 @require_GET
@@ -3475,7 +4155,7 @@ def kodi_webhook(request, token):
 STREMIO_ADDON_MANIFEST = {
     # Keep the existing addon id so installed clients remain compatible.
     "id": "org.yamtrack.scrobbler",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "name": "Floppy",
     "description": (
         "Floppy Watchlist catalogs and playback scrobbling for Stremio."
@@ -3484,6 +4164,7 @@ STREMIO_ADDON_MANIFEST = {
     "types": ["movie", "series"],
     "idPrefixes": ["tt"],
     "catalogs": [],
+    "behaviorHints": {"configurable": True, "configurationRequired": False},
 }
 STREMIO_SCROBBLE_THROTTLE_SECONDS = 1800
 STREMIO_MAX_MEDIA_ID_LENGTH = 128
@@ -3508,6 +4189,7 @@ def stremio_addon_catalog(
     media_type,
     catalog_id,
     extra=None,
+    config=None,
 ):
     """Serve a Floppy Watchlist catalog to Stremio."""
     try:
@@ -3540,9 +4222,29 @@ def stremio_addon_catalog(
 
 
 @login_not_required
+@require_GET
+def stremio_addon_configure(request, token, config=None):
+    """Serve the addon configuration page for a user's install URL."""
+    try:
+        user = users.models.User.objects.get(token=token)
+    except ObjectDoesNotExist:
+        logger.warning("Invalid token on Stremio addon configure request")
+        return HttpResponse("Invalid token", status=401)
+
+    return render(
+        request,
+        "integrations/stremio_configure.html",
+        {
+            "catalog_options": stremio_catalog.catalog_options(user),
+            "selected_ids": list(stremio_catalog.parse_catalog_config(config)),
+        },
+    )
+
+
+@login_not_required
 @csrf_exempt
 @require_GET
-def stremio_addon_manifest(request, token):
+def stremio_addon_manifest(request, token, config=None):
     """Serve the Stremio addon manifest for a user's install URL."""
     try:
         user = users.models.User.objects.get(token=token)
@@ -3550,8 +4252,12 @@ def stremio_addon_manifest(request, token):
         logger.warning("Invalid token on Stremio addon manifest request")
         return _stremio_addon_response({"error": "Invalid token"}, status=401)
 
+    selected = stremio_catalog.parse_catalog_config(config)
     manifest = STREMIO_ADDON_MANIFEST | {
-        "catalogs": stremio_catalog.manifest_catalogs(user)
+        "logo": request.build_absolute_uri(
+            static("favicon/apple-touch-icon.png"),
+        ),
+        "catalogs": stremio_catalog.manifest_catalogs(user, selected),
     }
     return _stremio_addon_response(manifest)
 
@@ -3559,7 +4265,7 @@ def stremio_addon_manifest(request, token):
 @login_not_required
 @csrf_exempt
 @require_GET
-def stremio_addon_subtitles(request, token, media_type, media_id):
+def stremio_addon_subtitles(request, token, media_type, media_id, config=None):
     """Record a playback-start scrobble from a Stremio subtitles request."""
     from django.core.cache import cache
 

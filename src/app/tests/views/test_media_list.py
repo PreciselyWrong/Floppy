@@ -794,6 +794,19 @@ class MediaListViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "if (selectMode) { $event.preventDefault(); toggleItemSelected(")
 
+    def test_table_layout_shows_notes_on_main_media_list(self):
+        """Notes must render in Table View on the main media list (issue #1010)."""
+        movie = Movie.objects.get(item__title="Test Movie 1", user=self.user)
+        movie.notes = "My private note"
+        movie.save(update_fields=["notes"])
+
+        response = self.client.get(
+            reverse("medialist", args=[MediaTypes.MOVIE.value]) + "?layout=table",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "My private note")
+
     def test_movie_grid_counts_completed_plays_when_progress_is_zero(self):
         """Completed movie duplicates should count as plays even when progress is zero."""
         item = Item.objects.get(
@@ -3159,8 +3172,12 @@ class MediaListViewTests(TestCase):
             html=False,
         )
         grid_html = grid_page.content.decode()
-        self.assertRegex(grid_html, r'x-show="trackOpen"\s+x-cloak')
-        self.assertRegex(grid_html, r'x-show="listsOpen"\s+x-cloak')
+        # x-cloak has to be on the modal so it can't flash before Alpine
+        # initialises, but it need not be the very next attribute: #1016
+        # inserted @mousedown.self between the two on the track modal, and an
+        # adjacency-pinned regex turned that into a red suite on latest.
+        self.assertRegex(grid_html, r'x-show="trackOpen"[^>]*\sx-cloak\b')
+        self.assertRegex(grid_html, r'x-show="listsOpen"[^>]*\sx-cloak\b')
 
         first_page = self.client.get(
             reverse("medialist", args=[MediaTypes.MOVIE.value])
@@ -3185,7 +3202,7 @@ class MediaListViewTests(TestCase):
         )
         second_html = second_page.content.decode()
         self.assertNotIn("<thead", second_html)
-        self.assertRegex(second_html, r'x-show="trackOpen"\s+x-cloak')
+        self.assertRegex(second_html, r'x-show="trackOpen"[^>]*\sx-cloak\b')
 
         second_rows = re.findall(r"<tr[^>]*>(.*?)</tr>", second_html, flags=re.DOTALL)
         self.assertGreater(len(second_rows), 0)

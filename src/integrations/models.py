@@ -34,6 +34,14 @@ class PlexAccount(models.Model):
     machine_identifier = models.CharField(max_length=255, blank=True, null=True)
     sections = models.JSONField(default=list, blank=True)
     sections_refreshed_at = models.DateTimeField(blank=True, null=True)
+    section_settings = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Per-library import settings keyed by '<machine_identifier>::"
+            "<section_id>', e.g. {'abc::3': {'content_kind': 'audiobook'}}"
+        ),
+    )
     watchlist_sync_enabled = models.BooleanField(
         default=False,
         help_text="Whether recurring Plex watchlist sync is enabled",
@@ -62,6 +70,45 @@ class PlexAccount(models.Model):
     def is_connected(self):
         """Return True when we have a token stored."""
         return bool(self.plex_token)
+
+    @staticmethod
+    def library_key(machine_identifier, section_id):
+        """Return the '<machine>::<section>' key used to address a library.
+
+        Matches the value the import form posts as `library` and the key the
+        Plex webhook builds from Server.uuid + Metadata.librarySectionID.
+        """
+        if not machine_identifier or section_id in (None, ""):
+            return None
+        return f"{machine_identifier}::{section_id}"
+
+    def content_kind(self, machine_identifier, section_id):
+        """Return how a library should be imported: auto, music or audiobook."""
+        from integrations.imports.plex_audiobooks import (
+            CONTENT_KIND_AUTO,
+            CONTENT_KINDS,
+        )
+
+        key = self.library_key(machine_identifier, section_id)
+        settings_map = self.section_settings or {}
+        kind = (settings_map.get(key) or {}).get("content_kind")
+        return kind if kind in CONTENT_KINDS else CONTENT_KIND_AUTO
+
+    def set_content_kind(self, machine_identifier, section_id, kind):
+        """Persist how a library should be imported. Returns True when changed."""
+        from integrations.imports.plex_audiobooks import CONTENT_KINDS
+
+        key = self.library_key(machine_identifier, section_id)
+        if not key or kind not in CONTENT_KINDS:
+            return False
+        settings_map = dict(self.section_settings or {})
+        entry = dict(settings_map.get(key) or {})
+        if entry.get("content_kind") == kind:
+            return False
+        entry["content_kind"] = kind
+        settings_map[key] = entry
+        self.section_settings = settings_map
+        return True
 
 
 class PlexLibrarySection(models.Model):
@@ -960,6 +1007,100 @@ class StorytellerAccount(models.Model):
     def is_connected(self):
         """Return True when the account appears connected."""
         return bool(self.server_url and self.auth_token) and not self.connection_broken
+
+
+class KoreaderAccount(models.Model):
+    """Store KOReader sync server connection settings and sync state for a user."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="koreader_account",
+    )
+    server_url = models.URLField(help_text="KOReader sync server URL")
+    username = models.CharField(max_length=150)
+    auth_key = models.TextField(
+        blank=True,
+        default="",
+        help_text="Encrypted MD5 hash of the KOReader sync password",
+    )
+    verify_ssl = models.BooleanField(
+        default=True,
+        help_text="Verify TLS certificates when connecting to the sync server",
+    )
+    create_missing = models.BooleanField(
+        default=False,
+        help_text="Create Floppy book entries when KOReader documents match providers",
+    )
+    skip_finished_books = models.BooleanField(
+        default=True,
+        help_text="Skip progress fetches for books already marked completed in Floppy",
+    )
+    finished_threshold = models.FloatField(
+        default=1.0,
+        help_text="Reading progress fraction (0-1) at which a synced book is marked completed",
+    )
+    supports_document_list = models.BooleanField(null=True, blank=True)
+    last_sync_at = models.DateTimeField(null=True, blank=True)
+    connection_broken = models.BooleanField(default=False)
+    last_error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        """Model options."""
+
+        verbose_name = "KOReader account"
+        verbose_name_plural = "KOReader accounts"
+
+    def __str__(self):
+        """Readable representation."""
+        return f"KoreaderAccount({self.user.username})"
+
+    @property
+    def is_connected(self):
+        """Return True when the account appears connected."""
+        return (
+            bool(self.server_url and self.username and self.auth_key)
+            and not self.connection_broken
+        )
+
+
+class KoreaderDocumentLink(models.Model):
+    """Map a KOReader document hash to a Floppy book item for a user."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="koreader_document_links",
+    )
+    document_hash = models.CharField(max_length=32, db_index=True)
+    item = models.ForeignKey(
+        "app.Item",
+        on_delete=models.CASCADE,
+        related_name="koreader_document_links",
+    )
+    linked_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Model options."""
+
+        verbose_name = "KOReader document link"
+        verbose_name_plural = "KOReader document links"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "document_hash"],
+                name="integrations_koreaderdocumentlink_unique_user_hash",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "item"],
+                name="integrations_koreaderdocumentlink_unique_user_item",
+            ),
+        ]
+
+    def __str__(self):
+        """Readable representation."""
+        return f"KoreaderDocumentLink({self.user.username}, {self.document_hash[:8]}…)"
 
 
 class StremioAccount(models.Model):

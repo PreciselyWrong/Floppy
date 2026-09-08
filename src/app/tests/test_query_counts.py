@@ -65,18 +65,31 @@ TV_LIST_TIME_LEFT_SORT_MAX_QUERIES = (
     26  # pinned after Fix 4 bulk runtime load (was ~400+ per-season queries)
 )
 MOVIE_LIST_DEFAULT_SORT_MAX_QUERIES = 14
-ANIME_LIST_DEFAULT_SORT_MAX_QUERIES = 20
+ANIME_LIST_DEFAULT_SORT_MAX_QUERIES = (
+    22  # +2 over the pre-credential-registry pin: resolving the MAL/TMDB
+    # credentials reads the instance credential table and the viewer's personal
+    # one, each once per cold cache (an hour in production, every test here).
+)
 ANIME_LIST_GROUPED_MAX_QUERIES = (
-    22  # grouped (TV-backed) anime adds no per-show runtime queries (24 when broken);
-    # +4 from the Genres/Tags column Prefetch("item__item_tags") added in #457
+    23  # grouped (TV-backed) anime adds no per-show runtime queries (24 when broken);
+    # +4 from the Genres/Tags column Prefetch("item__item_tags") added in #457;
+    # +2 from the instance and personal provider-credential reads
 )
 MANGA_LIST_DEFAULT_SORT_MAX_QUERIES = 14
 MANGA_LIST_NO_STATUS_MAX_QUERIES = 18
 GAME_LIST_DEFAULT_SORT_MAX_QUERIES = 18
-HOME_ROW_FRAGMENT_MAX_QUERIES = 122  # +2 from the Tags column Prefetch (#457)
+GAME_LIST_START_DATE_SORT_LIBRARY_SIZE = 150
+GAME_LIST_START_DATE_SORT_MAX_QUERIES = (
+    15  # pinned after the SQL pushdown fast path (#1004) — was scanning the
+    # entire status-filtered library before slicing to the page
+)
+HOME_ROW_FRAGMENT_MAX_QUERIES = (
+    123  # +2 from the Tags column Prefetch (#457); +1 from the provider-credential read
+)
 CUSTOM_LIST_DETAIL_MAX_QUERIES = 33  # +3 from prefilled release-year metadata
 SEASON_PAGE_FIRST_VIEW_EPISODE_COUNT = 18
-SEASON_PAGE_FIRST_VIEW_MAX_QUERIES = 45  # pinned after batching the per-episode create/signal N+1 (was 180)
+SEASON_PAGE_FIRST_VIEW_MAX_QUERIES = 46  # +1 from the per-item metadata language override lookup (#1009)
+SESSION_HISTORY_MODAL_MAX_QUERIES = 60
 
 
 def seed_tv_library(
@@ -440,11 +453,60 @@ class QueryCountTests(TestCase):
             "game list default sort",
         )
 
+    def test_api_game_list_start_date_sort_query_budget(self):
+        """Pin the reporter's exact repro from issue #1004.
+
+        `GET /api/v1/media/game/?status=1&limit=10&sort=start_date&direction=asc`
+        took 778ms/75 queries in production against ~2,500 games in one
+        status — the SQL fast path (app.media_list_pagination) must keep
+        this flat regardless of library size, not scan every matching row
+        to serve a 10-item page.
+        """
+        for index in range(GAME_LIST_START_DATE_SORT_LIBRARY_SIZE):
+            item = Item.objects.create(
+                media_id=f"qc_game_start_date_{index}",
+                source=Sources.IGDB.value,
+                media_type=MediaTypes.GAME.value,
+                title=f"Query Count Start Date Game {index}",
+            )
+            Game.objects.create(item=item, user=self.user, status=Status.IN_PROGRESS.value)
+
+        with CaptureQueriesContext(connection) as context:
+            response = self.client.get(
+                "/api/v1/media/game/",
+                {"status": "1", "limit": 10, "sort": "start_date", "direction": "asc"},
+                HTTP_X_API_KEY=self.user.token,
+            )
+        self.assertEqual(response.status_code, 200)
+        # >= not ==: setUpTestData's seed_game_library also seeds
+        # IN_PROGRESS games shared by every test in this class.
+        self.assertGreaterEqual(
+            response.json()["pagination"]["total"], GAME_LIST_START_DATE_SORT_LIBRARY_SIZE,
+        )
+        count = len(context.captured_queries)
+        self.assertLessEqual(
+            count,
+            GAME_LIST_START_DATE_SORT_MAX_QUERIES,
+            f"game list API start_date sort issued {count} queries against "
+            f"{GAME_LIST_START_DATE_SORT_LIBRARY_SIZE} games, budget is "
+            f"{GAME_LIST_START_DATE_SORT_MAX_QUERIES}. If this increase is "
+            "intentional, update the pin deliberately.",
+        )
+
     def test_custom_list_detail_query_budget(self):
         self._assert_query_budget(
             reverse("list_detail", args=[self.custom_list.public_reference]),
             CUSTOM_LIST_DETAIL_MAX_QUERIES,
             "custom list detail",
+        )
+
+    def test_session_history_modal_query_budget(self):
+        """Session history stays within budget on a cold cache."""
+        self._assert_query_budget(
+            f"{reverse('activity_sessions_modal')}?media_type=tv&media_id=qc_show_0"
+            "&source=tmdb&season_number=1",
+            SESSION_HISTORY_MODAL_MAX_QUERIES,
+            "session history modal",
         )
 
     @patch("app.providers.trakt.is_configured", return_value=False)

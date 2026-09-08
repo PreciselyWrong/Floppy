@@ -139,6 +139,11 @@ urlpatterns = [
         name="update_metadata_provider_preference",
     ),
     path(
+        "details/language/<source:source>/<media_type:media_type>/<path:media_id>",
+        views.update_metadata_language_preference,
+        name="update_metadata_language_preference",
+    ),
+    path(
         "details/remap-search/<source:source>/<media_type:media_type>/<path:media_id>",
         views.search_remap_candidates,
         name="search_remap_candidates",
@@ -275,6 +280,11 @@ urlpatterns = [
         name="statistics_talent_fragment",
     ),
     path("history", views.history, name="history"),
+    path(
+        "history/sessions",
+        views.activity_sessions_modal,
+        name="activity_sessions_modal",
+    ),
     path(
         "history/day/<str:day_key>",
         views.history_day_fragment,

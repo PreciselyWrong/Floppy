@@ -1,10 +1,11 @@
+import json
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import call, patch
 
 import requests
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from requests import Response
 
 from app.models import (
@@ -20,7 +21,8 @@ from app.models import (
     Status,
 )
 from app.providers import services
-from integrations.imports import helpers
+from app.services.grouped_anime import GroupedAnimeMatch
+from integrations.imports import helpers, trakt
 from integrations.imports.helpers import MediaImportError
 from integrations.imports.trakt import TraktImporter, importer
 
@@ -2653,3 +2655,247 @@ class ImportTraktPreferredProviderDedup(TestCase):
 
         mock_find_tvdb_counterpart.assert_not_called()
         self.assertEqual(item.source, Sources.TMDB.value)
+
+
+class ImportTraktAnimeRouting(TestCase):
+    """Trakt had no anime handling at all, so anime always landed in TV."""
+
+    def setUp(self):
+        """Create a TMDB-preferring user with the Anime library enabled."""
+        self.user = get_user_model().objects.create_user(
+            username="trakt-anime",
+            password="12345",
+        )
+        self.user.anime_metadata_source_default = Sources.TMDB.value
+        self.user.save()
+
+        self.match = GroupedAnimeMatch(
+            decision="move",
+            reason="exact_external_id_and_animation_genre",
+            tmdb_id="1396",
+            mal_ids=("12345",),
+        )
+        self.tv_metadata = {
+            "title": "Anime Show",
+            "image": "tv_image.jpg",
+            "last_episode_season": 1,
+            "max_progress": 1,
+            "episodes": [{"episode_number": 1, "title": "One", "image": ""}],
+        }
+
+    def _importer(self):
+        return TraktImporter("testuser", self.user, "new")
+
+    def test_classified_anime_buckets_the_whole_item_tree(self):
+        """Show, season and episode Items must all land in the anime bucket."""
+        importer_instance = self._importer()
+        with patch(
+            "app.services.grouped_anime.classify_tv_metadata",
+            return_value=self.match,
+        ):
+            bucket = importer_instance._anime_bucket_for_show("1396", self.tv_metadata)
+            tv_item = importer_instance._get_or_create_item(
+                MediaTypes.TV.value,
+                "1396",
+                self.tv_metadata,
+                library_media_type=bucket,
+            )
+            season_item = importer_instance._get_or_create_item(
+                MediaTypes.SEASON.value,
+                "1396",
+                self.tv_metadata,
+                1,
+                library_media_type=bucket,
+            )
+            episode_item = importer_instance._get_or_create_item(
+                MediaTypes.EPISODE.value,
+                "1396",
+                self.tv_metadata,
+                1,
+                1,
+                library_media_type=bucket,
+            )
+
+        for item in (tv_item, season_item, episode_item):
+            self.assertEqual(item.library_media_type, MediaTypes.ANIME.value)
+
+    def test_plain_tv_show_is_untouched(self):
+        """A show the classifier rejects keeps its ordinary TV bucket."""
+        importer_instance = self._importer()
+        with patch(
+            "app.services.grouped_anime.classify_tv_metadata",
+            return_value=None,
+        ):
+            bucket = importer_instance._anime_bucket_for_show("1396", self.tv_metadata)
+            tv_item = importer_instance._get_or_create_item(
+                MediaTypes.TV.value,
+                "1396",
+                self.tv_metadata,
+                library_media_type=bucket,
+            )
+
+        self.assertIsNone(bucket)
+        self.assertEqual(tv_item.library_media_type, MediaTypes.TV.value)
+
+    def test_sticks_to_an_existing_grouped_home(self):
+        """An existing anime home wins even when the classifier says nothing."""
+        grouped_item = Item.objects.create(
+            media_id="1396",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            library_media_type=MediaTypes.ANIME.value,
+            title="Anime Show",
+            image="",
+        )
+        TV.objects.create(
+            item=grouped_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+
+        importer_instance = self._importer()
+        with patch(
+            "app.services.grouped_anime.classify_tv_metadata",
+            return_value=None,
+        ) as mock_classify:
+            bucket = importer_instance._anime_bucket_for_show("1396", self.tv_metadata)
+
+        self.assertEqual(bucket, MediaTypes.ANIME.value)
+        mock_classify.assert_not_called()
+
+    def test_flat_mal_home_is_skipped_rather_than_imported_to_tv(self):
+        """Trakt cannot write a MAL identity, so it must not import a TV twin."""
+        from app.models import Anime, ItemProviderLink
+
+        anime_item = Item.objects.create(
+            media_id="12345",
+            source=Sources.MAL.value,
+            media_type=MediaTypes.ANIME.value,
+            title="Anime Show",
+            image="",
+        )
+        ItemProviderLink.objects.create(
+            item=anime_item,
+            provider=Sources.TMDB.value,
+            provider_media_type=MediaTypes.TV.value,
+            provider_media_id="1396",
+            episode_offset=0,
+        )
+        Anime.objects.create(
+            item=anime_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+            progress=1,
+        )
+
+        importer_instance = self._importer()
+        bucket = importer_instance._anime_bucket_for_show("1396", self.tv_metadata)
+
+        self.assertEqual(bucket, "skip")
+
+    def test_classifier_runs_once_per_show_not_once_per_episode(self):
+        """Episodes share one show-level verdict via the run cache."""
+        importer_instance = self._importer()
+        with patch(
+            "app.services.grouped_anime.classify_tv_metadata",
+            return_value=self.match,
+        ) as mock_classify:
+            for _ in range(5):
+                importer_instance._anime_bucket_for_show("1396", self.tv_metadata)
+
+        self.assertEqual(mock_classify.call_count, 1)
+
+
+class TraktDeviceFlow(TestCase):
+    """Trakt's device code flow, used when the callback URL cannot be HTTPS (#681)."""
+
+    @staticmethod
+    def _response(status_code, payload=None):
+        response = Response()
+        response.status_code = status_code
+        response._content = json.dumps(payload or {}).encode()
+        return response
+
+    @patch("integrations.imports.trakt.services.api_request")
+    def test_request_device_code_clamps_interval(self, mock_api_request):
+        mock_api_request.return_value = {
+            "device_code": "device-code",
+            "user_code": "5055CC52",
+            "verification_url": "https://trakt.tv/activate",
+            "expires_in": 600,
+            "interval": 1,
+        }
+        device = trakt.request_device_code(client_id="client")
+        self.assertEqual(device["user_code"], "5055CC52")
+        self.assertEqual(device["interval"], trakt.TRAKT_DEVICE_MIN_INTERVAL)
+
+    @patch("integrations.imports.trakt.services.api_request")
+    def test_request_device_code_failure_is_actionable(self, mock_api_request):
+        mock_api_request.side_effect = services.ProviderAPIError(
+            "TRAKT",
+            requests.RequestException("boom"),
+        )
+        with self.assertRaises(MediaImportError) as ctx:
+            trakt.request_device_code(client_id="client")
+        self.assertIn("Could not start Trakt authorization", str(ctx.exception))
+
+    @patch("integrations.imports.trakt.get_username_from_oauth", return_value="floppy")
+    @patch("integrations.imports.trakt.services.session.post")
+    def test_poll_returns_tokens_on_success(self, mock_post, _mock_username):
+        mock_post.return_value = self._response(
+            200,
+            {"access_token": "access", "refresh_token": "refresh"},
+        )
+        result = trakt.poll_device_token("device-code", "client", "secret")
+        self.assertEqual(
+            result,
+            {
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "username": "floppy",
+            },
+        )
+
+    @patch("integrations.imports.trakt.services.session.post")
+    def test_poll_pending_statuses_return_none(self, mock_post):
+        for status_code in (400, 429):
+            with self.subTest(status_code=status_code):
+                mock_post.return_value = self._response(status_code)
+                self.assertIsNone(
+                    trakt.poll_device_token("device-code", "client", "secret"),
+                )
+
+    @patch("integrations.imports.trakt.services.session.post")
+    def test_poll_terminal_statuses_raise(self, mock_post):
+        expected = {
+            404: "no longer valid",
+            409: "already used",
+            410: "expired",
+            418: "denied",
+            500: "Trakt authorization failed.",
+        }
+        for status_code, fragment in expected.items():
+            with self.subTest(status_code=status_code):
+                mock_post.return_value = self._response(status_code)
+                with self.assertRaises(MediaImportError) as ctx:
+                    trakt.poll_device_token("device-code", "client", "secret")
+                self.assertIn(fragment, str(ctx.exception))
+
+
+class TraktRefreshRedirectUri(TestCase):
+    """The refresh grant needs a redirect URI Trakt will accept (#681)."""
+
+    @override_settings(URLS=[], BASE_URL=None)
+    def test_falls_back_to_out_of_band_uri(self):
+        self.assertEqual(trakt._refresh_redirect_uri(), trakt.TRAKT_OOB_REDIRECT_URI)
+
+    @override_settings(URLS=["http://192.168.1.50:8000"])
+    def test_plain_http_lan_url_falls_back_to_out_of_band_uri(self):
+        self.assertEqual(trakt._refresh_redirect_uri(), trakt.TRAKT_OOB_REDIRECT_URI)
+
+    @override_settings(URLS=["https://floppy.example.com"])
+    def test_https_url_is_used_directly(self):
+        self.assertEqual(
+            trakt._refresh_redirect_uri(),
+            "https://floppy.example.com/import/trakt/private",
+        )

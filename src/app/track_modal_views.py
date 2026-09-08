@@ -10,6 +10,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.timezone import datetime
+from django.utils.translation import gettext_noop
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
@@ -28,7 +29,7 @@ from app.models import (
     Sources,
     Status,
 )
-from app.providers import hardcover, services
+from app.providers import hardcover, services, tmdb
 from app.services import bulk_episode_tracking, library_migration, metadata_resolution
 from app.services.metadata_fallback import stored_metadata_fallback
 
@@ -111,6 +112,7 @@ def _episode_domain_template_payload(domain):
                 "episode_title": episode["episode_title"],
                 "selector_label": episode.get("selector_label", ""),
                 "existing_play_count": episode["existing_play_count"],
+                "runtime_minutes": episode.get("runtime_minutes") or "",
                 "air_date": episode["air_date"].isoformat()
                 if episode["air_date"]
                 else "",
@@ -198,10 +200,7 @@ def _track_modal_release_date_shortcut(*candidates):
 
 
 def _track_modal_release_runtime_minutes(media_type, *candidates):
-    """Return a trusted runtime in minutes for release-date start-date backfill."""
-    if media_type != MediaTypes.MOVIE.value:
-        return ""
-
+    """Return a trusted runtime in minutes for date shortcuts."""
     for candidate in candidates:
         if not candidate:
             continue
@@ -249,13 +248,16 @@ def _rewatch_action(media, media_type):
 
     Only finished entries can start a pass; an open one can always be ended.
     """
-    if media is None or media_type not in {MediaTypes.TV.value, MediaTypes.SEASON.value}:
+    if media is None or media_type not in {
+        MediaTypes.TV.value,
+        MediaTypes.SEASON.value,
+    }:
         return None
 
     if media.is_rewatching:
-        return {"action": "stop", "label": "End rewatch"}
+        return {"action": "stop", "label": gettext_noop("End rewatch")}
     if media.status == Status.COMPLETED.value:
-        return {"action": "start", "label": "Rewatch"}
+        return {"action": "start", "label": gettext_noop("Rewatch")}
     return None
 
 
@@ -352,15 +354,18 @@ def _render_standard_track_modal(
             MediaTypes.MANGA.value,
         ):
             if media_type == MediaTypes.BOOK.value:
-                if media.item.number_of_pages:
-                    max_progress = media.item.number_of_pages
+                if media.item.book_max_progress:
+                    max_progress = media.item.book_max_progress
+                elif media.item.format == "audiobook":
+                    max_progress = None
                 else:
                     try:
-                        metadata = services.get_media_metadata(
-                            media.item.media_type,
-                            media.item.media_id,
-                            media.item.source,
-                        )
+                        with services.interactive_request_scope():
+                            metadata = services.get_media_metadata(
+                                media.item.media_type,
+                                media.item.media_id,
+                                media.item.source,
+                            )
                         number_of_pages = metadata.get("max_progress") or metadata.get(
                             "details",
                             {},
@@ -385,14 +390,15 @@ def _render_standard_track_modal(
                 percentage = round((media.progress / max_progress) * 100, 1)
                 initial_data["progress"] = percentage
     else:
-        metadata = services.get_media_metadata(
-            media_type,
-            media_id,
-            source,
-            [season_number],
-            episode_number=episode_number,
-            language=metadata_resolution.metadata_language_default(request.user),
-        )
+        with services.interactive_request_scope():
+            metadata = services.get_media_metadata(
+                media_type,
+                media_id,
+                source,
+                [season_number],
+                episode_number=episode_number,
+                language=metadata_resolution.metadata_language_default(request.user),
+            )
         base_metadata = metadata
         title = metadata["title"]
         route_identity_media_type = metadata.get("identity_media_type")
@@ -434,6 +440,44 @@ def _render_standard_track_modal(
             )
             if existing_in_progress:
                 initial_data["status"] = Status.IN_PROGRESS.value
+
+    title_subtitle = ""
+    if media_type == MediaTypes.EPISODE.value and episode_number is not None:
+        episode_metadata = base_metadata or {}
+        if not episode_metadata.get("episode_title") and media:
+            # The tracked path does no provider work of its own; the episode
+            # payload is cached, so this is a cache hit in the common case.
+            try:
+                with services.interactive_request_scope():
+                    episode_metadata = services.get_media_metadata(
+                        media_type,
+                        media_id,
+                        source,
+                        [season_number],
+                        episode_number=episode_number,
+                        language=metadata_resolution.metadata_language_default(
+                            request.user,
+                            metadata_item,
+                        ),
+                    )
+            except services.ProviderAPIError:
+                logger.warning(
+                    "Could not resolve episode title for media_id=%s S%sE%s",
+                    media_id,
+                    season_number,
+                    episode_number,
+                )
+                episode_metadata = {}
+        episode_name = episode_metadata.get("episode_title")
+        show_title = episode_metadata.get("title") or (
+            media.item.title if media else ""
+        )
+        episode_label = f"S{season_number}E{episode_number}"
+        if episode_name:
+            title = episode_name
+            title_subtitle = f"{show_title} · {episode_label}"
+        else:
+            title = f"{show_title} {episode_label}".strip()
 
     if route_identity_media_type:
         initial_data["identity_media_type"] = route_identity_media_type
@@ -528,6 +572,7 @@ def _render_standard_track_modal(
                     [season_number],
                     language=metadata_resolution.metadata_language_default(
                         request.user,
+                        metadata_item,
                     ),
                 )
             except services.ProviderAPIError:
@@ -592,6 +637,27 @@ def _render_standard_track_modal(
         metadata_item is not None and metadata_provider_options
     )
 
+    can_update_metadata_language = bool(
+        metadata_item is not None
+        and identity_provider in {Sources.TMDB.value, Sources.TVDB.value}
+    )
+    metadata_language_options = []
+    selected_metadata_language = ""
+    if can_update_metadata_language:
+        try:
+            metadata_language_options = tmdb.metadata_languages()
+        except Exception as exc:  # pragma: no cover - defensive provider fallback
+            logger.warning("Could not load TMDB metadata languages: %s", exc)
+            metadata_language_options = [
+                ("", f"Server Default ({settings.TMDB_LANG})"),
+            ]
+        language_preference = MetadataProviderPreference.objects.filter(
+            user=request.user,
+            item=metadata_item,
+        ).first()
+        if language_preference:
+            selected_metadata_language = language_preference.language
+
     can_manage_hardcover_edition = bool(
         media_type == MediaTypes.BOOK.value and source == Sources.HARDCOVER.value
     )
@@ -634,6 +700,7 @@ def _render_standard_track_modal(
     metadata_tab_available = bool(
         metadata_fields
         or can_update_metadata_provider
+        or can_update_metadata_language
         or can_migrate_grouped_anime
         or library_move_context
         or manual_metadata_form
@@ -696,7 +763,7 @@ def _render_standard_track_modal(
         base_metadata,
     )
     date_suggestion = _track_modal_date_suggestion(
-        "Air date" if media_type == MediaTypes.EPISODE.value else "Release Date",
+        "Release Date",
         release_date_shortcut,
         release_date_runtime_minutes,
     )
@@ -705,6 +772,7 @@ def _render_standard_track_modal(
     context = {
         "user": request.user,
         "title": title,
+        "title_subtitle": title_subtitle,
         "media_type": media_type,
         "form": form,
         "media": media,
@@ -723,8 +791,13 @@ def _render_standard_track_modal(
         "metadata_provider_mapping_status": metadata_provider_mapping_status,
         "metadata_provider_options": metadata_provider_options,
         "can_update_metadata_provider": can_update_metadata_provider,
+        "can_update_metadata_language": can_update_metadata_language,
+        "metadata_language_options": metadata_language_options,
+        "selected_metadata_language": selected_metadata_language,
         "can_manage_hardcover_edition": can_manage_hardcover_edition,
-        "hardcover_edition_media_id": media_id if can_manage_hardcover_edition else None,
+        "hardcover_edition_media_id": media_id
+        if can_manage_hardcover_edition
+        else None,
         "hardcover_selected_edition": hardcover_selected_edition,
         "hardcover_edition_id_hint": (
             request.GET.get("edition_id") if can_manage_hardcover_edition else None
@@ -805,6 +878,20 @@ def _render_standard_track_modal(
         "collection_tab_available": False,
         "collection_context": None,
     }
+    koreader_account = getattr(request.user, "koreader_account", None)
+    context["show_koreader_document_field"] = bool(
+        media_type == MediaTypes.BOOK.value
+        and koreader_account
+        and koreader_account.is_connected,
+    )
+    context["koreader_document_id"] = ""
+    if context["show_koreader_document_field"] and metadata_item:
+        from integrations.koreader_links import get_document_hash_for_item
+
+        context["koreader_document_id"] = get_document_hash_for_item(
+            request.user,
+            metadata_item,
+        )
     if media_type == MediaTypes.EPISODE.value and episode_number is not None:
         context["collection_tab_available"] = True
         context["collection_context"] = build_collection_modal_context(
@@ -1030,6 +1117,9 @@ def track_modal(
                         self._format_duration(episode.duration)
                         if episode.duration
                         else None
+                    )
+                    self.runtime_minutes = (
+                        episode.duration // 60 if episode.duration else ""
                     )
                     self.musicbrainz_recording_id = None  # Not used for podcasts
                     self.id = episode.id

@@ -11,8 +11,10 @@ from django.contrib import messages
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
+from django.utils.translation import gettext, pgettext
 from django.views.decorators.http import require_GET, require_POST
 
 from app import cache_utils, fork_services_episode, helpers, history_cache
@@ -149,8 +151,8 @@ def media_save(request):
 
         if item:
             if media_type == MediaTypes.BOOK.value:
-                max_progress = item.number_of_pages
-                if not max_progress:
+                max_progress = item.book_max_progress
+                if not max_progress and item.format != "audiobook":
                     # Try to fetch from metadata
                     try:
                         metadata = services.get_media_metadata(
@@ -247,6 +249,11 @@ def media_save(request):
     home_row_id = request.GET.get("home_row_id") or ""
     old_status = getattr(instance, "status", None) if instance_id else None
     action_verb = "Added" if not instance_id else "Updated"
+    action_label = (
+        pgettext("saved action", "Added")
+        if not instance_id
+        else pgettext("saved action", "Updated")
+    )
     if form.is_valid():
         if isinstance(instance, (Season, TV)):
             media = form.save(commit=False)
@@ -265,6 +272,36 @@ def media_save(request):
                     media.start_rewatch()
         else:
             media = form.save()
+        if (
+            media_type == MediaTypes.BOOK.value
+            and "koreader_document_id" in request.POST
+        ):
+            from django.db import IntegrityError
+
+            from integrations.koreader_links import (
+                normalize_document_hash,
+                save_document_link,
+            )
+
+            raw_hash = request.POST.get("koreader_document_id", "")
+            normalized = normalize_document_hash(raw_hash)
+            if raw_hash.strip() and normalized is None:
+                messages.error(
+                    request,
+                    gettext(
+                        "KOReader document ID must be a 32-character hexadecimal hash."
+                    ),
+                )
+            else:
+                try:
+                    save_document_link(request.user, media.item, normalized or "")
+                except IntegrityError:
+                    messages.error(
+                        request,
+                        gettext(
+                            "That KOReader document ID is already linked to another book."
+                        ),
+                    )
         BasicMedia.objects.annotate_max_progress([media], media_type)
         image_url = form.cleaned_data.get("image_url")
         if image_url and media.item.image != image_url:
@@ -277,7 +314,29 @@ def media_save(request):
             else media.item.title
         ) or "item"
         if is_htmx:
-            try:
+            fragment_context = (
+                f"{action_verb.lower()} save media_type={media_type} "
+                f"source={source} media_id={media_id} "
+                f"instance_id={instance_id} user_id={request.user.id}"
+            )
+
+            # The status pill is the response itself, not an OOB fragment, so
+            # it stays outside the per-fragment isolation below: if it cannot
+            # render there is nothing to return. This matches the old
+            # behaviour, whose fallback rendered this same template and so
+            # raised again anyway.
+            response = render(
+                request,
+                "app/components/detail_track_action.html",
+                {
+                    "media": media.item,
+                    "current_instance": media,
+                    "return_url": return_url,
+                    "track_action_update": True,
+                },
+            )
+
+            def _activity_subtitle_fragment():
                 user_medias = list(
                     media.__class__.objects.filter(
                         user=request.user, item=media.item
@@ -292,18 +351,7 @@ def media_save(request):
                     user_medias=user_medias,
                     public_view=False,
                 )
-                response = render(
-                    request,
-                    "app/components/detail_track_action.html",
-                    {
-                        "media": media.item,
-                        "current_instance": media,
-                        "return_url": return_url,
-                        "track_action_update": True,
-                    },
-                )
-                activity_subtitle_response = render(
-                    request,
+                return render_to_string(
                     "app/components/detail_activity_subtitle_slot.html",
                     {
                         "media": media.item,
@@ -314,9 +362,11 @@ def media_save(request):
                         "user": request.user,
                         "activity_subtitle_slot_oob": True,
                     },
+                    request=request,
                 )
-                score_chip_response = render(
-                    request,
+
+            def _score_chip_fragment():
+                return render_to_string(
                     "app/components/detail_score_chip_slot.html",
                     {
                         "media": media.item,
@@ -328,73 +378,86 @@ def media_save(request):
                         "csrf_token": request.META.get("CSRF_COOKIE", ""),
                         "score_chip_slot_oob": True,
                     },
+                    request=request,
                 )
-                card_rating_response = render(
-                    request,
+
+            def _card_rating_fragment():
+                return render_to_string(
                     "app/components/media_card_rating_oob.html",
                     {
                         "media_instance_id": media.id,
                         "rating_value": media.formatted_score,
                         "user": request.user,
                     },
+                    request=request,
                 )
-                status_chip_response = render(
-                    request,
+
+            def _status_chip_fragment():
+                return render_to_string(
                     "app/components/media_card_status_chip.html",
                     {
                         "media": media,
                         "status_chip_oob": True,
                     },
+                    request=request,
                 )
-                response.write(activity_subtitle_response.content.decode())
-                response.write(score_chip_response.content.decode())
-                response.write(card_rating_response.content.decode())
-                response.write(status_chip_response.content.decode())
+
+            def _season_cascade_fragment():
                 # A season completing (or reopening) can cascade to complete
                 # (or reopen) its show — Season.save() already applies that
                 # server-side, but nothing else refreshes the show's own
                 # pill, e.g. when marking a season watched from the show
                 # page rather than the season's own page.
-                if media_type == MediaTypes.SEASON.value and media.related_tv_id:
-                    tv = (
-                        TV.objects.filter(pk=media.related_tv_id)
-                        .select_related("item")
-                        .first()
-                    )
-                    if tv:
-                        response.write(
-                            _render_track_action_oob(
-                                request,
-                                tv,
-                                media_url(tv.item),
-                            ),
-                        )
-            except Exception:
-                logger.exception(
-                    "Post-save enrichment failed for %s save "
-                    "media_type=%s source=%s media_id=%s instance_id=%s user_id=%s; "
-                    "record was already saved, falling back to a minimal confirmation.",
-                    action_verb.lower(),
-                    media_type,
-                    source,
-                    media_id,
-                    instance_id,
-                    request.user.id,
+                if media_type != MediaTypes.SEASON.value or not media.related_tv_id:
+                    return None
+                tv = (
+                    TV.objects.filter(pk=media.related_tv_id)
+                    .select_related("item")
+                    .first()
                 )
-                response = render(
+                if not tv:
+                    return None
+                return _render_track_action_oob(request, tv, media_url(tv.item))
+
+            def _notes_section_fragment():
+                if media_type not in (
+                    MediaTypes.MOVIE.value,
+                    MediaTypes.TV.value,
+                    MediaTypes.SEASON.value,
+                    MediaTypes.ANIME.value,
+                ):
+                    return None
+                return _render_notes_section_oob(
                     request,
-                    "app/components/detail_track_action.html",
-                    {
-                        "media": media.item,
-                        "current_instance": media,
-                        "return_url": return_url,
-                        "track_action_update": True,
-                    },
+                    media.__class__.objects.filter(
+                        user=request.user,
+                        item=media.item,
+                    ),
+                    media=media.item,
+                )
+
+            for label, build in (
+                ("activity subtitle", _activity_subtitle_fragment),
+                ("score chip", _score_chip_fragment),
+                ("card rating", _card_rating_fragment),
+                ("status chip", _status_chip_fragment),
+                ("season cascade pill", _season_cascade_fragment),
+                ("notes section", _notes_section_fragment),
+            ):
+                _append_optional_fragment(
+                    response,
+                    label,
+                    build,
+                    context=fragment_context,
                 )
             htmx_trigger = {
                 "closeModal": {"formId": track_form_id},
                 "showToast": {
-                    "message": f"{action_verb} {display_title}.",
+                    "message": gettext("%(value_1)s %(value_2)s.")
+                    % {
+                        "value_1": action_label,
+                        "value_2": display_title,
+                    },
                     "type": "success",
                 },
             }
@@ -407,7 +470,14 @@ def media_save(request):
             response["Pragma"] = "no-cache"
             response["Expires"] = "0"
             return response
-        messages.success(request, f"{action_verb} {display_title}.")
+        messages.success(
+            request,
+            gettext("%(value_1)s %(value_2)s.")
+            % {
+                "value_1": action_label,
+                "value_2": display_title,
+            },
+        )
     else:
         logger.error(form.errors.as_json())
         if is_htmx:
@@ -442,7 +512,11 @@ def media_save(request):
             for error in errors:
                 messages.error(
                     request,
-                    f"{field.replace('_', ' ').title()}: {error}",
+                    gettext("%(value_1)s: %(value_2)s")
+                    % {
+                        "value_1": gettext(field.replace("_", " ").title()),
+                        "value_2": error,
+                    },
                 )
 
     return helpers.redirect_back(request)
@@ -638,8 +712,10 @@ def media_rewatch(request):
             skipped_list = ", ".join(str(number) for number in skipped_numbers)
             messages.warning(
                 request,
-                f"{season_word} {skipped_list} already fully watched from "
-                f"that date — left as is.",
+                gettext(
+                    "%(value_1)s %(value_2)s already fully watched from that date — left as is."
+                )
+                % {"value_1": gettext(season_word), "value_2": skipped_list},
             )
         logger.info("Rewatch of %s started, from %s.", media, started_at)
 
@@ -649,6 +725,32 @@ def media_rewatch(request):
     if request.headers.get("HX-Request"):
         return HttpResponse(status=204, headers={"HX-Redirect": redirect_response.url})
     return redirect_response
+
+
+def _append_optional_fragment(response, label, build, *, context):
+    """Append one optional OOB fragment, or log and skip only that fragment.
+
+    A save response is one required element - the status pill - followed by
+    several independent OOB fragments appended to it. Wrapping all of them in a
+    single try meant a failure in any one discarded the whole response: the
+    handler rebound `response` to a bare confirmation, so the later a fragment
+    failed, the more already-rendered work was thrown away, and the client saw
+    a 200 with most of the page silently not updating.
+
+    Each fragment is now isolated, so a broken one costs exactly itself.
+    """
+    try:
+        html = build()
+    except Exception:
+        logger.exception(
+            "Post-save OOB fragment %s failed for %s; the record was saved and "
+            "the rest of the response is unaffected.",
+            label,
+            context,
+        )
+        return
+    if html:
+        response.write(html)
 
 
 def _render_season_progress_oob(related_season):
@@ -672,6 +774,47 @@ def _render_season_progress_oob(related_season):
             f"Progress: {progress}</span>"
         )
     return spans
+
+
+def _render_notes_section_oob(
+    request,
+    entries,
+    *,
+    media=None,
+    detail_notes_target_id="",
+    detail_notes_modal_url="",
+    detail_return_url="",
+):
+    """Render the detail notes section as an OOB swap after a watch save.
+
+    The notes section lists one block per watch (see detail_notes_section),
+    so a note edited in the track modal must be pushed back into the page
+    without a full reload.
+
+    The caller supplies the watches rather than this building the queryset:
+    Episode has no `user` field (it is scoped through related_season), so a
+    single `filter(user=...)` here cannot serve both the media and episode
+    save paths. The modal ids are caller-supplied for the same reason — the
+    episode page namespaces its modal targets differently from the movie,
+    season and show pages.
+    """
+    return render_to_string(
+        "app/components/detail_notes_section.html",
+        {
+            "notes_entries": [
+                entry for entry in entries if entry.notes and entry.notes.strip()
+            ],
+            "media": media,
+            "user": request.user,
+            "public_notes_view": False,
+            "public_view": False,
+            "detail_return_url": detail_return_url,
+            "detail_notes_modal_url": detail_notes_modal_url,
+            "detail_notes_target_id": detail_notes_target_id,
+            "notes_section_oob": True,
+        },
+        request=request,
+    )
 
 
 def _render_track_action_oob(request, instance, return_url):
@@ -766,6 +909,35 @@ def _write_episode_save_oob(
         response.write(
             _render_track_action_oob(request, related_season, parsed_next),
         )
+        # The episode page lists every watch note, same as the movie/season
+        # pages, so an edited note has to be pushed back the same way. Episode
+        # rows are scoped by season rather than by user, and the page namespaces
+        # its modal targets per episode, so both are passed in explicitly.
+        if episode.item_id:
+            response.write(
+                _render_notes_section_oob(
+                    request,
+                    Episode.objects.filter(
+                        related_season=related_season,
+                        item=episode.item,
+                    ).select_related("item"),
+                    media=episode.item,
+                    detail_notes_target_id=(
+                        f"episode-notes-modal-{source}-{media_id}"
+                        f"-{season_number}-{episode_number}"
+                    ),
+                    detail_notes_modal_url=reverse(
+                        "track_modal",
+                        kwargs={
+                            "source": source,
+                            "media_type": MediaTypes.EPISODE.value,
+                            "media_id": media_id,
+                            "season_number": season_number,
+                        },
+                    ),
+                    detail_return_url=parsed_next,
+                ),
+            )
         # Season-progress spans only exist on the season page — nothing to target here.
         return
 
@@ -1152,13 +1324,13 @@ def episode_bulk_save(request):
             response["HX-Trigger"] = json.dumps(
                 {
                     "showToast": {
-                        "message": "Start and end dates are required.",
+                        "message": gettext("Start and end dates are required."),
                         "type": "error",
                     },
                 }
             )
             return response
-        messages.error(request, "Start and end dates are required.")
+        messages.error(request, gettext("Start and end dates are required."))
         return redirect(request.POST.get("return_url") or "/")
 
     try:
@@ -1172,13 +1344,13 @@ def episode_bulk_save(request):
             response["HX-Trigger"] = json.dumps(
                 {
                     "showToast": {
-                        "message": "Invalid episode range.",
+                        "message": gettext("Invalid episode range."),
                         "type": "error",
                     },
                 }
             )
             return response
-        messages.error(request, "Invalid episode range.")
+        messages.error(request, gettext("Invalid episode range."))
         return redirect(request.POST.get("return_url") or "/")
 
     episode_count = max(int(request.POST.get("episode_count") or 0), 0)
@@ -1227,5 +1399,8 @@ def episode_bulk_save(request):
         )
         return response
 
-    messages.info(request, f"Adding plays to {episode_count} episodes.")
+    messages.info(
+        request,
+        gettext("Adding plays to %(value_1)s episodes.") % {"value_1": episode_count},
+    )
     return redirect(request.POST.get("return_url") or "/")

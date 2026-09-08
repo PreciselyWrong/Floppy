@@ -395,6 +395,18 @@ class OpenAPIArtifactTests(SimpleTestCase):
             },
         )
         self.assertEqual(
+            set(schemas["TrackedMediaUpdateRequest"]["properties"]),
+            {
+                "score",
+                "status",
+                "progress",
+                "start_date",
+                "end_date",
+                "notes",
+                "image_url",
+            },
+        )
+        self.assertEqual(
             set(schemas["TrackedMediaResponse"]["properties"]),
             {
                 "id",
@@ -415,11 +427,16 @@ class OpenAPIArtifactTests(SimpleTestCase):
                 "notes",
                 "lists",
                 "next_episode",
+                "show",
             },
         )
         self.assertEqual(
             set(schemas["NextEpisode"]["properties"]),
             {"season_number", "episode_number", "air_date"},
+        )
+        self.assertEqual(
+            set(schemas["Show"]["properties"]),
+            {"id", "title", "slug", "podcast_uuid", "image", "website_url"},
         )
         self.assertEqual(
             set(schemas["ConsumptionResponse"]["properties"]),
@@ -572,7 +589,7 @@ class OpenAPIArtifactTests(SimpleTestCase):
                 "updateMediaItem",
                 "CompleteMediaResponse",
                 {"200", "400", "403", "404", "500"},
-                "MediaUpdateRequest",
+                "TrackedMediaUpdateRequest",
             ),
             (
                 "/api/v1/media/{media_type}/{source}/{media_id}/history/"

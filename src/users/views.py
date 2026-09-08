@@ -4,6 +4,8 @@ import logging
 import re
 import uuid
 from io import BytesIO
+from itertools import batched
+from pathlib import Path
 
 import apprise
 from allauth.account.views import SignupView
@@ -15,6 +17,7 @@ from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_not_required, login_required
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError
 from django.db.models import Count, Q
 from django.http import Http404, HttpResponse, JsonResponse, StreamingHttpResponse
@@ -22,17 +25,30 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.template.defaultfilters import pluralize
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.translation import gettext
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_celery_beat.models import PeriodicTask
 
 from app import config, history_cache, image_cache, statistics_cache
+from app import helpers as app_helpers
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
-from app.models import Album, Artist, Item, MediaTypes, Status
-from app.providers import tmdb
+from app.models import (
+    Album,
+    AlbumTracker,
+    Artist,
+    ArtistTracker,
+    Item,
+    MediaTypes,
+    Music,
+    MusicReleasePreference,
+    Status,
+)
+from app.providers import credentials, tmdb
 from app.services import metadata_resolution
 from app.templatetags import app_tags
-from integrations import exports, plex, tasks
+from integrations import exports, plex, stremio_catalog, tasks
+from integrations.imports import trakt as trakt_imports
 from integrations.models import (
     ImportRun,
     LastFMAccount,
@@ -793,7 +809,7 @@ def home_screen(request):
 
     context = {
         "home_screen_sections_json": json.dumps(
-            serialize_settings_sections(request.user)
+            serialize_settings_sections(request.user), cls=DjangoJSONEncoder
         ),
         "show_media_type_headers": request.user.home_show_media_type_headers,
         "home_stale_days_threshold": request.user.home_stale_days_threshold,
@@ -1060,7 +1076,7 @@ def preferences(request):
         for library in request.user.get_active_media_types()
         if library in AUTO_PAUSE_MEDIA_TYPES
     ]
-    library_labels = {"all": "All Libraries"}
+    library_labels = {"all": gettext("All Libraries")}
     for library in active_libraries:
         library_labels[library] = app_tags.media_type_readable_plural(library)
     try:
@@ -1075,6 +1091,24 @@ def preferences(request):
         metadata_language_choices = [
             ("", f"Server Default ({settings.TMDB_LANG})"),
         ]
+    # Provider results are cached across users; localize UI options only here.
+    region_option_labels = {
+        "UNSET": gettext("Not set"),
+        "": gettext("Disabled"),
+    }
+    watch_provider_regions = [
+        (code, region_option_labels.get(code, label))
+        for code, label in watch_provider_regions
+    ]
+    metadata_language_choices = [
+        (
+            code,
+            gettext("Server Default (%(language)s)") % {"language": settings.TMDB_LANG}
+            if not code
+            else label,
+        )
+        for code, label in metadata_language_choices
+    ]
     tv_metadata_source_choices = [
         (choice.value, choice.label)
         for choice in metadata_resolution.available_metadata_sources(
@@ -1118,6 +1152,7 @@ def preferences(request):
             "anime_metadata_source_default"
         )
         anime_library_mode = request.POST.get("anime_library_mode")
+        anime_provider_changed = False
         hide_completed_recommendations_raw = request.POST.get(
             "hide_completed_recommendations"
         )
@@ -1501,6 +1536,7 @@ def preferences(request):
         ):
             request.user.anime_metadata_source_default = anime_metadata_source_default
             fields_to_update.append("anime_metadata_source_default")
+            anime_provider_changed = True
 
         if (
             anime_library_mode
@@ -1543,6 +1579,16 @@ def preferences(request):
                     request.user.id,
                     debounce_seconds=0,
                 )
+        if anime_provider_changed:
+            # Switching provider only decides the shape of newly added shows.
+            # Existing ones are left alone unless the user asks, because the
+            # MAL-to-series mapping is N:1 and cannot be re-derived in bulk.
+            from app.tasks_anime_library_repair import anime_rows_needing_conversion
+
+            convertible = anime_rows_needing_conversion(request.user)
+            if convertible:
+                request.session["anime_shape_prompt_count"] = len(convertible)
+
         success_message = (
             "Settings updated successfully."
             if "media_types_checkboxes" in request.POST
@@ -1602,9 +1648,28 @@ def preferences(request):
             for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
             if config.get_config(media_type)
         ],
+        "anime_shape_prompt_count": request.session.pop(
+            "anime_shape_prompt_count",
+            None,
+        ),
     }
 
     return render(request, "users/preferences.html", context)
+
+
+@login_required
+@require_POST
+def convert_anime_library(request):
+    """Convert this user's existing anime into their preferred shape."""
+    from app.tasks_anime_library_repair import convert_anime_library_shape_task
+
+    convert_anime_library_shape_task.delay(request.user.id)
+    messages.success(
+        request,
+        "Converting your existing anime. This runs in the background; titles "
+        "that cannot be converted safely are left as they are.",
+    )
+    return redirect("preferences")
 
 
 @require_GET
@@ -1695,8 +1760,40 @@ def integrations(request):
             "jellyfin_playback_reporting_import": jellyfin_playback_reporting_import,
             "jellyfin_pull_interval_minutes": tasks.JELLYFIN_PULL_INTERVAL_MINUTES,
             "seerr_global_webhook_enabled": bool(settings.SEERR_GLOBAL_WEBHOOK_SECRET),
+            "stremio_catalog_readiness": stremio_catalog.catalog_readiness(user),
         },
     )
+
+
+def _decorate_plex_sections(sections, plex_account):
+    """Annotate Plex sections with their audiobook hint and configured kind.
+
+    The import form needs both: `content_kind` is what the user chose (or
+    "auto"), `audiobook_hint` is what the library looks like, so an obvious
+    audiobook library can pre-select the right option.
+    """
+    from integrations.imports.plex_audiobooks import (
+        is_music_section,
+        section_audiobook_hint,
+    )
+
+    decorated = []
+    for section in sections or []:
+        entry = dict(section)
+        entry["is_music"] = is_music_section(section)
+        entry["audiobook_hint"] = entry["is_music"] and section_audiobook_hint(
+            section,
+        )
+        entry["content_kind"] = (
+            plex_account.content_kind(
+                section.get("machine_identifier"),
+                section.get("id"),
+            )
+            if plex_account
+            else "auto"
+        )
+        decorated.append(entry)
+    return decorated
 
 
 @require_GET
@@ -1704,7 +1801,10 @@ def import_data(request):
     """Render the import data settings page."""
     user = _get_import_data_user(request.user)
     plex_account = _get_stored_plex_account(user)
-    plex_sections = plex_account.sections or [] if plex_account else []
+    plex_sections = _decorate_plex_sections(
+        plex_account.sections if plex_account else [],
+        plex_account,
+    )
 
     # Get Audiobookshelf account
     audiobookshelf_account = getattr(user, "audiobookshelf_account", None)
@@ -1712,6 +1812,12 @@ def import_data(request):
     # Get Storyteller account and any in-progress device login
     storyteller_account = getattr(user, "storyteller_account", None)
     storyteller_pending = request.session.get("storyteller_pending_auth")
+    koreader_account = getattr(user, "koreader_account", None)
+    koreader_link_count = 0
+    if koreader_account:
+        from integrations.models import KoreaderDocumentLink
+
+        koreader_link_count = KoreaderDocumentLink.objects.filter(user=user).count()
 
     # Get Pocket Casts account
     pocketcasts_account = getattr(user, "pocketcasts_account", None)
@@ -1790,6 +1896,16 @@ def import_data(request):
         if lastfm_account.history_import_status in {"completed", "failed"}:
             lastfm_history_button_label = "Reimport full history"
 
+    # Trakt refuses non-HTTPS redirect URIs, so the setup instructions differ
+    # depending on whether this instance can use the browser flow at all (#681).
+    trakt_redirect_uri = app_helpers.build_absolute_app_url(
+        request,
+        reverse("import_trakt_private"),
+    )
+    trakt_redirect_capable = app_helpers.supports_oauth_redirect(trakt_redirect_uri)
+    if not trakt_redirect_capable:
+        trakt_redirect_uri = trakt_imports.TRAKT_OOB_REDIRECT_URI
+
     context = {
         "user": user,
         "plex_account": plex_account,
@@ -1799,6 +1915,8 @@ def import_data(request):
         "audiobookshelf_poll_interval": audiobookshelf_poll_interval,
         "storyteller_account": storyteller_account,
         "storyteller_pending": storyteller_pending,
+        "koreader_account": koreader_account,
+        "koreader_link_count": koreader_link_count,
         "pocketcasts_account": pocketcasts_account,
         "gpodder_account": gpodder_account,
         "lastfm_account": lastfm_account,
@@ -1818,7 +1936,13 @@ def import_data(request):
         "koito_history_status_label": koito_history_status_label,
         "koito_history_can_start": koito_history_can_start,
         "koito_history_button_label": koito_history_button_label,
-        "trakt_configured": bool(settings.TRAKT_API and settings.TRAKT_API_SECRET),
+        "hardcover_personal_key": credentials.has_user_value("hardcover", user),
+        "trakt_configured": bool(
+            credentials.get("trakt", "client_id")
+            and credentials.get("trakt", "client_secret"),
+        ),
+        "trakt_redirect_uri": trakt_redirect_uri,
+        "trakt_redirect_capable": trakt_redirect_capable,
     }
     return render(request, "users/import_data.html", context)
 
@@ -1921,10 +2045,58 @@ def import_data_plex_sections(request):
     sections, error = _refresh_cached_plex_sections(plex_account)
     return JsonResponse(
         {
-            "sections": sections,
+            "sections": _decorate_plex_sections(sections, plex_account),
             "error": error or "",
         },
     )
+
+
+def _backup_dir_status(user):
+    """Return the user's backup directory, its file count, and host reachability.
+
+    Matches the path integrations.exports.write_backup() actually writes to.
+    Creates the directory if missing so it's browsable even before any export
+    has run.
+    """
+    backup_dir = Path(settings.BACKUP_DIR) / str(user.username)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    file_count = sum(1 for entry in backup_dir.iterdir() if entry.is_file())
+    return {
+        "path": str(backup_dir),
+        "file_count": file_count,
+        "host_reachable": _mount_is_host_reachable(backup_dir),
+    }
+
+
+def _mount_is_host_reachable(directory):
+    """Whether a directory under a container mount actually reaches the host.
+
+    os.path.ismount(directory) only catches the directory being the mount
+    point itself; a custom BACKUP_DIR nested under a mounted parent (e.g.
+    under FLOPPY_DATA_DIR) would wrongly read as ephemeral. Comparing st_dev
+    against the container root instead catches a mount anywhere in the
+    directory's ancestry, not just at that exact path.
+    """
+    in_container = Path("/.dockerenv").exists()
+    return (not in_container) or (directory.stat().st_dev != Path("/").stat().st_dev)
+
+
+def _db_snapshot_status():
+    """Return the raw database snapshot directory, its file count, and status.
+
+    Mirrors _backup_dir_status() for the #1053 disaster-recovery snapshots
+    written by app.tasks_db_backup.write_database_snapshot, so the same page
+    that explains CSV export can show whether a real database backup exists.
+    """
+    snapshot_dir = Path(settings.BACKUP_DIR) / "database"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    file_count = sum(1 for entry in snapshot_dir.iterdir() if entry.is_file())
+    return {
+        "path": str(snapshot_dir),
+        "file_count": file_count,
+        "host_reachable": _mount_is_host_reachable(snapshot_dir),
+        "enabled": settings.DB_SNAPSHOT_ENABLED,
+    }
 
 
 @require_GET
@@ -1940,7 +2112,8 @@ def export_data(request):
         "user": request.user,
         "media_types": media_types,
         "export_tasks": export_tasks,
-        "backup_dir": settings.BACKUP_DIR,
+        "backup_status": _backup_dir_status(request.user),
+        "db_snapshot_status": _db_snapshot_status(),
     }
     return render(request, "users/export_data.html", context)
 
@@ -2073,16 +2246,122 @@ def bulk_delete_by_import_source(request, media_type, source):
         messages.error(request, "Unknown import source.")
         return redirect("import_data")
 
+    # A running import writes Music rows and re-creates trackers as it goes, so
+    # deleting underneath it leaves rows the sweep has already walked past.
+    # rollback_import_run refuses for the same reason.
+    if ImportRun.objects.filter(
+        user=request.user,
+        source=source,
+        status=ImportRun.Status.RUNNING,
+    ).exists():
+        messages.error(
+            request,
+            "Cancel the running import from this source before deleting it.",
+        )
+        return redirect("import_data")
+
     model = apps.get_model(app_label="app", model_name=media_type)
-    deleted_count, _ = model.objects.filter(
-        user=request.user, import_run__source=source
-    ).delete()
+    doomed = model.objects.filter(user=request.user, import_run__source=source)
+    # Capture before the delete: the trackers are reached through these FKs.
+    music_catalog_ids = (
+        _music_catalog_ids_referenced_by(doomed)
+        if media_type == MediaTypes.MUSIC.value
+        else None
+    )
+
+    deleted_count, _ = doomed.delete()
+
+    if music_catalog_ids is not None:
+        deleted_count += _sweep_untracked_music_containers(
+            request.user,
+            *music_catalog_ids,
+        )
 
     if deleted_count:
         messages.success(request, f"Permanently deleted {deleted_count} item(s).")
     else:
         messages.info(request, "Nothing to delete.")
     return redirect("import_data")
+
+
+# Cap on ids per `__in` lookup. A >100k-scrobble library can reference more
+# distinct artists/albums than SQLite allows query parameters in one statement.
+_ID_LOOKUP_CHUNK = 500
+
+
+# Music.artist is a nullable convenience FK ("can be derived via album"), so an
+# artist can be reached either directly or only through the row's album.
+_MUSIC_ARTIST_SOURCES = ("artist_id", "album__artist_id")
+
+
+def _music_catalog_ids_referenced_by(music_queryset):
+    """Return the (artist_ids, album_ids) a set of Music rows points at.
+
+    Must be called before the rows are deleted.
+    """
+    artist_ids = set()
+    for source_field in _MUSIC_ARTIST_SOURCES:
+        artist_ids |= set(
+            music_queryset.values_list(source_field, flat=True).distinct(),
+        )
+    album_ids = set(
+        music_queryset.values_list("album_id", flat=True).distinct(),
+    )
+    return artist_ids - {None}, album_ids - {None}
+
+
+def _sweep_untracked_music_containers(user, artist_ids, album_ids):
+    """Delete the user's artist/album library rows left with no music behind them.
+
+    ArtistTracker/AlbumTracker carry no import_run of their own, so they cannot
+    be deleted by provenance the way Music rows can. Instead, of the artists and
+    albums the deleted rows referenced, drop the trackers for those the user has
+    no Music row for any more. Scoping to the referenced ids means an artist the
+    user follows by hand, with no imported tracks, is never touched. An artist
+    the user followed by hand *and* had imported tracks for does lose its
+    tracker -- that is what "delete all my Last.fm music" asks for.
+    """
+    return _delete_untracked_trackers(
+        ArtistTracker,
+        "artist_id",
+        user,
+        artist_ids,
+        source_fields=_MUSIC_ARTIST_SOURCES,
+    ) + _delete_untracked_trackers(AlbumTracker, "album_id", user, album_ids)
+
+
+def _delete_untracked_trackers(
+    tracker_model,
+    field,
+    user,
+    candidate_ids,
+    *,
+    source_fields=None,
+):
+    """Delete the user's tracker rows for candidate_ids with no Music row left.
+
+    `source_fields` are the Music lookups that can still reach the tracked
+    object. An artist keeps its tracker if any remaining row reaches it either
+    way, so all of them have to be checked before deleting.
+    """
+    source_fields = source_fields or (field,)
+    deleted = 0
+    for chunk in batched(sorted(candidate_ids), _ID_LOOKUP_CHUNK):
+        chunk_ids = set(chunk)
+        still_tracked = set()
+        for source_field in source_fields:
+            still_tracked |= set(
+                Music.objects.filter(
+                    user=user,
+                    **{f"{source_field}__in": chunk_ids},
+                ).values_list(source_field, flat=True),
+            )
+        count, _ = tracker_model.objects.filter(
+            user=user,
+            **{f"{field}__in": chunk_ids - still_tracked},
+        ).delete()
+        deleted += count
+    return deleted
 
 
 @require_POST
@@ -2096,7 +2375,13 @@ def bulk_delete_by_media_type(request):
     delete_metadata = request.POST.get("delete_metadata") == "true"
 
     media_querysets = _media_querysets_for_bulk_delete(request.user, media_type)
-    item_count = sum(queryset.count() for queryset in media_querysets)
+    companions = _companion_querysets_for_bulk_delete(request.user, media_type)
+    media_count = sum(queryset.count() for queryset in media_querysets)
+    companion_counts = [(noun, queryset.count()) for noun, queryset in companions]
+    item_count = media_count + sum(count for _, count in companion_counts)
+
+    # Companion querysets are not Item-backed, so they never contribute
+    # candidate Item ids -- only the Media rows do.
     candidate_item_ids = (
         _candidate_item_ids_for_metadata_cleanup(media_querysets, media_type)
         if delete_metadata
@@ -2104,9 +2389,20 @@ def bulk_delete_by_media_type(request):
     )
     for queryset in media_querysets:
         queryset.delete()
+    # Delete companions before orphan cleanup: _delete_orphaned_music_catalog
+    # only drops Artist/Album rows that no tracker points at any more.
+    for _, queryset in companions:
+        queryset.delete()
+    if media_type == MediaTypes.MUSIC.value:
+        # Per-user music settings, not library rows -- cleared, but not counted
+        # as deleted items.
+        MusicReleasePreference.objects.filter(user=request.user).delete()
 
     metadata_count = 0
-    if delete_metadata and candidate_item_ids:
+    if delete_metadata:
+        # Not guarded on candidate_item_ids: a music library can be all
+        # trackers and no Music rows, which yields no candidate Items but does
+        # leave orphaned Artist/Album rows the checkbox promised to remove.
         metadata_count = _delete_orphaned_metadata(media_type, candidate_item_ids)
 
     if item_count:
@@ -2118,6 +2414,9 @@ def bulk_delete_by_media_type(request):
         cache_management.clear_discover_cache_for_user(request.user.id)
         label = MediaTypes(media_type).label
         message = f"Permanently deleted {item_count} {label} item(s) from your library."
+        breakdown = _bulk_delete_breakdown(media_type, media_count, companion_counts)
+        if breakdown:
+            message += f" ({breakdown})"
         if delete_metadata:
             message += f" Also removed {metadata_count} metadata entr{'y' if metadata_count == 1 else 'ies'}."
         messages.success(request, message)
@@ -2155,6 +2454,44 @@ def _media_querysets_for_bulk_delete(user, media_type):
             item__library_media_type=MediaTypes.ANIME.value,
         )
     return [queryset]
+
+
+def _companion_querysets_for_bulk_delete(user, media_type):
+    """Return (noun, queryset) pairs of a media type's non-Media per-user rows.
+
+    Music is the only such type. Its library page does not list the Media rows:
+    /medialist/music renders ArtistTracker (the default "artists" subview) and
+    AlbumTracker ("albums"), and only the "tracks" subview shows Music itself.
+    Those tracker models are not Media subclasses, so the
+    apps.get_model(app_label="app", model_name=media_type) lookup in
+    _media_querysets_for_bulk_delete cannot see them and a music wipe used to
+    leave the whole visible library behind.
+    """
+    if media_type != MediaTypes.MUSIC.value:
+        return []
+
+    return [
+        ("album", AlbumTracker.objects.filter(user=user)),
+        ("artist", ArtistTracker.objects.filter(user=user)),
+    ]
+
+
+def _bulk_delete_breakdown(media_type, media_count, companion_counts):
+    """Return a human-readable per-model breakdown, or "" when there is nothing to add.
+
+    Only media types with companion rows get one -- for everything else the
+    single total in the success message already says it all.
+    """
+    if not companion_counts:
+        return ""
+
+    media_noun = "track" if media_type == MediaTypes.MUSIC.value else "item"
+    parts = [
+        f"{count} {noun}{pluralize(count)}"
+        for noun, count in [(media_noun, media_count), *companion_counts]
+        if count
+    ]
+    return ", ".join(parts)
 
 
 def _candidate_item_ids_for_metadata_cleanup(media_querysets, media_type):
@@ -2201,7 +2538,11 @@ def _delete_orphaned_metadata(media_type, item_ids):
             manager.filter(item_id__in=item_ids).values_list("item_id", flat=True),
         )
 
-    item_count, _ = Item.objects.filter(id__in=orphaned_ids).delete()
+    # Count the Items themselves, not the cascade total: anything hanging off
+    # an Item (canonical watch state, tags, credits) would otherwise inflate
+    # the "metadata entries" the user is told about.
+    _total, deleted_per_model = Item.objects.filter(id__in=orphaned_ids).delete()
+    item_count = deleted_per_model.get(Item._meta.label, 0)
 
     if media_type == MediaTypes.MUSIC.value:
         item_count += _delete_orphaned_music_catalog()

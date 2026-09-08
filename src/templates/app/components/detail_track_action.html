@@ -1,3 +1,5 @@
+
+{% load i18n %}
 {% load app_tags %}
 
 <div id="{% component_id 'track-action' media %}"
@@ -17,17 +19,18 @@
       {% if current_instance %}
         {{ current_instance.status|media_status_readable }}
       {% else %}
-        Add to tracker
+        {% translate "Add to tracker" %}
       {% endif %}
     </span>
   </button>
 
   <div x-show="trackOpen"
+  @mousedown.self="trackOpen = false"
+       x-cloak
        @keydown.escape.window="trackOpen = false"
        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
     <div class="modal-max-height overflow-y-auto px-4 md:px-0 relative z-60 w-full"
          style="width: min(96vw, 72rem);"
-         @click.outside="trackOpen = false"
          @click.stop>
       <div id="{% component_id 'track' media %}">
         {% if track_modal_content %}

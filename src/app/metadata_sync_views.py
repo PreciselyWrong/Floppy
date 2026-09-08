@@ -12,16 +12,14 @@ from django.db.utils import OperationalError
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.translation import gettext
 from django.views.decorators.http import require_GET, require_POST
 
 from app import (
-    credits,  # noqa: A004  # app.credits module, not the site builtin
     custom_metadata,
     helpers,
     metadata_utils,
-    view_constants,
 )
 from app.db_retry import is_retryable_error, run_retryable_db_operation
 from app.log_safety import exception_summary, safe_url
@@ -34,15 +32,17 @@ from app.models import (
     MetadataProviderPreference,
     Sources,
 )
-from app.providers import hardcover, services, tmdb, tvdb
+from app.providers import hardcover, services, tmdb
 from app.services import (
     anime_migration,
     bulk_episode_tracking,
     library_migration,
     metadata_resolution,
 )
-from app.services import game_lengths as game_length_services
-from app.services import trakt_popularity as trakt_popularity_service
+from app.services.metadata_sync import (
+    _save_provider_metadata_status as _save_provider_metadata_status,  # noqa: PLC0414 -- compatibility export for existing view callers
+)
+from app.services.metadata_sync import enrich_synced_item, sync_podcast_show_from_rss
 from integrations import anime_mapping
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ def update_metadata_provider_preference(request, source, media_type, media_id):
     }
     if provider not in allowed_providers:
         messages.error(
-            request, "That metadata provider is not available for this title."
+            request, gettext("That metadata provider is not available for this title.")
         )
     else:
         if (
@@ -115,7 +115,50 @@ def update_metadata_provider_preference(request, source, media_type, media_id):
             item=item,
             defaults={"provider": provider},
         )
-        messages.success(request, "Metadata provider updated.")
+        messages.success(request, gettext("Metadata provider updated."))
+
+    if return_url and (
+        return_url.startswith("/")
+        or url_has_allowed_host_and_scheme(
+            return_url,
+            allowed_hosts={request.get_host()},
+            require_https=request.is_secure(),
+        )
+    ):
+        return redirect(return_url)
+
+    return redirect(
+        "media_details",
+        source=source,
+        media_type=media_type,
+        media_id=media_id,
+        title=title if (title := item.get_display_title(request.user)) else "item",
+    )
+
+
+@login_required
+@require_POST
+def update_metadata_language_preference(request, source, media_type, media_id):
+    """Persist a per-item metadata display-language override."""
+    language = (request.POST.get("language") or "").strip()
+    return_url = helpers.normalize_navigation_url(request.POST.get("return_url"))
+
+    item = _lookup_item_for_metadata_route(media_type, source, media_id)
+    try:
+        language_choices = tmdb.metadata_languages()
+    except Exception as exc:  # pragma: no cover - defensive provider fallback
+        logger.warning("Could not load TMDB metadata languages: %s", exc)
+        language_choices = [("", f"Server Default ({settings.TMDB_LANG})")]
+    valid_codes = {choice[0] for choice in language_choices}
+    if language and language not in valid_codes:
+        messages.error(request, gettext("That metadata language is not available."))
+    else:
+        MetadataProviderPreference.objects.update_or_create(
+            user=request.user,
+            item=item,
+            defaults={"language": language},
+        )
+        messages.success(request, gettext("Metadata language updated."))
 
     if return_url and (
         return_url.startswith("/")
@@ -196,6 +239,7 @@ def search_library_move_candidates(request, item_id):
                 user=request.user,
                 language=metadata_resolution.metadata_language_default(
                     request.user,
+                    item,
                 ),
             )
             results = (response or {}).get("results") or []
@@ -280,7 +324,11 @@ def move_library_item(request, item_id):
 
     messages.success(
         request,
-        f"Moved tracking to {target_item.get_display_title(request.user) or 'the selected title'}.",
+        gettext("Moved tracking to %(value_1)s.")
+        % {
+            "value_1": target_item.get_display_title(request.user)
+            or gettext("the selected title")
+        },
     )
     destination_url = reverse(
         "media_details",
@@ -319,7 +367,9 @@ def remap_metadata_provider(request, source, media_type, media_id):
         or provider == item.source
         or not provider_media_id
     ):
-        messages.error(request, "That remap target is not valid for this title.")
+        messages.error(
+            request, gettext("That remap target is not valid for this title.")
+        )
     else:
         metadata_resolution.upsert_provider_links(
             item,
@@ -335,7 +385,7 @@ def remap_metadata_provider(request, source, media_type, media_id):
             item=item,
             defaults={"provider": provider},
         )
-        messages.success(request, "Remapped to the selected match.")
+        messages.success(request, gettext("Remapped to the selected match."))
 
     if return_url and (
         return_url.startswith("/")
@@ -412,7 +462,7 @@ def set_hardcover_edition(request, item_id):
     edition_id = (request.POST.get("edition_id") or "").strip()
 
     if not edition_id:
-        messages.error(request, "Select an edition to use.")
+        messages.error(request, gettext("Select an edition to use."))
     else:
         HardcoverEditionPreference.objects.update_or_create(
             user=request.user,
@@ -426,7 +476,7 @@ def set_hardcover_edition(request, item_id):
             f"{Sources.HARDCOVER.value}_{MediaTypes.BOOK.value}_"
             f"{item.media_id}_{edition_id}",
         )
-        messages.success(request, "Edition updated.")
+        messages.success(request, gettext("Edition updated."))
 
     if return_url and (
         return_url.startswith("/")
@@ -457,19 +507,21 @@ def update_item_image(request, item_id):
     item = get_object_or_404(Item, id=item_id)
     media_model = apps.get_model("app", item.media_type)
     if not media_model.objects.filter(user=request.user, item=item).exists():
-        messages.error(request, "You can only update images for items in your library.")
+        messages.error(
+            request, gettext("You can only update images for items in your library.")
+        )
         return helpers.redirect_back(request)
 
     if not image_url:
-        messages.error(request, "Enter an image URL to save.")
+        messages.error(request, gettext("Enter an image URL to save."))
         return helpers.redirect_back(request)
 
     if item.image != image_url:
         item.image = image_url
         item.save(update_fields=["image"])
-        messages.success(request, "Image URL updated.")
+        messages.success(request, gettext("Image URL updated."))
     else:
-        messages.success(request, "Image URL already matches this item.")
+        messages.success(request, gettext("Image URL already matches this item."))
 
     if return_url and (
         return_url.startswith("/")
@@ -499,12 +551,14 @@ def update_manual_item_metadata(request, item_id):
         owned = media_model.objects.filter(user=request.user, item=item)
     if not owned.exists():
         messages.error(
-            request, "You can only update metadata for items in your library."
+            request, gettext("You can only update metadata for items in your library.")
         )
         return helpers.redirect_back(request)
 
     if not custom_metadata.supports_custom_metadata(item):
-        messages.error(request, "Metadata overrides are not available for this item.")
+        messages.error(
+            request, gettext("Metadata overrides are not available for this item.")
+        )
         return helpers.redirect_back(request)
 
     form = custom_metadata.ManualMetadataForm(
@@ -515,9 +569,11 @@ def update_manual_item_metadata(request, item_id):
     if form.is_valid():
         update_fields = form.save()
         if update_fields:
-            messages.success(request, "Custom metadata updated.")
+            messages.success(request, gettext("Custom metadata updated."))
         else:
-            messages.success(request, "Custom metadata already matches this item.")
+            messages.success(
+                request, gettext("Custom metadata already matches this item.")
+            )
     else:
         logger.error(form.errors.as_json())
         helpers.form_error_messages(form, request)
@@ -548,7 +604,7 @@ def _resolve_current_display_metadata_payload(
         media_type,
         media_id,
         source,
-        language=metadata_resolution.metadata_language_default(user),
+        language=metadata_resolution.metadata_language_default(user, item),
     )
     current_provider = metadata_resolution.get_preferred_provider(
         user,
@@ -576,7 +632,7 @@ def _resolve_current_display_metadata_payload(
         ),
         provider_media_id,
         current_provider,
-        language=metadata_resolution.metadata_language_default(user),
+        language=metadata_resolution.metadata_language_default(user, item),
     )
 
 
@@ -596,10 +652,12 @@ def migrate_grouped_anime(request, source, media_type, media_id):
     allowed_providers = {Sources.TMDB.value, Sources.TVDB.value}
     if media_type != MediaTypes.ANIME.value or source != Sources.MAL.value:
         messages.error(
-            request, "Only flat MAL anime can be migrated to grouped series."
+            request, gettext("Only flat MAL anime can be migrated to grouped series.")
         )
     elif provider not in allowed_providers:
-        messages.error(request, "Choose TMDB or TVDB before migrating this anime.")
+        messages.error(
+            request, gettext("Choose TMDB or TVDB before migrating this anime.")
+        )
     else:
         try:
             result = anime_migration.migrate_flat_anime_to_grouped(
@@ -612,7 +670,7 @@ def migrate_grouped_anime(request, source, media_type, media_id):
         else:
             messages.success(
                 request,
-                "Migrated this anime into grouped series tracking.",
+                gettext("Migrated this anime into grouped series tracking."),
             )
             grouped_item = result.grouped_tv.item
             grouped_title = grouped_item.get_display_title(request.user) or "item"
@@ -949,15 +1007,6 @@ def _build_local_tv_with_seasons_metadata(
     return tv_metadata
 
 
-def _save_provider_metadata_status(item, status):
-    """Persist provider metadata status when it changes."""
-    if item is None or item.provider_metadata_status == status:
-        return item
-    item.provider_metadata_status = status
-    item.save(update_fields=["provider_metadata_status"])
-    return item
-
-
 def _flat_anime_episode_preview_candidates(user, metadata_resolution_result=None):
     """Return grouped providers to try for flat MAL anime episode previews."""
     candidates = []
@@ -1008,7 +1057,8 @@ def _flat_anime_preview_season_numbers(
         if isinstance(grouped_series_metadata, dict)
         else {}
     )
-    seasons = related.get("seasons") if isinstance(related, dict) else []
+    # "seasons" can be present but null, which used to crash the details page.
+    seasons = (related.get("seasons") or []) if isinstance(related, dict) else []
     target_total = grouped_preview_target.get("episode_total")
     try:
         target_total = int(target_total) if target_total is not None else None
@@ -1444,182 +1494,6 @@ def _build_flat_anime_episode_preview(
     return episodes or None
 
 
-def enrich_synced_item(
-    item,
-    metadata,
-    *,
-    source,
-    route_media_type,
-    tracking_media_type,
-    season_number,
-    user,
-):
-    """Apply the full metadata refresh to an already title/image-updated item.
-
-    Shared by the Web UI "Sync metadata with provider" action and the REST
-    API sync endpoints so both produce the same result. `route_media_type`
-    is the movie/tv/season/episode/game/book "route" type used by
-    metadata_resolution and trakt_popularity_service — for a season sync
-    this is "season", even where a caller's own media_type parameter is
-    fixed to "tv" (e.g. the API's season sync endpoint).
-
-    Returns (warnings, preferred_provider_synced_or_none) — the second value
-    is the preferred provider's source value if it was successfully synced,
-    else None.
-    """
-    warnings = []
-
-    # A successful season re-fetch means the provider now has the season,
-    # so the local-only flag and its media-server episode count are stale.
-    if (
-        route_media_type == MediaTypes.SEASON.value
-        and item.provider_metadata_status
-        and metadata.get("episodes")
-    ):
-        _save_provider_metadata_status(item, "")
-        if item.local_season_episode_count is not None:
-            item.local_season_episode_count = None
-            item.save(update_fields=["local_season_episode_count"])
-
-    metadata_update_fields = metadata_utils.apply_item_genres(
-        item,
-        metadata_utils.extract_metadata_genres(metadata),
-    )
-    metadata_update_fields.extend(metadata_utils.apply_item_metadata(item, metadata))
-    if metadata_update_fields:
-        metadata_update_fields = list(dict.fromkeys(metadata_update_fields))
-        item.metadata_fetched_at = timezone.now()
-        metadata_update_fields.append("metadata_fetched_at")
-        item.save(update_fields=metadata_update_fields)
-
-    # A sync just did a live fetch: make sure the detail view's stored-metadata
-    # shortcut (media_details_views.can_skip_live_fetch) doesn't serve the
-    # impoverished Item-only fallback on the page load(s) that follow (#931).
-    cache.set(
-        view_constants.force_live_metadata_cache_key(item.id),
-        True,
-        timeout=view_constants.FORCE_LIVE_METADATA_TIMEOUT,
-    )
-
-    if source == Sources.IGDB.value and route_media_type == MediaTypes.GAME.value:
-        try:
-            game_length_services.refresh_game_lengths(
-                item,
-                igdb_metadata=metadata,
-                force=True,
-                fetch_hltb=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "game_lengths_manual_refresh_failed item_id=%s media_id=%s error=%s",
-                item.id,
-                item.media_id,
-                exception_summary(exc),
-            )
-            warnings.append(
-                "Game length metadata could not be refreshed. Cached data will be used if available.",
-            )
-
-    metadata_resolution.upsert_provider_links(
-        item,
-        metadata,
-        provider=source,
-        provider_media_type=tracking_media_type,
-        season_number=season_number,
-    )
-
-    if source == Sources.TMDB.value and tracking_media_type == MediaTypes.TV.value:
-        from app.tasks_genre import populate_genres_for_item_sync
-
-        populate_genres_for_item_sync(item, metadata)
-
-    preferred_provider = metadata_resolution.get_preferred_provider(
-        user,
-        item,
-        route_media_type,
-    )
-    preferred_provider_synced = None
-    if preferred_provider not in (source, Sources.MANUAL.value):
-        preferred_media_id = metadata_resolution.resolve_provider_media_id(
-            item,
-            preferred_provider,
-            route_media_type=route_media_type,
-            season_number=season_number,
-        )
-        if preferred_media_id:
-            preferred_tracking_type = metadata_resolution.get_tracking_media_type(
-                route_media_type,
-                source=preferred_provider,
-            )
-            preferred_cache_key = (
-                f"{preferred_provider}_{preferred_tracking_type}_{preferred_media_id}"
-            )
-            cache.delete(preferred_cache_key)
-            try:
-                preferred_metadata = services.get_media_metadata(
-                    metadata_resolution.provider_route_media_type(
-                        route_media_type,
-                        preferred_provider,
-                    ),
-                    preferred_media_id,
-                    preferred_provider,
-                )
-                metadata_resolution.upsert_provider_links(
-                    item,
-                    preferred_metadata,
-                    provider=preferred_provider,
-                    provider_media_type=preferred_tracking_type,
-                    season_number=season_number,
-                )
-                preferred_provider_synced = preferred_provider
-            except (
-                requests.exceptions.RequestException,
-                services.ProviderAPIError,
-            ) as exc:
-                logger.warning(
-                    "preferred_provider_sync_failed item_id=%s preferred_provider=%s preferred_media_id=%s error=%s",
-                    item.id,
-                    preferred_provider,
-                    preferred_media_id,
-                    exception_summary(exc),
-                )
-
-    if trakt_popularity_service.supports_route_media_type(route_media_type):
-        try:
-            trakt_popularity_service.refresh_trakt_popularity(
-                item,
-                route_media_type=route_media_type,
-                force=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "trakt_popularity_manual_refresh_failed item_id=%s media_id=%s error=%s",
-                item.id,
-                item.media_id,
-                exception_summary(exc),
-            )
-            warnings.append(
-                "Trakt popularity metadata could not be refreshed. Cached data will be used if available.",
-            )
-
-    if source == Sources.TMDB.value and tracking_media_type in (
-        MediaTypes.MOVIE.value,
-        MediaTypes.TV.value,
-        MediaTypes.SEASON.value,
-    ):
-        credits.sync_item_credits_from_metadata(item, metadata)
-    elif source == Sources.IGDB.value and tracking_media_type == MediaTypes.GAME.value:
-        # No inline metadata payload for cast here — IMDB cast/crew is a
-        # separate best-effort match+download pipeline that's too heavy to
-        # run synchronously in a request. Queue it so a manual refresh
-        # doesn't have to wait for the nightly job to pick this game up.
-        from app.tasks_imdb import refresh_imdb_game_credits_from_datasets
-
-        refresh_imdb_game_credits_from_datasets.apply_async(countdown=2)
-
-    return warnings, preferred_provider_synced
-
-
 @require_POST
 def sync_metadata(request, source, media_type, media_id, season_number=None):
     """Refresh the metadata for a media item."""
@@ -1646,7 +1520,7 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
         cache.set(cache_key, cached_metadata, timeout=timeout)
 
     if source == Sources.MANUAL.value:
-        msg = "Manual items cannot be synced."
+        msg = gettext("Manual items cannot be synced.")
         messages.error(request, msg)
         return HttpResponse(
             msg,
@@ -1654,47 +1528,48 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
             headers={"HX-Redirect": request.POST.get("next", "/")},
         )
 
+    if media_type == MediaTypes.PODCAST.value:
+        try:
+            synced_show = sync_podcast_show_from_rss(media_id, source)
+        except Exception as exc:
+            logger.warning(
+                "podcast_show_rss_sync_failed media_id=%s source=%s error=%s",
+                media_id,
+                source,
+                exception_summary(exc),
+            )
+            messages.error(
+                request,
+                gettext("Could not read the podcast's RSS feed right now."),
+            )
+            return _sync_redirect_response()
+        if synced_show is not None:
+            messages.success(request, gettext("Metadata synced successfully."))
+            return _sync_redirect_response()
+
     tracking_media_type = metadata_resolution.get_tracking_media_type(
         media_type,
         source=source,
     )
-    tvdb_cache_keys = None
-    if source == Sources.TVDB.value:
-        routed_media_type = (
-            MediaTypes.ANIME.value
-            if media_type == MediaTypes.ANIME.value
-            else MediaTypes.TV.value
-        )
-        if media_type == MediaTypes.SEASON.value:
-            cache_key = tvdb._season_cache_key(
-                media_id,
-                season_number,
-                routed_media_type,
-            )
-        else:
-            cache_key = tvdb._cache_key(routed_media_type, media_id)
-        tvdb_cache_keys = tvdb.metadata_cache_keys(media_id, season_number)
-    elif media_type == MediaTypes.SEASON.value and source == Sources.TMDB.value:
-        cache_key = tmdb._season_cache_key(media_id, season_number)
-    else:
-        cache_key = f"{source}_{tracking_media_type}_{media_id}"
-        if media_type == MediaTypes.SEASON.value:
-            cache_key += f"_{season_number}"
+    provider_cache_keys = metadata_utils.provider_metadata_cache_keys(
+        source,
+        tracking_media_type,
+        media_id,
+        season_number=season_number,
+        route_media_type=media_type,
+    )
+    cache_key = provider_cache_keys[0]
 
     cached_metadata = cache.get(cache_key)
     ttl = cache.ttl(cache_key)
     logger.debug("%s - Cache TTL for: %s", cache_key, ttl)
 
     if ttl is not None and ttl > (settings.CACHE_TIMEOUT - 3):
-        msg = "The data was recently synced, please wait a few seconds."
+        msg = gettext("The data was recently synced, please wait a few seconds.")
         messages.error(request, msg)
         logger.error(msg)
     else:
-        deleted = (
-            cache.delete_many(tvdb_cache_keys)
-            if tvdb_cache_keys
-            else cache.delete(cache_key)
-        )
+        deleted = cache.delete_many(provider_cache_keys)
         logger.debug("%s - Old cache deleted: %s", cache_key, deleted)
 
         try:
@@ -1717,10 +1592,9 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
             if isinstance(exc, services.ProviderAPIError):
                 msg = str(exc)
             else:
-                msg = (
-                    f"Could not sync with {provider_label} right now because the provider "
-                    "could not be reached."
-                )
+                msg = gettext(
+                    "Could not sync with %(value_1)s right now because the provider could not be reached."
+                ) % {"value_1": provider_label}
             if cached_metadata is not None:
                 msg += " Cached data has been kept."
             messages.error(request, msg)
@@ -1764,8 +1638,11 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
         item_fields = {
             **Item.title_fields_from_metadata(metadata),
             "image": metadata["image"],
-            "number_of_pages": number_of_pages,
         }
+        # Only books resolve a page count here, so writing it unconditionally would
+        # null a comic/manga count another path stored (#1077).
+        if number_of_pages is not None:
+            item_fields["number_of_pages"] = number_of_pages
         if item is None:
             item = Item.objects.create(
                 media_id=media_id,
@@ -1897,12 +1774,18 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
         _sync_plex_rating(request, item, media_type)
 
         if preferred_provider_synced:
-            msg = (
-                f"{title} was synced to {Sources(source).label} and "
-                f"{Sources(preferred_provider_synced).label} successfully."
-            )
+            msg = gettext(
+                "%(value_1)s was synced to %(value_2)s and %(value_3)s successfully."
+            ) % {
+                "value_1": title,
+                "value_2": Sources(source).label,
+                "value_3": Sources(preferred_provider_synced).label,
+            }
         else:
-            msg = f"{title} was synced to {Sources(source).label} successfully."
+            msg = gettext("%(value_1)s was synced to %(value_2)s successfully.") % {
+                "value_1": title,
+                "value_2": Sources(source).label,
+            }
         messages.success(request, msg)
 
     return _sync_redirect_response()

@@ -1,8 +1,10 @@
 import logging
 
 from django.conf import settings
+from django.contrib import messages
 from django.db.models import Q
 from django.shortcuts import render
+from django.utils.translation import gettext
 from django.views.decorators.http import require_GET
 
 from app import helpers
@@ -304,7 +306,10 @@ def media_search(request):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Local search failed: %s", exception_summary(exc))
 
-    source_options = metadata_resolution.available_metadata_sources(media_type)
+    source_options = metadata_resolution.available_metadata_sources(
+        media_type,
+        request.user,
+    )
     default_source = metadata_resolution.metadata_default_source(
         request.user,
         media_type,
@@ -315,14 +320,29 @@ def media_search(request):
         source = source_options[0].value
 
     search_page = 1 if media_type == MediaTypes.MUSIC.value else page
-    data = services.search(
-        media_type,
-        query,
-        search_page,
-        source,
-        user=request.user,
-        language=metadata_resolution.metadata_language_default(request.user),
-    )
+    try:
+        with services.interactive_request_scope():
+            data = services.search(
+                media_type,
+                query,
+                search_page,
+                source,
+                user=request.user,
+                language=metadata_resolution.metadata_language_default(request.user),
+            )
+    except services.ProviderAPIError as exc:
+        logger.warning(
+            "Search failed for media_type=%s query=%s: %s",
+            media_type,
+            query,
+            exception_summary(exc),
+        )
+        messages.error(
+            request,
+            gettext("%(value_1)s is currently unavailable. Please try again shortly.")
+            % {"value_1": exc.provider_label},
+        )
+        data = {"page": 1, "total_results": 0, "total_pages": 0, "results": []}
 
     if media_type == MediaTypes.MUSIC.value:
         context = {
@@ -469,9 +489,11 @@ def get_saved_suggestions(user, media_type, query, limit=8):
                 )
         return suggestions[:limit]
 
-    anime_mode = getattr(user, "anime_library_mode", MediaTypes.ANIME.value)
+    include_anime_in_anime, include_anime_in_tv = (
+        metadata_resolution.anime_library_visibility(user)
+    )
     list_sql_filters = None
-    if media_type == MediaTypes.TV.value and anime_mode == MediaTypes.ANIME.value:
+    if media_type == MediaTypes.TV.value and not include_anime_in_tv:
         list_sql_filters = {
             "exclude_library_media_type": MediaTypes.ANIME.value,
         }
@@ -489,10 +511,7 @@ def get_saved_suggestions(user, media_type, query, limit=8):
         result_limit=limit,
         **list_filter_kwargs,
     )
-    if media_type == MediaTypes.ANIME.value and anime_mode in {
-        MediaTypes.ANIME.value,
-        "both",
-    }:
+    if media_type == MediaTypes.ANIME.value and include_anime_in_anime:
         grouped = BasicMedia.objects.get_media_list(
             user,
             MediaTypes.TV.value,

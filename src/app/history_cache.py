@@ -410,9 +410,12 @@ def _build_reading_entries(
         queryset = model.objects.filter(
             user=user,
             item__media_type=reading_media_type,
-            status=Status.COMPLETED.value,
-            end_date__isnull=False,
         ).select_related("item")
+        if not include_undated:
+            queryset = queryset.filter(
+                status=Status.COMPLETED.value,
+                end_date__isnull=False,
+            )
         if credited_reading_item_ids is not None:
             if not credited_reading_item_ids:
                 continue
@@ -442,7 +445,7 @@ def _build_reading_entries(
                 if not item_genres & set(genre_filters):
                     continue
             played_at_local = _localize_datetime(reading_entry.end_date)
-            if not played_at_local:
+            if not played_at_local and not include_undated:
                 continue
             entry = {
                 "media_type": item.media_type,
@@ -604,6 +607,9 @@ def _build_podcast_entries(user, podcast_history_records, podcasts_lookup):
                 "item": _serialize_item(podcast.item),
                 "show": _serialize_show(show),
                 "show_podcast_uuid": show_podcast_uuid,
+                "website_url": podcast.episode.website_url
+                if podcast.episode
+                else "",
                 "show_slug": show_slug,
                 "poster": poster,
                 "title": podcast.item.title,

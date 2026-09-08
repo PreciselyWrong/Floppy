@@ -855,15 +855,23 @@ class HomeViewTests(TestCase):
             html=False,
         )
 
-        with patch(
-            "users.home_screen._library_query_entries",
-            side_effect=AssertionError("pagination rebuilt the full Home row"),
+        # Loading another page must not touch other shelves, even when their
+        # cached rows have expired and would need rebuilding.
+        with (
+            patch(
+                "users.home_screen._cached_row_section",
+                side_effect=AssertionError("Load more touched an unrelated home row"),
+            ),
+            patch(
+                "users.home_screen._library_query_entries",
+                side_effect=AssertionError("pagination rebuilt the full Home row"),
+            ),
+            CaptureQueriesContext(connection) as queries,
         ):
-            with CaptureQueriesContext(connection) as queries:
-                response = self.client.get(
-                    reverse("home") + f"?load_row={season_row['row_id']}&offset=14",
-                    headers={"hx-request": "true"},
-                )
+            response = self.client.get(
+                reverse("home") + f"?load_row={season_row['row_id']}&offset=14",
+                headers={"hx-request": "true"},
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "app/components/home_grid.html")

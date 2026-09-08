@@ -11,6 +11,7 @@ from integrations import import_progress
 from integrations.imports import (
     anilist,
     audiobookshelf,
+    clz,
     goodreads,
     gpodder,
     grouvee,
@@ -35,6 +36,7 @@ from integrations.imports import (
     trakt,
     trakt_collection,
     trakt_export,
+    tvtime,
     xbox,
     yamtrack,
 )
@@ -51,6 +53,8 @@ from integrations.tasks._import_helpers import (
     _coerce_uploaded_file,
     format_import_message,
     format_watchlist_sync_message,
+    has_imported_media,
+    import_run_counts,
 )
 from integrations.tasks._plex_collection import update_collection_metadata_from_plex
 
@@ -99,9 +103,13 @@ def import_media(
         )
         raise
 
+    created_count, updated_count = import_run_counts(imported_counts)
     ImportRun.objects.filter(id=import_run.id).update(
         status=ImportRun.Status.COMPLETED,
-        created_count=sum(imported_counts.values()),
+        created_count=created_count,
+        updated_count=updated_count,
+        skipped_count=imported_counts.get("skipped", 0),
+        failed_count=imported_counts.get("failed", 0),
         finished_at=timezone.now(),
     )
 
@@ -110,7 +118,7 @@ def import_media(
     # landed. Recurring importers poll on a 2-hour schedule and usually import
     # nothing; firing an unscoped global reload each time was re-walking the whole
     # library (and holding the single celery-queue worker) for no reason.
-    if any(imported_counts.values()):
+    if has_imported_media(imported_counts):
         events.tasks.reload_calendar.delay()
     else:
         logger.info(
@@ -198,15 +206,14 @@ def import_mdblist(user_id, mode, username=None):
 
 
 @shared_task(name="Import from SIMKL")
-def import_simkl(token, user_id, mode, username=None, anime_destination="anime"):
-    """Celery task for importing media data from SIMKL."""
-    return import_media(
-        simkl.importer,
-        token,
-        user_id,
-        mode,
-        anime_destination=anime_destination,
-    )
+def import_simkl(token, user_id, mode, username=None, anime_destination=None):
+    """Celery task for importing media data from SIMKL.
+
+    `anime_destination` is accepted and ignored. Recurring schedules created
+    before the option was removed persist it in their task kwargs, so dropping
+    the parameter would break them on the next deploy.
+    """
+    return import_media(simkl.importer, token, user_id, mode)
 
 
 @shared_task(name="Import from MyAnimeList")
@@ -233,6 +240,18 @@ def import_kitsu(username, user_id, mode):
 def import_yamtrack(file, user_id, mode):
     """Celery task for importing a Floppy backup or Yamtrack CSV."""
     return import_media(yamtrack.importer, _coerce_uploaded_file(file), user_id, mode)
+
+
+@shared_task(name="Import from CLZ")
+def import_clz(file, user_id, mode, media_type=None):
+    """Celery task for importing a CLZ (Collectorz) CSV or XML export."""
+    return import_media(
+        clz.importer,
+        _coerce_uploaded_file(file),
+        user_id,
+        mode,
+        media_type=media_type,
+    )
 
 
 @shared_task(name="Import from HowLongToBeat")
@@ -338,6 +357,18 @@ def import_hardcover(file, user_id, mode):
 def import_storygraph(file, user_id, mode):
     """Celery task for importing media data from StoryGraph."""
     return import_media(storygraph.importer, _coerce_uploaded_file(file), user_id, mode)
+
+
+@shared_task(name="Import from TV Time (shows)")
+def import_tvtime_shows(file, user_id, mode):
+    """Celery task for importing episode watch history from a TV Time CSV."""
+    return import_media(tvtime.importer_shows, _coerce_uploaded_file(file), user_id, mode)
+
+
+@shared_task(name="Import from TV Time (movies)")
+def import_tvtime_movies(file, user_id, mode):
+    """Celery task for importing movie watch activity from a TV Time CSV."""
+    return import_media(tvtime.importer_movies, _coerce_uploaded_file(file), user_id, mode)
 
 
 @shared_task(name="Import from Plex")
@@ -522,6 +553,15 @@ def import_storyteller(user_id, mode="new"):
 def import_storyteller_recurring(user_id):
     """Recurring import task for Storyteller."""
     return import_media(storyteller.importer, None, user_id, "new")
+
+
+@shared_task(name="Import from KOReader")
+def import_koreader(user_id, mode="new", username=None):
+    """Celery task for importing book reading progress from KOReader."""
+    del username
+    from integrations.imports import koreader
+
+    return import_media(koreader.importer, None, user_id, mode)
 
 
 def _run_stremio_import(user_id, mode, *, on_cache_error):

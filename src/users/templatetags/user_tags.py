@@ -114,6 +114,10 @@ SOURCES_CONFIG = {
         "name": "Storyteller",
         "logo": static("img/storyteller-logo.svg"),
     },
+    "koreader": {
+        "name": "KOReader",
+        "logo": static("img/koreader-logo.svg"),
+    },
     "stremio": {
         "name": "Stremio",
         "logo": static("img/stremio-logo.svg"),
@@ -134,6 +138,18 @@ SOURCES_CONFIG = {
         "name": "Koito",
         "logo": static("img/koito-logo.svg"),
     },
+    "tmdb": {
+        "name": "TMDB",
+        "logo": static("img/tmdb-logo.png"),
+    },
+    "tvdb": {
+        "name": "TheTVDB",
+        "logo": static("img/tvdb-logo.png"),
+    },
+    "igdb": {
+        "name": "IGDB",
+        "logo": static("img/igdb-logo.png"),
+    },
     "hardcover": {
         "name": "Hardcover",
         "logo": static("img/hardcover-logo.png"),
@@ -145,6 +161,10 @@ SOURCES_CONFIG = {
     "storygraph": {
         "name": "StoryGraph",
         "logo": static("img/storygraph-logo.svg"),
+    },
+    "tvtime": {
+        "name": "TV Time",
+        "logo": static("img/tvtime-logo.png"),
     },
     "radarr": {
         "name": "Radarr",
@@ -299,11 +319,11 @@ def user_date_format(date, user):
         # Default to system format
         return formats.date_format(local_dt, "DATE_FORMAT")
 
-    except (ValueError, TypeError, AttributeError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         # Fallback to default format if there's an error
         try:
             return formats.date_format(date, "DATE_FORMAT")
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, OverflowError):
             # If all else fails, return the original value as a string
             return str(date)
 
@@ -325,11 +345,11 @@ def user_time_format(datetime_obj, user):
         local_dt = timezone.localtime(datetime_obj)
         return _format_time_by_preference(local_dt, user, formats)
 
-    except (ValueError, TypeError, AttributeError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         # Fallback to default format if there's an error
         try:
             return formats.date_format(datetime_obj, "TIME_FORMAT")
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, OverflowError):
             # If all else fails, return the original value as a string
             return str(datetime_obj)
 
@@ -392,11 +412,11 @@ def user_datetime_format(datetime_obj, user):
 
         date_part = user_date_format(datetime_obj, user)
         time_part = user_time_format(datetime_obj, user)
-    except (ValueError, TypeError, AttributeError):
+    except (ValueError, TypeError, AttributeError, OverflowError):
         # Fallback to default format if there's an error
         try:
             return formats.date_format(datetime_obj, "DATETIME_FORMAT")
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, OverflowError):
             # If all else fails, return the original value as a string
             return str(datetime_obj)
     else:

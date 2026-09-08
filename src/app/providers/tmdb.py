@@ -12,7 +12,7 @@ from django.utils.html import strip_tags
 from app import helpers
 from app.log_safety import exception_summary
 from app.models import MediaTypes, Sources
-from app.providers import services
+from app.providers import credentials, services
 from app.public_reviews import ProviderReviewPage
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,8 @@ TV_DETAIL_SEASON_APPEND_RESPONSES = (
     "season/{season}/watch/providers",
 )
 TMDB_SEASON_CACHE_VERSION = 4
+# Bumped when the movie payload gained provider_external_ids (issue #1066).
+TMDB_MOVIE_CACHE_VERSION = 2
 # Media-details carousel (trailer + photos): fetched lazily, its own cache
 # entry, independent of the movie/tv/season append_to_response payloads above.
 CAROUSEL_CACHE_TTL_SUCCESS = 60 * 60 * 24 * 7
@@ -58,7 +60,7 @@ PUBLIC_REVIEWS_CACHE_TIMEOUT = 60 * 60 * 6
 def base_params(language=None):
     """Return the base TMDB request params for the given (or default) language."""
     return {
-        "api_key": settings.TMDB_API,
+        "api_key": credentials.get("tmdb", "api_key"),
         "language": language or settings.TMDB_LANG,
     }
 
@@ -143,9 +145,40 @@ def _tv_cache_key(media_id, language=None):
 def _movie_cache_key(media_id, language=None):
     """Return the cache key for a TMDB movie payload."""
     return (
-        f"{Sources.TMDB.value}_{MediaTypes.MOVIE.value}_{media_id}"
-        f"{_language_suffix(language)}"
+        f"{Sources.TMDB.value}_{MediaTypes.MOVIE.value}_v{TMDB_MOVIE_CACHE_VERSION}_"
+        f"{media_id}{_language_suffix(language)}"
     )
+
+
+def _episode_cache_key(media_id, season_number, episode_number, language=None):
+    """Return the cache key for a TMDB episode payload."""
+    return (
+        f"{Sources.TMDB.value}_{MediaTypes.EPISODE.value}_{media_id}_{season_number}_"
+        f"{episode_number}{_language_suffix(language)}"
+    )
+
+
+def metadata_cache_keys(media_id, media_type, season_number=None, episode_number=None):
+    """Return the versioned TMDB cache keys for an item.
+
+    The movie and season keys carry a strategy version, so callers that clear
+    caches must build them through the same helpers the fetchers use rather
+    than re-deriving `source_mediatype_mediaid` by hand (issue #1066).
+    """
+    keys = []
+    if media_type == MediaTypes.MOVIE.value:
+        keys.append(_movie_cache_key(media_id))
+    elif media_type == MediaTypes.TV.value:
+        keys.append(_tv_cache_key(media_id))
+    elif media_type == MediaTypes.SEASON.value and season_number is not None:
+        keys.append(_season_cache_key(media_id, season_number))
+    elif (
+        media_type == MediaTypes.EPISODE.value
+        and season_number is not None
+        and episode_number is not None
+    ):
+        keys.append(_episode_cache_key(media_id, season_number, episode_number))
+    return keys
 
 
 def handle_error(error):
@@ -565,6 +598,7 @@ def movie(media_id, language=None):
             response.get("release_dates", {})
         )
         cast = response.get("credits", {}).get("cast", [])
+        external_ids = dict(response.get("external_ids", {}) or {})
         movie_details = {
             "format": "Movie",
             "release_date": get_start_date(response.get("release_date")),
@@ -610,9 +644,13 @@ def movie(media_id, language=None):
                     MediaTypes.MOVIE.value,
                 ),
             },
-            "external_links": get_external_links(
-                response.get("external_ids", {}), media_id
-            ),
+            # Persisted onto Item.provider_external_ids by
+            # metadata_resolution.upsert_provider_links(), the same as the TV
+            # path in process_tv(). Without it the IMDb ID TMDB already
+            # returned here was fetched and discarded, so movies were invisible
+            # to the Stremio catalog and IMDb rating sync (issue #1066).
+            "provider_external_ids": external_ids,
+            "external_links": get_external_links(external_ids, media_id),
             "providers": response.get("watch/providers", {}).get("results", {}),
         }
 
@@ -916,7 +954,14 @@ def get_tvdb_episode_image_map(tvdb_id, season_number, *, tmdb_media_id=None):
         )
         return {}
     except services.ProviderAPIError as error:
-        logger.warning(
+        # A 404 here just means this TMDB season/episode doesn't exist under
+        # TVDB's own numbering (common for grouped-anime shows) - expected
+        # and already handled below, not worth a warning. Other failures
+        # (auth, 5xx, network) still warrant one.
+        log_method = (
+            logger.info if error.status_code == requests.codes.not_found else logger.warning
+        )
+        log_method(
             "Skipping TMDB episode art fallback due to TVDB API error: %s",
             error,
             extra={
@@ -1224,7 +1269,26 @@ def carousel_media(media_type, media_id, season_number=None, language=None):
             params=params,
         )
     except requests.exceptions.HTTPError as error:
-        handle_error(error)
+        try:
+            handle_error(error)
+        except services.ProviderAPIError as provider_error:
+            if provider_error.status_code != requests.codes.not_found:
+                raise
+            # A 404 here just means this season/movie has no TMDB entry (or
+            # was removed) - expected, not worth a warning. Cache the empty
+            # result so repeated fragment loads don't keep re-hitting TMDB.
+            logger.info(
+                "TMDB carousel source not found, treating as empty: %s",
+                provider_error,
+                extra={
+                    "media_type": media_type,
+                    "media_id": media_id,
+                    "season_number": season_number,
+                },
+            )
+            data = {"video": None, "photos": []}
+            cache.set(cache_key, data, CAROUSEL_CACHE_TTL_ABSENT)
+            return data
 
     data = {
         "video": _parse_carousel_video(response),
@@ -1749,14 +1813,24 @@ def get_cast_credits(credits_data, is_aggregate=False):
         role_value = cast.get("character", "")
         episode_count = None
         if is_aggregate:
+            # TMDB aggregate_credits.roles may be a list of role dicts, or a
+            # list of single-element lists wrapping those dicts. Normalize to
+            # a flat list of dicts so both shapes aggregate correctly. This
+            # unwraps exactly one level: a role element that is itself a list
+            # is iterated, anything else is treated as a single role. Deeper
+            # nesting is not a real TMDB shape and is dropped by the dict
+            # filter below.
             roles = [
                 role
-                for role in cast.get("roles", []) or []
+                for inner in (cast.get("roles") or [])
+                for role in (inner if isinstance(inner, list) else [inner])
                 if isinstance(role, dict)
             ]
             if roles:
                 top_role = max(roles, key=lambda role: role.get("episode_count") or 0)
                 role_value = top_role.get("character") or role_value
+            # episode_count is the person's total appearances across all their
+            # roles in this show, not episodes as the selected top_role only.
             total_eps = sum(r.get("episode_count") or 0 for r in roles)
             episode_count = total_eps if total_eps > 0 else None
 
@@ -2345,10 +2419,7 @@ def _raise_cached_episode_error(status_code):
 
 def episode(media_id, season_number, episode_number, language=None):
     """Return the metadata for the selected episode from The Movie Database."""
-    cache_key = (
-        f"{Sources.TMDB.value}_{MediaTypes.EPISODE.value}_{media_id}_{season_number}_"
-        f"{episode_number}{_language_suffix(language)}"
-    )
+    cache_key = _episode_cache_key(media_id, season_number, episode_number, language)
     data = cache.get(cache_key)
 
     if isinstance(data, dict) and EPISODE_ERROR_CACHE_KEY in data:

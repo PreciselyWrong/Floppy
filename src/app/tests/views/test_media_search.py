@@ -16,6 +16,7 @@ from app.models import (
     Sources,
     Status,
 )
+from app.providers import services
 from users.models import MediaStatusChoices, MetadataSourceDefaultChoices
 
 
@@ -63,6 +64,39 @@ class MediaSearchViewTests(TestCase):
             Sources.TMDB.value,
             language="en",
             user=self.user,
+        )
+
+    @patch("app.providers.services.search")
+    def test_search_result_track_modal_is_cloaked(self, mock_search):
+        """The track modal must not flash before Alpine hides it.
+
+        media_card_list.html's overlay is a full-screen
+        `fixed inset-0 bg-black/50` div; without x-cloak it renders visible
+        until Alpine boots and applies x-show="trackOpen".
+        """
+        mock_search.return_value = {
+            "page": 1,
+            "total_results": 1,
+            "total_pages": 1,
+            "results": [
+                {
+                    "media_id": "238",
+                    "title": "Test Movie",
+                    "media_type": MediaTypes.MOVIE.value,
+                    "source": Sources.TMDB.value,
+                    "image": "http://example.com/image.jpg",
+                },
+            ],
+        }
+
+        response = self.client.get(
+            reverse("search") + "?media_type=movie&q=test",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRegex(
+            response.content.decode(),
+            r'x-show="trackOpen"[^>]*\sx-cloak\b',
         )
 
     @patch("app.providers.services.search")
@@ -275,3 +309,82 @@ class MediaSearchViewTests(TestCase):
             direction="asc",
             result_limit=24,
         )
+
+    @override_settings(HARDCOVER_API="")
+    @patch("app.providers.services.search")
+    def test_book_search_falls_back_to_open_library(self, mock_search):
+        """Book search must work out of the box without a Hardcover key (#1025)."""
+        mock_search.return_value = {
+            "page": 1,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+
+        response = self.client.get(reverse("search") + "?media_type=book&q=quo+vadis")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_search.call_args.args[3], Sources.OPENLIBRARY.value)
+        self.assertNotIn(
+            Sources.HARDCOVER,
+            response.context["source_options"],
+        )
+
+    @override_settings(HARDCOVER_API="")
+    @patch("app.providers.services.search")
+    def test_an_explicit_hardcover_source_is_coerced(self, mock_search):
+        """A bookmarked ?source=hardcover URL must not resurrect the dead path."""
+        mock_search.return_value = {
+            "page": 1,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+
+        response = self.client.get(
+            reverse("search") + "?media_type=book&q=quo+vadis&source=hardcover",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_search.call_args.args[3], Sources.OPENLIBRARY.value)
+
+    @patch("app.providers.services.search")
+    def test_search_uses_interactive_request_scope(self, mock_search):
+        """Rate-limit retries must fail fast, not block the request (#1001)."""
+
+        def assert_interactive(*args, **kwargs):
+            self.assertTrue(services._interactive_request.get())
+            return {
+                "page": 1,
+                "total_results": 0,
+                "total_pages": 0,
+                "results": [],
+            }
+
+        mock_search.side_effect = assert_interactive
+
+        response = self.client.get(
+            reverse("search") + "?media_type=book&q=test",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_search.assert_called_once()
+        self.assertFalse(services._interactive_request.get())
+
+    @patch("app.providers.services.search")
+    def test_search_provider_error_renders_page_with_message(self, mock_search):
+        """A provider failure (e.g. exhausted rate-limit retries) must not 500 (#1001)."""
+        mock_search.side_effect = services.ProviderAPIError(
+            Sources.HARDCOVER.value, Exception("boom")
+        )
+
+        response = self.client.get(
+            reverse("search") + "?media_type=book&q=test",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "app/search.html")
+        messages = list(response.context["messages"])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("Hardcover", str(messages[0]))
+        self.assertIn("unavailable", str(messages[0]))

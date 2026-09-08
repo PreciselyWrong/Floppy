@@ -278,8 +278,9 @@ function trackModalCreateToast(detail) {
     <p class="text-sm font-medium flex-1"></p>
     <button type="button"
             class="text-current opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
-            aria-label="Dismiss notification">x</button>
+            aria-label="">x</button>
   `;
+  toast.querySelector("button").setAttribute("aria-label", gettext("Dismiss notification"));
   toast.querySelector("p").textContent = message;
   toast
     .querySelector("button")
@@ -373,6 +374,7 @@ document.addEventListener("alpine:init", () => {
       start_date: false,
       end_date: false,
     },
+    suppressStatusDateAutofill: false,
     manualStartDate: false,
     // Track original values to detect intentionally empty dates
     original: {
@@ -548,6 +550,10 @@ document.addEventListener("alpine:init", () => {
       if (statusField) {
         statusField.addEventListener("change", (e) => {
           const status = e.target.value;
+
+          if (this.suppressStatusDateAutofill) {
+            return;
+          }
 
           // Clear previously auto-filled fields when status changes
           if (this.autoFilled.start_date && startDateField) {

@@ -22,6 +22,8 @@ STARTUP_SWEEP_COUNTDOWNS = {
     "trakt_popularity": 300,
     "igdb_ratings": 420,
     "provider": 540,
+    "podcast_website": 660,
+    "external_ids": 780,
 }
 
 
@@ -67,6 +69,7 @@ class AppConfig(AppConfig):
     def ready(self):
         """Import signals when the app is ready."""
         import_module("app.signals")
+        import_module("app.signals_watch_state")
         if _is_management_command_process():
             # One-off manage.py commands (migrate, shell, check, ...) must
             # not enqueue startup tasks or consume the once-per-day startup
@@ -121,6 +124,8 @@ class AppConfig(AppConfig):
             self._schedule_trakt_popularity_reconcile()
             self._schedule_igdb_rating_backfill_reconcile()
             self._schedule_provider_backfill_reconcile()
+            self._schedule_podcast_website_backfill_reconcile()
+            self._schedule_external_ids_backfill_reconcile()
 
     def _add_startup_cache_key(
         self,
@@ -313,6 +318,41 @@ class AppConfig(AppConfig):
                 "Failed to schedule IGDB ratings backfill reconcile: %s", error
             )
 
+    def _schedule_podcast_website_backfill_reconcile(self):
+        """Queue the podcast website backfill gate for a worker to evaluate.
+
+        Shows and episodes tracked before podcast website links existed have a
+        blank website_url that would otherwise only fill in when someone opens
+        the show or re-runs a provider import (issue #1014). The worker-side
+        ensure task owns the durable state gate, so no DB query happens here in
+        ready(), which runs pre-fork in the Gunicorn master under preload_app.
+        """
+        try:
+            from app.tasks_podcast import (
+                PODCAST_WEBSITE_BACKFILL_VERSION,
+                ensure_podcast_website_backfill_reconcile,
+            )
+
+            if not self._add_startup_cache_key(
+                f"podcast_website_reconcile_startup_v{PODCAST_WEBSITE_BACKFILL_VERSION}",
+                timeout=3600,
+            ):
+                return
+
+            ensure_podcast_website_backfill_reconcile.apply_async(
+                kwargs={"strategy_version": PODCAST_WEBSITE_BACKFILL_VERSION},
+                countdown=STARTUP_SWEEP_COUNTDOWNS["podcast_website"],
+                priority=getattr(settings, "CELERY_TASK_PRIORITY_BACKGROUND", 9),
+            )
+            logger.info(
+                "Scheduled podcast website backfill reconcile (version=%s)",
+                PODCAST_WEBSITE_BACKFILL_VERSION,
+            )
+        except Exception as error:
+            logger.warning(
+                "Failed to schedule podcast website backfill reconcile: %s", error
+            )
+
     def _schedule_provider_backfill_reconcile(self):
         """Queue the watch-provider reconcile gate for a worker to evaluate.
 
@@ -350,6 +390,47 @@ class AppConfig(AppConfig):
         except Exception as error:
             logger.warning(
                 "Failed to schedule watch provider backfill reconcile: %s", error
+            )
+
+    def _schedule_external_ids_backfill_reconcile(self):
+        """Queue the external-ID reconcile gate for a worker to evaluate.
+
+        Movies tracked while tmdb.movie() discarded the IMDb ID TMDB returned
+        have no imdb_id in provider_external_ids, so they are invisible to the
+        Stremio catalog and IMDb rating sync until something refetches them.
+        Nothing refetches them on its own, so this kicks the catch-up sweep off
+        rather than leaving every existing library to a terminal command
+        (issue #1066).
+        """
+        try:
+            from app.tasks_external_ids import (
+                EXTERNAL_IDS_BACKFILL_VERSION,
+                ensure_external_ids_backfill_reconcile,
+            )
+
+            version = EXTERNAL_IDS_BACKFILL_VERSION
+            if not self._add_startup_cache_key(
+                f"external_ids_reconcile_startup_v{version}",
+                timeout=3600,
+            ):
+                return
+
+            # The worker-side ensure task owns the durable state gate. Keeping
+            # that DB query out of ready() avoids checking out a pool
+            # connection during process startup.
+            ensure_external_ids_backfill_reconcile.apply_async(
+                kwargs={"strategy_version": version},
+                countdown=STARTUP_SWEEP_COUNTDOWNS["external_ids"],
+                priority=getattr(settings, "CELERY_TASK_PRIORITY_BACKGROUND", 9),
+            )
+
+            logger.info(
+                "Scheduled external ID backfill reconcile (version=%s)",
+                version,
+            )
+        except Exception as error:
+            logger.warning(
+                "Failed to schedule external ID backfill reconcile: %s", error
             )
 
     def _schedule_trakt_popularity_reconcile(self):

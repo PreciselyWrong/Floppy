@@ -143,12 +143,29 @@ class MediaUpdateRequestSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
 
+class TrackedMediaUpdateRequestSerializer(MediaUpdateRequestSerializer):
+    """Tracked-media PATCH fields, including the shared item's artwork URL."""
+
+    image_url = serializers.URLField(required=False, allow_blank=True)
+
+
 class NextEpisodeSerializer(serializers.Serializer):
     """The next released, unwatched TV-like episode."""
 
     season_number = serializers.IntegerField(allow_null=True)
     episode_number = serializers.IntegerField()
     air_date = serializers.DateTimeField(allow_null=True)
+
+
+class ShowSerializer(serializers.Serializer):
+    """The parent show/podcast for an episode-like tracked media entry."""
+
+    id = serializers.IntegerField(allow_null=True)
+    title = serializers.CharField(allow_blank=True)
+    slug = serializers.CharField(allow_blank=True)
+    podcast_uuid = serializers.CharField(allow_null=True)
+    image = serializers.CharField(allow_blank=True)
+    website_url = serializers.CharField(allow_blank=True)
 
 
 class TrackedMediaResponseSerializer(serializers.Serializer):
@@ -172,6 +189,7 @@ class TrackedMediaResponseSerializer(serializers.Serializer):
     notes = serializers.CharField(allow_blank=True, allow_null=True)
     lists = serializers.ListField(child=serializers.DictField())
     next_episode = NextEpisodeSerializer(allow_null=True)
+    show = ShowSerializer(allow_null=True)
 
 
 class TrackedMediaEnvelopeSerializer(serializers.Serializer):

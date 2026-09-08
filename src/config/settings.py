@@ -329,6 +329,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "app.middleware.ProviderCredentialUserMiddleware",
     "app.middleware.UserLanguageMiddleware",
     "app.middleware.DiscoverWarmupMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -660,6 +661,7 @@ LANGUAGE_CODE = "en-us"
 
 LANGUAGES = [
     ("en", "English"),
+    ("de", "Deutsch"),
     ("es", "Español"),
 ]
 
@@ -1013,6 +1015,16 @@ PLEX_LIBRARY_INDEX_STALE_HOURS = config(
 
 BACKUP_DIR = config("BACKUP_DIR", default=str(BASE_DIR / "backups"))
 
+# Raw SQLite snapshots for disaster recovery (#1053) -- distinct from the CSV
+# exports above, which cannot replace a physically damaged db.sqlite3. Rides
+# the same BACKUP_DIR volume mount installs already have.
+DB_SNAPSHOT_ENABLED = config("DB_SNAPSHOT_ENABLED", default=True, cast=bool)
+DB_SNAPSHOT_RETENTION_COUNT = config(
+    "DB_SNAPSHOT_RETENTION_COUNT", default=7, cast=int,
+)
+DB_SNAPSHOT_HOUR = config("DB_SNAPSHOT_HOUR", default=2, cast=int)
+DB_SNAPSHOT_MINUTE = config("DB_SNAPSHOT_MINUTE", default=30, cast=int)
+
 # Runtime population settings
 RUNTIME_POPULATION_DISABLED = config(
     "RUNTIME_POPULATION_DISABLED", default=False, cast=bool
@@ -1057,11 +1069,26 @@ MUSICBRAINZ_URL = config(
     default="https://musicbrainz.org/ws/2",
 )
 
+# Provider credentials that intentionally ship as app-owned, shared metadata
+# keys. The value is a single quota shared by every Floppy install, so Settings
+# > Metadata lets an operator or user supply their own. These are public by
+# design, not user or account credentials. Never add a private credential or a
+# *_SECRET setting here; those must come from the environment, a Docker secret,
+# or encrypted provider-credential storage.
+SHARED_DEFAULT_CREDENTIALS = {
+    "TMDB_API": "61572be02f0a068658828f6396aacf60",
+    "MAL_API": "25b5581dafd15b3e7d583bb79e9a1691",
+    "IGDB_ID": "8wqmm7x1n2xxtnz94lb8mthadhtgrt",
+    "BGG_API_TOKEN": "92f43ab1-d1d5-4e18-8b82-d1f56dc12927",
+    "COMICVINE_API": "cdab0706269e4bca03a096fbc39920dadf7e4992",
+    "SIMKL_ID": "a973e57e85d94068315d5ac29669d85da8abc0fb7aff1d22e00e04bdf1882578",
+}
+
 TMDB_API = config(
     "TMDB_API",
     default=secret(
         "TMDB_API_FILE",
-        "61572be02f0a068658828f6396aacf60",
+        SHARED_DEFAULT_CREDENTIALS["TMDB_API"],
     ),
 )
 TMDB_NSFW = config("TMDB_NSFW", default=False, cast=bool)
@@ -1095,7 +1122,7 @@ MAL_API = config(
     "MAL_API",
     default=secret(
         "MAL_API_FILE",
-        "25b5581dafd15b3e7d583bb79e9a1691",
+        SHARED_DEFAULT_CREDENTIALS["MAL_API"],
     ),
 )
 MAL_NSFW = config("MAL_NSFW", default=False, cast=bool)
@@ -1106,14 +1133,14 @@ IGDB_ID = config(
     "IGDB_ID",
     default=secret(
         "IGDB_ID_FILE",
-        "8wqmm7x1n2xxtnz94lb8mthadhtgrt",
+        SHARED_DEFAULT_CREDENTIALS["IGDB_ID"],
     ),
 )
 IGDB_SECRET = config(
     "IGDB_SECRET",
     default=secret(
         "IGDB_SECRET_FILE",
-        "ovbq0hwscv58hu46yxn50hovt4j8kj",
+        "",
     ),
 )
 IGDB_NSFW = config("IGDB_NSFW", default=False, cast=bool)
@@ -1123,7 +1150,7 @@ BGG_API_TOKEN = config(
     "BGG_API_TOKEN",
     default=secret(
         "BGG_API_TOKEN_FILE",
-        "92f43ab1-d1d5-4e18-8b82-d1f56dc12927",
+        SHARED_DEFAULT_CREDENTIALS["BGG_API_TOKEN"],
     ),
 )
 
@@ -1135,19 +1162,14 @@ STEAM_API_KEY = config(
     ),  # Generate default key https://steamcommunity.com/dev/apikey
 )
 
+# Intentionally has no default. Hardcover meters its free tier per account
+# (5000 requests/day), so a token bundled with the image is a single quota
+# shared by every Floppy install on the internet and is permanently exhausted
+# (#1025). Operators supply their own token, or users set a personal one in
+# Preferences; without either, Hardcover is simply not an available source.
 HARDCOVER_API = config(
     "HARDCOVER_API",
-    default=secret(
-        "HARDCOVER_API_FILE",
-        "Bearer eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJIYXJkY292ZXIiLCJ2ZXJzaW9uIjoiOCIsImp0"
-        "aSI6IjcyYTc1ZmU3LTBlY2EtNDYzZC04Njc4LThlMTVhMjM4MzY0OCIsImFwcGxpY2F0aW9uSWQi"
-        "OjIsInN1YiI6IjczODAxIiwiYXVkIjoiMSIsImlkIjoiNzM4MDEiLCJsb2dnZWRJbiI6dHJ1ZSwi"
-        "aWF0IjoxNzc4NjI3MzIwLCJleHAiOjE4MTAxNjMzMjAsImh0dHBzOi8vaGFzdXJhLmlvL2p3dC9j"
-        "bGFpbXMiOnsieC1oYXN1cmEtYWxsb3dlZC1yb2xlcyI6WyJ1c2VyIl0sIngtaGFzdXJhLWRlZmF1"
-        "bHQtcm9sZSI6InVzZXIiLCJ4LWhhc3VyYS1yb2xlIjoidXNlciIsIlgtaGFzdXJhLXVzZXItaWQi"
-        "OiI3MzgwMSJ9LCJ1c2VyIjp7ImlkIjo3MzgwMX19.3b6v1FJ24VTrKtmxMiIUO4o5LR2HGhw6zn"
-        "PlDwL5Df4",
-    ),
+    default=secret("HARDCOVER_API_FILE", ""),
 )
 
 GOOGLE_BOOKS_API_KEY = config(
@@ -1159,7 +1181,7 @@ COMICVINE_API = config(
     "COMICVINE_API",
     default=secret(
         "COMICVINE_API_FILE",
-        "cdab0706269e4bca03a096fbc39920dadf7e4992",
+        SHARED_DEFAULT_CREDENTIALS["COMICVINE_API"],
     ),
 )
 
@@ -1199,14 +1221,14 @@ SIMKL_ID = config(
     "SIMKL_ID",
     default=secret(
         "SIMKL_ID_FILE",
-        "a973e57e85d94068315d5ac29669d85da8abc0fb7aff1d22e00e04bdf1882578",
+        SHARED_DEFAULT_CREDENTIALS["SIMKL_ID"],
     ),
 )
 SIMKL_SECRET = config(
     "SIMKL_SECRET",
     default=secret(
         "SIMKL_SECRET_FILE",
-        "1b548a88ac7884a757cc58a552842913a9337f3cab3a4905836c6dc305dda316",
+        "",
     ),
 )
 
@@ -1497,6 +1519,7 @@ RECONCILE_BATCH_SIZE = config(
     cast=int,
 )
 WATCH_PROVIDERS_RECONCILE_BATCH_SIZE = RECONCILE_BATCH_SIZE
+EXTERNAL_IDS_RECONCILE_BATCH_SIZE = RECONCILE_BATCH_SIZE
 GENRE_RECONCILE_BATCH_SIZE = RECONCILE_BATCH_SIZE
 # Chunks of 50 items enqueued per reconcile pass, bounding in-flight work.
 RECONCILE_MAX_CHUNKS_PER_RUN = config(
@@ -1570,6 +1593,14 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": 60 * 15,
         "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
     },
+    # Folds shows that the old routing tracked in both Anime and TV Shows back
+    # into one row. Self-limiting: once no duplicates remain each run is a
+    # single cheap query (discussion #967).
+    "repair_duplicated_anime_libraries": {
+        "task": "Repair duplicated anime libraries",
+        "schedule": crontab(hour=5, minute=30),
+        "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
+    },
     "reload_calendar": {
         "task": "Reload calendar",
         "schedule": 60 * 60 * 24,  # every 24 hours
@@ -1577,6 +1608,11 @@ CELERY_BEAT_SCHEDULE = {
     "cleanup_image_cache": {
         "task": "Cleanup image cache",
         "schedule": crontab(hour=4, minute=0),
+        "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
+    },
+    "write_database_snapshot": {
+        "task": "Write database snapshot",
+        "schedule": crontab(hour=DB_SNAPSHOT_HOUR, minute=DB_SNAPSHOT_MINUTE),
         "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
     },
     "send_release_notifications": {
@@ -1645,6 +1681,22 @@ CELERY_BEAT_SCHEDULE = {
         "kwargs": {
             "batch_size": WATCH_PROVIDERS_RECONCILE_BATCH_SIZE,
         },
+        "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
+    },
+    "ensure_external_ids_backfill_reconcile": {
+        "task": "Ensure external ID backfill reconcile",
+        "schedule": RECONCILE_INTERVAL_SECONDS,
+        "kwargs": {
+            "batch_size": EXTERNAL_IDS_RECONCILE_BATCH_SIZE,
+        },
+        "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
+    },
+    # One-shot: goes quiet for good once every show with a feed has been swept
+    # (app/tasks_podcast.py), so this only has to catch the passes after the
+    # first one the startup hook kicks off.
+    "ensure_podcast_website_backfill_reconcile": {
+        "task": "Ensure podcast website backfill reconcile",
+        "schedule": RECONCILE_INTERVAL_SECONDS,
         "options": {"priority": CELERY_TASK_PRIORITY_BACKGROUND},
     },
     "warm_discover_api_cache": {

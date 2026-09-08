@@ -1,3 +1,4 @@
+import ipaddress
 import re
 from datetime import date, datetime
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
@@ -406,6 +407,9 @@ def enrich_items_with_user_data(
     return enriched_items
 
 
+MIN_VALID_RELEASE_YEAR = 1900
+
+
 def extract_release_datetime(metadata):
     """Extract release datetime from metadata dict."""
     from datetime import datetime
@@ -424,7 +428,10 @@ def extract_release_datetime(metadata):
         year = metadata.get("details", {}).get("year") or metadata.get("year")
         if year:
             try:
-                return datetime(int(year), 1, 1, tzinfo=ZoneInfo("UTC"))
+                parsed_year = int(year)
+                if parsed_year < MIN_VALID_RELEASE_YEAR:
+                    return None
+                return datetime(parsed_year, 1, 1, tzinfo=ZoneInfo("UTC"))
             except (ValueError, TypeError):
                 return None
         return None
@@ -443,6 +450,8 @@ def extract_release_datetime(metadata):
     for fmt, length in format_lengths.items():
         try:
             dt = datetime.strptime(date_str[:length], fmt)  # noqa: DTZ007  # date-only value; no timezone applies
+            if dt.year < MIN_VALID_RELEASE_YEAR:
+                continue
             return dt.replace(tzinfo=ZoneInfo("UTC"))
         except (ValueError, TypeError):
             continue
@@ -820,6 +829,30 @@ def get_tv_show_collection_stats(user, tv_item, metadata_episode_count=None):
     }
 
 
+def _resolve_show_item_for_season(season_item):
+    """Find the parent show's TV Item for a season, tolerating bucket duplicates.
+
+    A show can legitimately have more than one TV-media-type Item (e.g. one in
+    the 'tv' bucket, one in a 'season' bucket) once the fork's unique
+    constraint scopes on library_media_type — see issue #1015. Prefer the row
+    sharing the season's own bucket, then fall back to any other match rather
+    than raising MultipleObjectsReturned.
+    """
+    from app.models import Item, MediaTypes
+
+    tv_items = Item.objects.filter(
+        media_id=season_item.media_id,
+        source=season_item.source,
+        media_type=MediaTypes.TV.value,
+    )
+    return (
+        tv_items.filter(library_media_type=season_item.library_media_type).first()
+        or tv_items.exclude(library_media_type=season_item.library_media_type)
+        .order_by("id")
+        .first()
+    )
+
+
 def get_season_collection_stats(user, season_item):
     """Get collection statistics for a specific season.
 
@@ -878,12 +911,8 @@ def get_season_collection_stats(user, season_item):
     # If no episode or season-level entries exist anywhere for the show,
     # a show-level collection entry can still represent the whole season.
     if collected_count == 0:
-        try:
-            tv_item = Item.objects.get(
-                media_id=season_item.media_id,
-                source=season_item.source,
-                media_type=MediaTypes.TV.value,
-            )
+        tv_item = _resolve_show_item_for_season(season_item)
+        if tv_item is not None:
             show_collection_entry = CollectionEntry.objects.filter(
                 user=user,
                 item=tv_item,
@@ -891,8 +920,6 @@ def get_season_collection_stats(user, season_item):
 
             if show_collection_entry and not show_has_granular_collection:
                 collected_count = total_episodes
-        except Item.DoesNotExist:
-            pass
 
     return {
         "collected_episodes": collected_count,
@@ -1121,12 +1148,8 @@ def get_season_collection_metadata(user, season_item):
             item__source=season_item.source,
             item__media_type__in=[MediaTypes.SEASON.value, MediaTypes.EPISODE.value],
         ).exists()
-        try:
-            tv_item = Item.objects.get(
-                media_id=season_item.media_id,
-                source=season_item.source,
-                media_type=MediaTypes.TV.value,
-            )
+        tv_item = _resolve_show_item_for_season(season_item)
+        if tv_item is not None:
             show_collection_entry = CollectionEntry.objects.filter(
                 user=user,
                 item=tv_item,
@@ -1144,8 +1167,6 @@ def get_season_collection_metadata(user, season_item):
                     "is_3d": show_collection_entry.is_3d,
                     "collected_at": show_collection_entry.collected_at,
                 }
-        except Item.DoesNotExist:
-            pass
 
         return None
 
@@ -1225,6 +1246,33 @@ def build_absolute_app_url(request, path):
         return None
 
     return request.build_absolute_uri(path)
+
+
+def supports_oauth_redirect(callback_url):
+    """Whether an OAuth provider will accept this callback URL.
+
+    Trakt (and a growing number of providers) reject redirect URIs that are not
+    HTTPS unless the host is loopback, so an instance served over plain HTTP on
+    a LAN address cannot use the browser-redirect flow at all (#681).
+    """
+    if not callback_url:
+        return False
+
+    parsed = urlparse(callback_url)
+    if parsed.scheme == "https":
+        return True
+    if parsed.scheme != "http":
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def parse_completion_datetime(value):
