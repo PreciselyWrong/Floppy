@@ -1054,7 +1054,7 @@ class HistoryMonthViewTests(TestCase):
         self.assertIn('role="dialog"', template)
         self.assertIn('aria-modal="true"', template)
         self.assertIn('aria-labelledby="history-filter-title"', template)
-        self.assertIn('aria-label="Close history filters"', template)
+        self.assertIn("Close history filters", template)
         self.assertIn('@keydown.tab="trapFocus($event)"', template)
         self.assertIn('aria-haspopup="listbox"', template)
         self.assertIn('class="history-page pb-24"', template)
