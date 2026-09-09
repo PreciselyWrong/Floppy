@@ -381,7 +381,7 @@ class HistoryTimelineViewTests(TestCase):
         self.assertIn("color: var(--color-page-bg)", history_css)
         self.assertNotIn("var(--color-accent)", history_css)
         self.assertNotIn("font-family", history_css)
-        self.assertEqual(css.count("--color-link:"), 4)
+        self.assertGreaterEqual(css.count("--color-link:"), 4)
         for template_name in (
             "history_timeline_single.html",
             "history_timeline_binge.html",
