@@ -880,9 +880,14 @@ class HistoryMonthViewTests(TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "bg-[var(--color-link)]")
-        self.assertContains(response, "text-[var(--color-page-bg)]")
-        self.assertNotIn("var(--color-accent)", template)
+        self.assertContains(response, 'data-history-filter-trigger="true"')
+        self.assertLess(
+            template.index('data-history-filter-trigger="true"'),
+            template.index('class="history-timeline-filters'),
+        )
+        self.assertNotIn("fixed bottom-6", template)
+        self.assertNotIn("bg-[var(--color-link)]", template)
+        self.assertNotIn("text-[var(--color-page-bg)]", template)
         self.assertNotIn("history-page-container", template)
         self.assertNotIn("indigo-", template)
         self.assertNotIn("border-gray-", template)
@@ -1058,7 +1063,7 @@ class HistoryMonthViewTests(TestCase):
         self.assertIn("Close history filters", template)
         self.assertIn('@keydown.tab="trapFocus($event)"', template)
         self.assertIn('aria-haspopup="listbox"', template)
-        self.assertIn('class="history-page pb-24"', template)
+        self.assertIn('class="history-page"', template)
         self.assertIn("spaceAbove", template)
         self.assertIn("selectedImpliedGenres = []", template)
 

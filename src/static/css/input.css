@@ -705,15 +705,14 @@ html.light .theme-toggle-icon-moon {
 
 .history-timeline-chip-active {
   border-color: var(--color-link);
-  background: var(--color-link);
-  color: var(--color-page-bg);
+  background: var(--color-surface-strong);
+  color: var(--color-text);
 }
 
 .history-timeline-date {
-  color: var(--color-link);
-  font-size: 1.125rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
+  color: var(--color-text-secondary);
+  font-size: 1rem;
+  font-weight: 500;
 }
 
 .history-timeline-card {

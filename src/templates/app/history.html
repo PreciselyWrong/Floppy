@@ -98,7 +98,20 @@
     </div>
   </div>
   
-<div class="history-page pb-24">
+<div class="history-page">
+  <div class="mb-4 flex justify-end">
+    <button type="button"
+            data-history-filter-trigger="true"
+            @click="$dispatch('history-filter-open')"
+            aria-haspopup="dialog"
+            class="inline-flex items-center gap-2 rounded-md border border-[var(--color-surface-border)] bg-[var(--color-surface)] px-3 py-2 text-sm font-medium text-[var(--color-text)] shadow-sm transition-colors hover:border-[var(--color-link)] hover:bg-[var(--color-surface-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--color-link)] cursor-pointer">
+      {% include "app/icons/funnel.svg" with classes="w-4 h-4 text-[var(--color-text-secondary)]" %}
+      <span>{% translate "Filter" %}</span>
+      {% if active_filters %}
+        <span class="h-2 w-2 rounded-full bg-[var(--color-text)]" aria-label="{% translate "Filters active" %}"></span>
+      {% endif %}
+    </button>
+  </div>
   {% if history_mode != "release" %}
     <nav class="history-timeline-filters mb-6 overflow-x-auto"
          aria-label="Filter history by media family">
@@ -234,7 +247,7 @@
       {% for page_num in pages %}
         {% if page_num %}
           <a href="?{% if active_filters %}{% for key, value in active_filters.items %}{{ key }}={{ value }}{% if not forloop.last %}&{% endif %}{% endfor %}{% if active_filters %}&{% endif %}{% endif %}page={{ page_num }}"
-             class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-link)] text-[var(--color-page-bg)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
+             class="w-10 h-10 rounded-md border {% if current_page == page_num %}border-[var(--color-link)] bg-[var(--color-surface-strong)] text-[var(--color-text)]{% else %}border-[var(--color-surface-border)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
             {{ page_num }}
           </a>
         {% else %}
@@ -339,7 +352,7 @@
         {% for page_num in pages %}
           {% if page_num %}
             <a href="?{% if active_filters %}{% for key, value in active_filters.items %}{{ key }}={{ value }}{% if not forloop.last %}&{% endif %}{% endfor %}{% if active_filters %}&{% endif %}{% endif %}page={{ page_num }}"
-               class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-link)] text-[var(--color-page-bg)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
+               class="w-10 h-10 rounded-md border {% if current_page == page_num %}border-[var(--color-link)] bg-[var(--color-surface-strong)] text-[var(--color-text)]{% else %}border-[var(--color-surface-border)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
               {{ page_num }}
             </a>
           {% else %}
@@ -642,22 +655,7 @@
     if (!term) return this.availableImpliedGenres;
     return this.availableImpliedGenres.filter(g => g.toLowerCase().includes(term));
   }
-}">
-  {# FAB button #}
-  <button type="button"
-          @click="openModal()"
-          class="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-[var(--color-link)] hover:brightness-110 text-[var(--color-page-bg)] shadow-lg flex items-center justify-center cursor-pointer transition-colors"
-          style="bottom: max(1.5rem, env(safe-area-inset-bottom)); right: max(1.5rem, env(safe-area-inset-right));"
-          title="{% translate "Filter history" %}"
-          aria-label="{% translate "Filter history" %}">
-    {% include "app/icons/funnel.svg" with classes="w-5 h-5" %}
-    <span x-show="activeCount > 0"
-          x-text="activeCount"
-          x-cloak
-          class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-bold pointer-events-none">
-    </span>
-  </button>
-
+}" @history-filter-open.window="openModal()">
   {# Modal overlay #}
   <div x-show="open"
        x-cloak
@@ -931,7 +929,7 @@
           </button>
           <button type="button"
                   @click="apply()"
-                  class="flex-1 px-4 py-2 rounded-md bg-[var(--color-link)] hover:brightness-110 text-[var(--color-page-bg)] text-sm font-medium transition-colors cursor-pointer">
+                  class="flex-1 px-4 py-2 rounded-md border border-[var(--color-link)] bg-[var(--color-surface-strong)] text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] text-sm font-medium transition-colors cursor-pointer">
             {% translate "Apply" %}
           </button>
         </div>

@@ -412,8 +412,11 @@ class HistoryTimelineViewTests(TestCase):
         )[0]
         self.assertNotIn("--color-history-acid", css)
         self.assertIn("border-color: var(--color-link)", history_css)
-        self.assertIn("color: var(--color-page-bg)", history_css)
-        self.assertNotIn("var(--color-accent)", history_css)
+        self.assertIn("background: var(--color-surface-strong)", history_css)
+        self.assertIn("color: var(--color-text)", history_css)
+        self.assertIn("color: var(--color-text-secondary)", history_css)
+        self.assertIn("font-weight: 500", history_css)
+        self.assertNotIn("background: var(--color-link)", history_css)
         self.assertNotIn("font-family", history_css)
         self.assertGreaterEqual(css.count("--color-link:"), 4)
         for template_name in (

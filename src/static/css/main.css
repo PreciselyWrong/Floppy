@@ -359,9 +359,6 @@
   .inset-y-0 {
     inset-block: 0px;
   }
-  .-top-1 {
-    top: calc(var(--spacing) * -1);
-  }
   .top-0 {
     top: 0px;
   }
@@ -388,9 +385,6 @@
   }
   .top-full {
     top: 100%;
-  }
-  .-right-1 {
-    right: calc(var(--spacing) * -1);
   }
   .right-0 {
     right: 0px;
@@ -788,6 +782,9 @@
   .h-1\.5 {
     height: calc(var(--spacing) * 1.5);
   }
+  .h-2 {
+    height: calc(var(--spacing) * 2);
+  }
   .h-2\.5 {
     height: calc(var(--spacing) * 2.5);
   }
@@ -961,6 +958,9 @@
   }
   .w-1\.5 {
     width: calc(var(--spacing) * 1.5);
+  }
+  .w-2 {
+    width: calc(var(--spacing) * 2);
   }
   .w-2\/5 {
     width: calc(2 / 5 * 100%);
@@ -2536,9 +2536,6 @@
       background-color: color-mix(in oklab, var(--color-red-400) 10%, transparent);
     }
   }
-  .bg-red-500 {
-    background-color: var(--color-red-500);
-  }
   .bg-red-500\/10 {
     background-color: color-mix(in srgb, oklch(63.7% 0.237 25.331) 10%, transparent);
     @supports (color: color-mix(in lab, red, red)) {
@@ -2916,9 +2913,6 @@
   }
   .pb-16 {
     padding-bottom: calc(var(--spacing) * 16);
-  }
-  .pb-24 {
-    padding-bottom: calc(var(--spacing) * 24);
   }
   .pl-0 {
     padding-left: 0px;
@@ -5633,14 +5627,13 @@ html.light .theme-toggle-icon-moon {
 }
 .history-timeline-chip-active {
   border-color: var(--color-link);
-  background: var(--color-link);
-  color: var(--color-page-bg);
+  background: var(--color-surface-strong);
+  color: var(--color-text);
 }
 .history-timeline-date {
-  color: var(--color-link);
-  font-size: 1.125rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
+  color: var(--color-text-secondary);
+  font-size: 1rem;
+  font-weight: 500;
 }
 .history-timeline-card {
   border: 1px solid var(--color-border);
