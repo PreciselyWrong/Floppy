@@ -403,14 +403,19 @@ class HistoryTimelineViewTests(TestCase):
         self.assertContains(response, 'data-timeline-family="series"', html=False)
         self.assertContains(response, 'data-timeline-family="books"', html=False)
 
-    def test_history_timeline_uses_theme_accent_without_forced_acid_color(self):
+    def test_history_timeline_inherits_the_general_theme(self):
         css = (Path(settings.BASE_DIR) / "static/css/input.css").read_text(
             encoding="utf-8"
         )
+        history_css = css.split(".history-timeline-chip", 1)[1].split(
+            "/* Navigation progress", 1
+        )[0]
         self.assertNotIn("--color-history-acid", css)
-        self.assertIn("border-color: var(--color-accent)", css)
-        self.assertIn("color: var(--color-accent-contrast)", css)
-        self.assertEqual(css.count("--color-accent-contrast: #111827;"), 4)
+        self.assertIn("border-color: var(--color-link)", history_css)
+        self.assertIn("color: var(--color-page-bg)", history_css)
+        self.assertNotIn("var(--color-accent)", history_css)
+        self.assertNotIn("font-family", history_css)
+        self.assertGreaterEqual(css.count("--color-link:"), 4)
         for template_name in (
             "history_timeline_single.html",
             "history_timeline_binge.html",

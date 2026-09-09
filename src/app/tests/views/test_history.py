@@ -880,9 +880,10 @@ class HistoryMonthViewTests(TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "bg-[var(--color-accent)]")
-        self.assertContains(response, "text-[var(--color-accent-contrast)]")
-        self.assertNotIn("text-[var(--color-page-bg)]", template)
+        self.assertContains(response, "bg-[var(--color-link)]")
+        self.assertContains(response, "text-[var(--color-page-bg)]")
+        self.assertNotIn("var(--color-accent)", template)
+        self.assertNotIn("history-page-container", template)
         self.assertNotIn("indigo-", template)
         self.assertNotIn("border-gray-", template)
 

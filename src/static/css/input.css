@@ -699,18 +699,18 @@ html.light .theme-toggle-icon-moon {
 
 .history-timeline-chip:hover,
 .history-timeline-chip:focus-visible {
-  border-color: var(--color-accent);
+  border-color: var(--color-link);
   outline: none;
 }
 
 .history-timeline-chip-active {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-accent-contrast);
+  border-color: var(--color-link);
+  background: var(--color-link);
+  color: var(--color-page-bg);
 }
 
 .history-timeline-date {
-  color: var(--color-accent);
+  color: var(--color-link);
   font-size: 1.125rem;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -737,7 +737,7 @@ html.light .theme-toggle-icon-moon {
 }
 
 .history-timeline-accent {
-  color: var(--color-accent);
+  color: var(--color-link);
 }
 
 /* Navigation progress for boosted links.

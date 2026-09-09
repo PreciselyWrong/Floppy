@@ -2071,6 +2071,9 @@
   .bg-\[var\(--color-hover-dim\)\] {
     background-color: var(--color-hover-dim);
   }
+  .bg-\[var\(--color-link\)\] {
+    background-color: var(--color-link);
+  }
   .bg-\[var\(--color-page-bg\)\] {
     background-color: var(--color-page-bg);
   }
@@ -3130,9 +3133,6 @@
   }
   .text-\[var\(--color-accent\)\] {
     color: var(--color-accent);
-  }
-  .text-\[var\(--color-accent-contrast\)\] {
-    color: var(--color-accent-contrast);
   }
   .text-\[var\(--color-error-text\)\] {
     color: var(--color-error-text);
@@ -5628,16 +5628,16 @@ html.light .theme-toggle-icon-moon {
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 .history-timeline-chip:hover, .history-timeline-chip:focus-visible {
-  border-color: var(--color-accent);
+  border-color: var(--color-link);
   outline: none;
 }
 .history-timeline-chip-active {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-accent-contrast);
+  border-color: var(--color-link);
+  background: var(--color-link);
+  color: var(--color-page-bg);
 }
 .history-timeline-date {
-  color: var(--color-accent);
+  color: var(--color-link);
   font-size: 1.125rem;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -5661,7 +5661,7 @@ html.light .theme-toggle-icon-moon {
   text-transform: uppercase;
 }
 .history-timeline-accent {
-  color: var(--color-accent);
+  color: var(--color-link);
 }
 .nav-progress {
   position: fixed;
