@@ -7,9 +7,20 @@ from app.models import MediaTypes
 RUNTIME_UNKNOWN_AIRED = 999998
 MIN_BINGE_SIZE = 2
 
+TIMELINE_FAMILY_OPTIONS = (
+    ("all", "All"),
+    ("movies", "Movies"),
+    ("series", "Series"),
+    ("books", "Books"),
+    ("games", "Games"),
+    ("music", "Music"),
+    ("podcasts", "Podcasts"),
+)
+TIMELINE_FAMILIES = frozenset(value for value, _label in TIMELINE_FAMILY_OPTIONS[1:])
+
 
 def get_timeline_family(media_type: str | None) -> str:
-    """Map a media_type to its timeline chip family: 'movies', 'series', 'books', or 'other'."""
+    """Map every supported media type to its timeline filter family."""
     if not media_type:
         return "other"
     mt = str(media_type).strip().lower()
@@ -17,6 +28,7 @@ def get_timeline_family(media_type: str | None) -> str:
         return "movies"
     if mt in (
         MediaTypes.TV.value,
+        MediaTypes.ANIME.value,
         MediaTypes.SEASON.value,
         MediaTypes.EPISODE.value,
     ):
@@ -24,9 +36,16 @@ def get_timeline_family(media_type: str | None) -> str:
     if mt in (
         MediaTypes.BOOK.value,
         MediaTypes.COMIC.value,
+        MediaTypes.COMIC_ISSUE.value,
         MediaTypes.MANGA.value,
     ):
         return "books"
+    if mt in (MediaTypes.GAME.value, MediaTypes.BOARDGAME.value):
+        return "games"
+    if mt == MediaTypes.MUSIC.value:
+        return "music"
+    if mt == MediaTypes.PODCAST.value:
+        return "podcasts"
     return "other"
 
 

@@ -1,6 +1,8 @@
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
@@ -873,12 +875,16 @@ class HistoryMonthViewTests(TestCase):
 
     def test_history_controls_use_theme_tokens(self):
         response = self.client.get(reverse("history"))
+        template = (
+            Path(settings.BASE_DIR) / "templates/app/history.html"
+        ).read_text(encoding="utf-8")
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "bg-[var(--color-accent)]")
-        self.assertContains(response, "text-[var(--color-page-bg)]")
-        self.assertNotContains(response, "indigo-")
-        self.assertNotContains(response, "border-gray-")
+        self.assertContains(response, "text-[var(--color-accent-contrast)]")
+        self.assertNotIn("text-[var(--color-page-bg)]", template)
+        self.assertNotIn("indigo-", template)
+        self.assertNotIn("border-gray-", template)
 
     def _cache_large_history_day(self, *, keep_count=0, total_count=None):
         """Create and cache many same-day movie entries for pagination tests."""
@@ -994,6 +1000,66 @@ class HistoryMonthViewTests(TestCase):
         )
         self.assertNotContains(response, "Large History Music")
         self.assertNotContains(response, "Load more")
+
+    def test_timeline_family_filters_before_day_pagination(self):
+        day_key, _total_entries = self._cache_large_history_day()
+        music_item = Item.objects.create(
+            media_id="family-filter-music",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MUSIC.value,
+            title="Family Filter Music",
+            image="http://example.com/family-filter-music.jpg",
+        )
+        played_at = timezone.now() - timedelta(hours=1)
+        Music.objects.create(
+            item=music_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            start_date=played_at,
+            end_date=played_at,
+        )
+        cache.clear()
+        history_cache._build_and_cache_history_day(
+            self.user,
+            day_key,
+            logging_style_override="repeats",
+        )
+
+        response = self.client.get(reverse("history"), {"family": "music"})
+
+        self.assertEqual(response.status_code, 200)
+        day = next(
+            day
+            for day in response.context["history_days"]
+            if day["day_key"] == day_key
+        )
+        self.assertEqual(day["entry_count"], 1)
+        self.assertEqual(day["entries"][0]["media_type"], MediaTypes.MUSIC.value)
+        self.assertContains(response, "family=music", html=False)
+        self.assertNotContains(response, "Large History 000")
+
+    def test_filtered_empty_state_does_not_claim_history_is_empty(self):
+        response = self.client.get(reverse("history"), {"family": "podcasts"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No matching activity")
+        self.assertNotContains(response, "No watch history yet")
+
+    def test_history_filter_controls_are_accessible_and_mobile_safe(self):
+        template = (
+            Path(settings.BASE_DIR) / "templates/app/history.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('role="dialog"', template)
+        self.assertIn('aria-modal="true"', template)
+        self.assertIn('aria-labelledby="history-filter-title"', template)
+        self.assertIn('aria-label="Close history filters"', template)
+        self.assertIn('@keydown.tab="trapFocus($event)"', template)
+        self.assertIn('aria-haspopup="listbox"', template)
+        self.assertIn('class="history-page pb-24"', template)
+        self.assertIn("spaceAbove", template)
+        self.assertIn("selectedImpliedGenres = []", template)
 
     def test_history_day_fragment_rejects_invalid_day_and_offset(self):
         invalid_day = self.client.get(

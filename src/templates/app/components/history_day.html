@@ -3,8 +3,7 @@
 {% load app_tags %}
 
 <div id="history-day-{{ day.day_key|default:'unknown' }}"
-     class="history-day space-y-4"
-     {% if history_mode != "release" %}x-show="dayMatches($el)"{% endif %}>
+     class="history-day space-y-4">
   <h2 class="history-timeline-date">{{ day.weekday }} {{ day.date_display }}</h2>
 
   <div class="history-timeline-list space-y-3">

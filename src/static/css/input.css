@@ -18,6 +18,7 @@
   --color-surface-hover: #454d5a;
   --color-panel: #272c31;
   --color-accent: #4a9eff;
+  --color-accent-contrast: #111827;
   --color-surface-alt: #3e454d;
   --color-surface-muted: #343a40;
   --color-surface-dim: #262a2f;
@@ -58,6 +59,7 @@
     --color-surface-hover: #e9ecef;
     --color-panel: #f8f9fa;
     --color-accent: #2f80ed;
+    --color-accent-contrast: #111827;
     --color-surface-alt: #f8f9fa;
     --color-surface-muted: #e9ecef;
     --color-surface-dim: #dee2e6;
@@ -97,6 +99,7 @@ html.light {
   --color-surface-hover: #e9ecef;
   --color-panel: #f8f9fa;
   --color-accent: #2f80ed;
+  --color-accent-contrast: #111827;
   --color-surface-alt: #f8f9fa;
   --color-surface-muted: #e9ecef;
   --color-surface-dim: #dee2e6;
@@ -132,6 +135,7 @@ html.dark {
   --color-surface-hover: #454d5a;
   --color-panel: #272c31;
   --color-accent: #4a9eff;
+  --color-accent-contrast: #111827;
   --color-surface-alt: #3e454d;
   --color-surface-muted: #343a40;
   --color-surface-dim: #262a2f;
@@ -702,7 +706,7 @@ html.light .theme-toggle-icon-moon {
 .history-timeline-chip-active {
   border-color: var(--color-accent);
   background: var(--color-accent);
-  color: var(--color-page-bg);
+  color: var(--color-accent-contrast);
 }
 
 .history-timeline-date {
@@ -1075,6 +1079,7 @@ html.light .theme-toggle-icon-moon {
 /* Modal max height with padding from viewport */
 .modal-max-height {
   max-height: calc(100vh - 4rem);
+  max-height: calc(100dvh - max(2rem, env(safe-area-inset-top)) - max(1rem, env(safe-area-inset-bottom)));
 }
 
 /* Custom date/time picker: trigger + popover/sheet */

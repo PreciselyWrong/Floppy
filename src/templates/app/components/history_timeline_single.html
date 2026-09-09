@@ -3,8 +3,7 @@
 
 <article class="history-timeline-card relative"
          data-timeline-family="{{ family|default:'other' }}"
-         x-data="{ trackOpen: false }"
-         {% if history_mode != "release" %}x-show="timelineFamily === 'all' || timelineFamily === '{{ family|default:'other' }}'"{% endif %}>
+         x-data="{ trackOpen: false }">
   {% with entry.item|display_title:user as preferred_title %}
     <a href="{{ entry.item|media_url }}"
        hx-boost="true"

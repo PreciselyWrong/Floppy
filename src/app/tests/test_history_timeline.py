@@ -246,13 +246,17 @@ class PureHistoryTimelineGroupingTests(TestCase):
     def test_timeline_families(self):
         self.assertEqual(history_timeline.get_timeline_family("movie"), "movies")
         self.assertEqual(history_timeline.get_timeline_family("tv"), "series")
+        self.assertEqual(history_timeline.get_timeline_family("anime"), "series")
         self.assertEqual(history_timeline.get_timeline_family("season"), "series")
         self.assertEqual(history_timeline.get_timeline_family("episode"), "series")
         self.assertEqual(history_timeline.get_timeline_family("book"), "books")
         self.assertEqual(history_timeline.get_timeline_family("comic"), "books")
+        self.assertEqual(history_timeline.get_timeline_family("comicissue"), "books")
         self.assertEqual(history_timeline.get_timeline_family("manga"), "books")
-        self.assertEqual(history_timeline.get_timeline_family("game"), "other")
-        self.assertEqual(history_timeline.get_timeline_family("music"), "other")
+        self.assertEqual(history_timeline.get_timeline_family("game"), "games")
+        self.assertEqual(history_timeline.get_timeline_family("boardgame"), "games")
+        self.assertEqual(history_timeline.get_timeline_family("music"), "music")
+        self.assertEqual(history_timeline.get_timeline_family("podcast"), "podcasts")
 
 
 class HistoryTimelineViewTests(TestCase):
@@ -361,11 +365,14 @@ class HistoryTimelineViewTests(TestCase):
         response = self.client.get(reverse("history"))
         self.assertEqual(response.status_code, 200)
 
-        # Top chips: All, Movies, Series, Books
+        # Every supported media family has a quick filter.
         self.assertContains(response, 'data-timeline-chip="all"', html=False)
         self.assertContains(response, 'data-timeline-chip="movies"', html=False)
         self.assertContains(response, 'data-timeline-chip="series"', html=False)
         self.assertContains(response, 'data-timeline-chip="books"', html=False)
+        self.assertContains(response, 'data-timeline-chip="games"', html=False)
+        self.assertContains(response, 'data-timeline-chip="music"', html=False)
+        self.assertContains(response, 'data-timeline-chip="podcasts"', html=False)
 
         # Day entries must NOT use the legacy media-grid
         self.assertNotContains(response, 'class="media-grid"', html=False)
@@ -402,6 +409,8 @@ class HistoryTimelineViewTests(TestCase):
         )
         self.assertNotIn("--color-history-acid", css)
         self.assertIn("border-color: var(--color-accent)", css)
+        self.assertIn("color: var(--color-accent-contrast)", css)
+        self.assertEqual(css.count("--color-accent-contrast: #111827;"), 4)
         for template_name in (
             "history_timeline_single.html",
             "history_timeline_binge.html",

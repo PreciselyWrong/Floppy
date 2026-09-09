@@ -4,7 +4,7 @@
 <div class="home-activity-journal-section mb-8" data-home-row-wrapper="true">
   <div class="mb-4 flex items-center justify-between gap-3">
     <div class="min-w-0 flex-1">
-      <h3 class="text-base font-bold uppercase tracking-wider text-[var(--color-text-secondary)] flex items-center gap-x-2">
+      <h3 class="home-row-heading-title text-lg font-semibold leading-none text-[var(--color-text)] flex items-center gap-x-2">
         {% if row.url %}
           <a href="{{ row.url }}" class="hover:text-[var(--color-text)] transition-colors">{{ row.title }}</a>
         {% else %}
@@ -88,7 +88,7 @@
 
                     <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] flex-wrap">
                       {% if item.latest.played_at_local %}
-                        <span>{{ item.latest.played_at_local|time:"H:i" }}</span>
+                        <span>{{ item.latest.played_at_local|user_time_format:user }}</span>
                       {% endif %}
                       {% if item.total_runtime_minutes %}
                         <span>• {{ item.total_runtime_minutes }} min</span>
@@ -101,7 +101,10 @@
                   <div class="shrink-0 pl-2 pr-1">
                     <button type="button"
                             class="p-1.5 rounded-full text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] transition-colors cursor-pointer"
-                            :aria-expanded="open">
+                            @click.stop="open = !open"
+                            :aria-expanded="open"
+                            aria-label="Toggle episodes for {{ item.series_title }}"
+                            aria-controls="activity-journal-group-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">
                       <svg xmlns="http://www.w3.org/2000/svg"
                            viewBox="0 0 20 20"
                            class="w-4 h-4 transition-transform duration-200"
@@ -116,12 +119,13 @@
                 {# Collapsible Episode Rows List #}
                 <div x-show="open"
                      x-cloak
-                     x-collapse>
+                     x-transition.opacity.duration.150ms
+                     id="activity-journal-group-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">
                   <div class="border-t border-[var(--color-surface-strong)] bg-[var(--color-panel)]/40 divide-y divide-[var(--color-surface-strong)]/60">
                     {% for ep in item.episodes %}
                       <div class="flex items-center justify-between gap-3 px-3.5 py-2 hover:bg-[var(--color-surface-hover)] transition-colors">
                         <div class="min-w-0 flex-1 flex items-center gap-2">
-                          {% if ep.season_number and ep.episode_number %}
+                          {% if ep.season_number != None and ep.episode_number != None %}
                             <span class="shrink-0 text-xs font-bold text-[var(--color-link)]">
                               S{{ ep.season_number|stringformat:"02d" }}E{{ ep.episode_number|stringformat:"02d" }}
                             </span>
@@ -134,13 +138,13 @@
                         </div>
                         <div class="shrink-0 flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
                           {% if ep.played_at_local %}
-                            <span>{{ ep.played_at_local|time:"H:i" }}</span>
+                            <span>{{ ep.played_at_local|user_time_format:user }}</span>
                           {% endif %}
                           {% if ep.runtime_minutes %}
                             <span>{{ ep.runtime_minutes }}m</span>
                           {% endif %}
-                          {% if ep.score %}
-                            <span class="font-bold text-amber-400">★ {{ ep.score }}</span>
+                          {% if ep.score|show_media_score:user %}
+                            <span class="font-bold text-amber-400">★ {{ ep.score|score_display:user }}</span>
                           {% endif %}
                         </div>
                       </div>
@@ -176,7 +180,7 @@
                     </a>
                   </h4>
 
-                  {% if item.entry.season_number and item.entry.episode_number %}
+                  {% if item.entry.season_number != None and item.entry.episode_number != None %}
                     <div class="text-xs text-[var(--color-text-secondary)] truncate">
                       <span class="font-medium text-[var(--color-link)]">
                         S{{ item.entry.season_number|stringformat:"02d" }}E{{ item.entry.episode_number|stringformat:"02d" }}
@@ -193,7 +197,7 @@
 
                   <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] flex-wrap">
                     {% if item.entry.played_at_local %}
-                      <span>{{ item.entry.played_at_local|time:"H:i" }}</span>
+                      <span>{{ item.entry.played_at_local|user_time_format:user }}</span>
                     {% endif %}
                     {% if item.entry.runtime_minutes %}
                       <span>• {{ item.entry.runtime_minutes }} min</span>
@@ -205,10 +209,10 @@
                 </div>
 
                 {# Rating on right #}
-                {% if item.entry.score or item.entry.public_score %}
+                {% if item.entry.score|show_media_score:user or item.entry.public_score %}
                   <div class="shrink-0 flex flex-col items-end justify-center pr-1">
-                    {% if item.entry.score %}
-                      <span class="text-sm font-bold text-amber-400">★ {{ item.entry.score }}</span>
+                    {% if item.entry.score|show_media_score:user %}
+                      <span class="text-sm font-bold text-amber-400">★ {{ item.entry.score|score_display:user }}</span>
                     {% endif %}
                     {% if item.entry.public_score %}
                       <span class="text-xs text-[var(--color-text-muted)]">({{ item.entry.public_score }})</span>

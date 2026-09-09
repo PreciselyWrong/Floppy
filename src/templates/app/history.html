@@ -14,10 +14,17 @@
   cacheUpdater: null,
   refreshListener: null,
   loggingStyle: '{{ user.game_logging_style|default:"repeats" }}',
-  timelineFamily: 'all',
-  dayMatches(day) {
-    return this.timelineFamily === 'all'
-      || Boolean(day.querySelector(`[data-timeline-family='${this.timelineFamily}']`));
+  timelineFamily: '{{ timeline_family }}',
+  selectTimelineFamily(family) {
+    const params = new URLSearchParams(window.location.search);
+    params.delete('page');
+    if (family === 'all') {
+      params.delete('family');
+    } else {
+      params.set('family', family);
+    }
+    const query = params.toString();
+    window.location.href = '{% url 'history' %}' + (query ? '?' + query : '');
   },
   init() {
     const urlParams = new URLSearchParams(window.location.search);
@@ -81,7 +88,9 @@
            x-init="setTimeout(() => $el.classList.add('opacity-100', 'transform-none'), 10); $el.classList.add('transition-all', 'duration-300', 'ease-out', 'transform', 'translate-y-[-1rem]')">
         {% include "app/icons/info.svg" with classes="w-4 h-4 text-[var(--color-info-text)] shrink-0 animate-pulse" %}
         <p class="text-sm font-medium flex-1">{% translate "Refreshing history in background..." %}</p>
-        <button class="text-current opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
+        <button type="button"
+                aria-label="{% translate "Dismiss history refresh notice" %}"
+                class="text-current opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
                 @click="cacheRefreshing = false; cacheUpdater?.stop();">
           {% include "app/icons/x.svg" with classes="w-4 h-4" %}
         </button>
@@ -89,35 +98,19 @@
     </div>
   </div>
   
-<div class="history-page">
+<div class="history-page pb-24">
   {% if history_mode != "release" %}
     <nav class="history-timeline-filters mb-6 overflow-x-auto"
          aria-label="Filter history by media family">
       <div class="flex min-w-max gap-2" role="group">
-        <button type="button"
-                data-timeline-chip="all"
-                @click="timelineFamily = 'all'"
-                :aria-pressed="timelineFamily === 'all'"
-                :class="timelineFamily === 'all' ? 'history-timeline-chip-active' : ''"
-                class="history-timeline-chip">All</button>
-        <button type="button"
-                data-timeline-chip="movies"
-                @click="timelineFamily = 'movies'"
-                :aria-pressed="timelineFamily === 'movies'"
-                :class="timelineFamily === 'movies' ? 'history-timeline-chip-active' : ''"
-                class="history-timeline-chip">Movies</button>
-        <button type="button"
-                data-timeline-chip="series"
-                @click="timelineFamily = 'series'"
-                :aria-pressed="timelineFamily === 'series'"
-                :class="timelineFamily === 'series' ? 'history-timeline-chip-active' : ''"
-                class="history-timeline-chip">Series</button>
-        <button type="button"
-                data-timeline-chip="books"
-                @click="timelineFamily = 'books'"
-                :aria-pressed="timelineFamily === 'books'"
-                :class="timelineFamily === 'books' ? 'history-timeline-chip-active' : ''"
-                class="history-timeline-chip">Books</button>
+        {% for family_value, family_label in timeline_family_options %}
+          <button type="button"
+                  data-timeline-chip="{{ family_value }}"
+                  @click="selectTimelineFamily('{{ family_value }}')"
+                  :aria-pressed="timelineFamily === '{{ family_value }}'"
+                  :class="timelineFamily === '{{ family_value }}' ? 'history-timeline-chip-active' : ''"
+                  class="history-timeline-chip">{{ family_label }}</button>
+        {% endfor %}
       </div>
     </nav>
   {% endif %}
@@ -241,7 +234,7 @@
       {% for page_num in pages %}
         {% if page_num %}
           <a href="?{% if active_filters %}{% for key, value in active_filters.items %}{{ key }}={{ value }}{% if not forloop.last %}&{% endif %}{% endfor %}{% if active_filters %}&{% endif %}{% endif %}page={{ page_num }}"
-             class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-accent)] text-[var(--color-page-bg)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
+             class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-accent)] text-[var(--color-accent-contrast)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
             {{ page_num }}
           </a>
         {% else %}
@@ -346,7 +339,7 @@
         {% for page_num in pages %}
           {% if page_num %}
             <a href="?{% if active_filters %}{% for key, value in active_filters.items %}{{ key }}={{ value }}{% if not forloop.last %}&{% endif %}{% endfor %}{% if active_filters %}&{% endif %}{% endif %}page={{ page_num }}"
-               class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-accent)] text-[var(--color-page-bg)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
+               class="w-10 h-10 rounded-md {% if current_page == page_num %}bg-[var(--color-accent)] text-[var(--color-accent-contrast)]{% else %}bg-[var(--color-surface)] hover:bg-[var(--color-surface-strong)] text-[var(--color-text)]{% endif %} flex items-center justify-center cursor-pointer">
               {{ page_num }}
             </a>
           {% else %}
@@ -422,8 +415,13 @@
           <polyline points="12 6 12 12 16 14"></polyline>
         </svg>
       </div>
-      <p class="text-lg font-semibold mb-1 text-[var(--color-text)]">{% translate "No watch history yet" %}</p>
-      <p class="text-sm text-[var(--color-text-muted)]">{% translate "Start tracking movies and episodes to see them here." %}</p>
+      {% if has_active_history_filters %}
+        <p class="text-lg font-semibold mb-1 text-[var(--color-text)]">{% translate "No matching activity" %}</p>
+        <p class="text-sm text-[var(--color-text-muted)]">{% translate "Try changing or clearing your filters." %}</p>
+      {% else %}
+        <p class="text-lg font-semibold mb-1 text-[var(--color-text)]">{% translate "No activity yet" %}</p>
+        <p class="text-sm text-[var(--color-text-muted)]">{% translate "Start tracking media to see it here." %}</p>
+      {% endif %}
     </div>
     {% endif %}
   {% endif %}
@@ -453,6 +451,7 @@
   availableImpliedGenres: [],
   genreDropdownStyle: {},
   impliedGenreDropdownStyle: {},
+  lastFocusedElement: null,
   mediaTypeOptions: [
     { value: 'tv', label: '{{ media_i18n_20|escapejs }}' },
     { value: 'movie', label: '{{ media_i18n_21|escapejs }}' },
@@ -466,7 +465,9 @@
     { value: 'boardgame', label: '{{ media_i18n_29|escapejs }}' },
   ],
   get activeCount() {
-    return [this.startDate, this.endDate, this.selectedMediaTypes.length > 0, this.historyMode === 'release', this.selectedGenres.length > 0, this.selectedImpliedGenres.length > 0].filter(Boolean).length;
+    const impliedGenreActive = (this.selectedMediaTypes.length === 0 || this.selectedMediaTypes.includes('music'))
+      && this.selectedImpliedGenres.length > 0;
+    return [this.startDate, this.endDate, this.selectedMediaTypes.length > 0, this.historyMode === 'release', this.selectedGenres.length > 0, impliedGenreActive].filter(Boolean).length;
   },
   init() {
     const p = new URLSearchParams(window.location.search);
@@ -479,7 +480,65 @@
     const impliedGenreParam = p.get('implied_genre') || '';
     this.selectedGenres = genreParam ? genreParam.split(',').map(g => g.trim()).filter(Boolean) : [];
     this.selectedImpliedGenres = impliedGenreParam ? impliedGenreParam.split(',').map(g => g.trim()).filter(Boolean) : [];
+    if (this.selectedMediaTypes.length && !this.selectedMediaTypes.includes('music')) {
+      this.selectedImpliedGenres = [];
+    }
     if (this.historyMode === 'release') this.historyModeLabel = '{{ media_i18n_30|escapejs }}';
+  },
+  openModal() {
+    this.lastFocusedElement = document.activeElement;
+    this.open = true;
+    requestAnimationFrame(() => this.$refs.closeFilterButton?.focus());
+  },
+  closeModal() {
+    this.open = false;
+    this.closeDropdowns();
+    const focusTarget = this.lastFocusedElement;
+    requestAnimationFrame(() => focusTarget?.focus());
+  },
+  closeDropdowns() {
+    this.mediaTypeOpen = false;
+    this.historyModeOpen = false;
+    this.genreOpen = false;
+    this.impliedGenreOpen = false;
+  },
+  trapFocus(event) {
+    const focusable = [...this.$refs.filterDialog.querySelectorAll('button:not([disabled]), input:not([disabled])')]
+      .filter(element => element.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  },
+  dropdownStyle(trigger) {
+    const rect = trigger.getBoundingClientRect();
+    const viewportPadding = 12;
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openAbove = spaceBelow < 160 && spaceAbove > spaceBelow;
+    const availableSpace = openAbove ? spaceAbove : spaceBelow;
+    const maxHeight = Math.min(340, Math.max(96, availableSpace - 4));
+    const width = Math.min(rect.width, window.innerWidth - viewportPadding * 2);
+    const left = Math.min(
+      Math.max(viewportPadding, rect.left),
+      window.innerWidth - width - viewportPadding,
+    );
+    const verticalPosition = openAbove
+      ? { bottom: (window.innerHeight - rect.top + 4) + 'px' }
+      : { top: (rect.bottom + 4) + 'px' };
+    return {
+      position: 'fixed',
+      left: left + 'px',
+      width: width + 'px',
+      maxHeight: maxHeight + 'px',
+      ...verticalPosition,
+    };
   },
   apply() {
     const p = new URLSearchParams(window.location.search);
@@ -488,57 +547,36 @@
     if (this.endDate)   p.set('end-date', this.endDate);
     if (this.selectedMediaTypes.length) p.set('media_type', this.selectedMediaTypes.join(','));
     if (this.historyMode && this.historyMode !== 'activity') p.set('history_mode', this.historyMode);
+    if (this.historyMode === 'release') p.delete('family');
     if (this.selectedGenres.length) p.set('genre', this.selectedGenres.join(','));
-    if (this.selectedImpliedGenres.length) p.set('implied_genre', this.selectedImpliedGenres.join(','));
+    if ((this.selectedMediaTypes.length === 0 || this.selectedMediaTypes.includes('music')) && this.selectedImpliedGenres.length) {
+      p.set('implied_genre', this.selectedImpliedGenres.join(','));
+    }
     const qs = p.toString();
     window.location.href = '{% url 'history' %}' + (qs ? '?' + qs : '');
   },
   clear() {
     const p = new URLSearchParams(window.location.search);
-    ['start-date', 'end-date', 'media_type', 'history_mode', 'genre', 'implied_genre', 'page'].forEach(k => p.delete(k));
+    ['start-date', 'end-date', 'media_type', 'history_mode', 'genre', 'implied_genre', 'family', 'page'].forEach(k => p.delete(k));
     const qs = p.toString();
     window.location.href = '{% url 'history' %}' + (qs ? '?' + qs : '');
   },
   openMediaTypeDropdown() {
     this.mediaTypeOpen = !this.mediaTypeOpen;
     if (this.mediaTypeOpen) {
-      const rect = this.$refs.mediaTypeTrigger.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 12;
-      this.mediaTypeDropdownStyle = {
-        position: 'fixed',
-        top: (rect.bottom + 4) + 'px',
-        left: rect.left + 'px',
-        width: rect.width + 'px',
-        maxHeight: Math.min(340, Math.max(160, spaceBelow)) + 'px',
-      };
+      this.mediaTypeDropdownStyle = this.dropdownStyle(this.$refs.mediaTypeTrigger);
     }
   },
   openHistoryModeDropdown() {
     this.historyModeOpen = !this.historyModeOpen;
     if (this.historyModeOpen) {
-      const rect = this.$refs.historyModeTrigger.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 12;
-      this.historyModeDropdownStyle = {
-        position: 'fixed',
-        top: (rect.bottom + 4) + 'px',
-        left: rect.left + 'px',
-        width: rect.width + 'px',
-        maxHeight: Math.min(340, Math.max(160, spaceBelow)) + 'px',
-      };
+      this.historyModeDropdownStyle = this.dropdownStyle(this.$refs.historyModeTrigger);
     }
   },
   openGenreDropdown() {
     this.genreOpen = !this.genreOpen;
     if (this.genreOpen) {
-      const rect = this.$refs.genreTrigger.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 12;
-      this.genreDropdownStyle = {
-        position: 'fixed',
-        top: (rect.bottom + 4) + 'px',
-        left: rect.left + 'px',
-        width: rect.width + 'px',
-        maxHeight: Math.min(340, Math.max(160, spaceBelow)) + 'px',
-      };
+      this.genreDropdownStyle = this.dropdownStyle(this.$refs.genreTrigger);
       if (this.availableGenres.length === 0 && !this.genresLoading) {
         this.loadGenres();
       }
@@ -560,15 +598,7 @@
   openImpliedGenreDropdown() {
     this.impliedGenreOpen = !this.impliedGenreOpen;
     if (this.impliedGenreOpen) {
-      const rect = this.$refs.impliedGenreTrigger.getBoundingClientRect();
-      const spaceBelow = window.innerHeight - rect.bottom - 12;
-      this.impliedGenreDropdownStyle = {
-        position: 'fixed',
-        top: (rect.bottom + 4) + 'px',
-        left: rect.left + 'px',
-        width: rect.width + 'px',
-        maxHeight: Math.min(340, Math.max(160, spaceBelow)) + 'px',
-      };
+      this.impliedGenreDropdownStyle = this.dropdownStyle(this.$refs.impliedGenreTrigger);
       if (this.availableGenres.length === 0 && !this.genresLoading) {
         this.loadGenres();
       }
@@ -580,6 +610,10 @@
       this.selectedMediaTypes.splice(idx, 1);
     } else {
       this.selectedMediaTypes.push(value);
+    }
+    if (this.selectedMediaTypes.length && !this.selectedMediaTypes.includes('music')) {
+      this.selectedImpliedGenres = [];
+      this.impliedGenreOpen = false;
     }
   },
   toggleGenre(g) {
@@ -610,30 +644,41 @@
   }
 }">
   {# FAB button #}
-  <button @click="open = true"
-          class="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-[var(--color-accent)] hover:brightness-110 text-[var(--color-page-bg)] shadow-lg flex items-center justify-center cursor-pointer transition-colors"
+  <button type="button"
+          @click="openModal()"
+          class="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-[var(--color-accent)] hover:brightness-110 text-[var(--color-accent-contrast)] shadow-lg flex items-center justify-center cursor-pointer transition-colors"
+          style="bottom: max(1.5rem, env(safe-area-inset-bottom)); right: max(1.5rem, env(safe-area-inset-right));"
           title="{% translate "Filter history" %}"
           aria-label="{% translate "Filter history" %}">
     {% include "app/icons/funnel.svg" with classes="w-5 h-5" %}
     <span x-show="activeCount > 0"
           x-text="activeCount"
           x-cloak
-          class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-xs flex items-center justify-center font-bold pointer-events-none">
+          class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-bold pointer-events-none">
     </span>
   </button>
 
   {# Modal overlay #}
   <div x-show="open"
        x-cloak
-       @keydown.escape.window="open = false"
+       @keydown.escape.window="open && closeModal()"
+       @keydown.tab="trapFocus($event)"
        class="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50"
-       @mousedown.self="open = false">
+       @mousedown.self="closeModal()">
     <div class="w-full sm:w-[420px] relative z-60">
-      <div class="bg-[var(--color-surface)] rounded-t-2xl sm:rounded-xl p-6 overflow-y-auto modal-max-height">
+      <div x-ref="filterDialog"
+           role="dialog"
+           aria-modal="true"
+           aria-labelledby="history-filter-title"
+           @scroll="closeDropdowns()"
+           class="bg-[var(--color-surface)] rounded-t-2xl sm:rounded-xl p-6 overflow-y-auto modal-max-height">
         {# Header #}
         <div class="flex items-center justify-between mb-5">
-          <h2 class="text-lg font-semibold text-[var(--color-text)]">{% translate "Filter History" %}</h2>
-          <button @click="open = false"
+          <h2 id="history-filter-title" class="text-lg font-semibold text-[var(--color-text)]">{% translate "Filter History" %}</h2>
+          <button type="button"
+                  x-ref="closeFilterButton"
+                  aria-label="{% translate "Close history filters" %}"
+                  @click="closeModal()"
                   class="text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors cursor-pointer">
             {% include "app/icons/x.svg" with classes="w-5 h-5" %}
           </button>
@@ -645,14 +690,16 @@
             <label class="block text-sm font-medium text-[var(--color-text-secondary)]">{% translate "Date range" %}</label>
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="block text-xs text-[var(--color-text-muted)] mb-1">{% translate "From" %}</label>
-                <input type="date"
+                <label for="history-filter-start-date" class="block text-xs text-[var(--color-text-muted)] mb-1">{% translate "From" %}</label>
+                <input id="history-filter-start-date"
+                       type="date"
                        x-model="startDate"
                        class="w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer">
               </div>
               <div>
-                <label class="block text-xs text-[var(--color-text-muted)] mb-1">{% translate "To" %}</label>
-                <input type="date"
+                <label for="history-filter-end-date" class="block text-xs text-[var(--color-text-muted)] mb-1">{% translate "To" %}</label>
+                <input id="history-filter-end-date"
+                       type="date"
                        x-model="endDate"
                        class="w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer">
               </div>
@@ -666,12 +713,19 @@
               <button type="button"
                       x-ref="mediaTypeTrigger"
                       @click="openMediaTypeDropdown()"
+                      aria-haspopup="listbox"
+                      :aria-expanded="mediaTypeOpen"
+                      aria-controls="history-media-type-options"
                       class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer text-left"
                       :class="selectedMediaTypes.length ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-muted)]'">
                 {% translate "All types" as media_i18n_31 %}<span class="truncate" x-text="selectedMediaTypes.length ? mediaTypeOptions.filter(o => selectedMediaTypes.includes(o.value)).map(o => o.label).join(', ') : '{{ media_i18n_31|escapejs }}'"></span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-[var(--color-text-muted)] shrink-0 ml-2"><path d="m6 9 6 6 6-6"></path></svg>
               </button>
               <div x-show="mediaTypeOpen"
+                   id="history-media-type-options"
+                   role="listbox"
+                   aria-label="Media types"
+                   aria-multiselectable="true"
                    x-cloak
                    :style="mediaTypeDropdownStyle"
                    @resize.window="mediaTypeOpen = false"
@@ -684,6 +738,8 @@
                    class="z-[70] overflow-y-auto py-1 bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
                 <template x-for="opt in mediaTypeOptions" :key="opt.value">
                   <button type="button"
+                          role="option"
+                          :aria-selected="selectedMediaTypes.includes(opt.value)"
                           @click="toggleMediaType(opt.value)"
                           class="flex items-center w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer">
                     <span class="flex-1 truncate" x-text="opt.label"></span>
@@ -703,11 +759,17 @@
               <button type="button"
                       x-ref="historyModeTrigger"
                       @click="openHistoryModeDropdown()"
+                      aria-haspopup="listbox"
+                      :aria-expanded="historyModeOpen"
+                      aria-controls="history-mode-options"
                       class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer">
                 <span x-text="historyModeLabel"></span>
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4 text-[var(--color-text-muted)]"><path d="m6 9 6 6 6-6"></path></svg>
               </button>
               <div x-show="historyModeOpen"
+                   id="history-mode-options"
+                   role="listbox"
+                   aria-label="History view mode"
                    x-cloak
                    :style="historyModeDropdownStyle"
                    @resize.window="historyModeOpen = false"
@@ -719,12 +781,16 @@
                    x-transition:leave-end="transform opacity-0 scale-95"
                    class="z-[70] overflow-hidden py-1 bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
                 {% translate "Activity (watched)" as media_i18n_19 %}<button type="button"
+                        role="option"
+                        :aria-selected="historyMode === ''"
                         @click="historyMode = ''; historyModeLabel = '{{ media_i18n_19|escapejs }}'; historyModeOpen = false"
                         class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]"
                         :class="historyMode === '' ? 'text-[var(--color-text)] bg-[var(--color-surface-strong)]' : ''">
                   {% translate "Activity (watched)" %}
                 </button>
                 {% translate "Release dates" as media_i18n_30 %}<button type="button"
+                        role="option"
+                        :aria-selected="historyMode === 'release'"
                         @click="historyMode = 'release'; historyModeLabel = '{{ media_i18n_30|escapejs }}'; historyModeOpen = false"
                         class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]"
                         :class="historyMode === 'release' ? 'text-[var(--color-text)] bg-[var(--color-surface-strong)]' : ''">
@@ -741,6 +807,9 @@
                     x-ref="genreTrigger"
                     @click="openGenreDropdown()"
                     @keydown.escape.window="genreOpen = false"
+                    aria-haspopup="listbox"
+                    :aria-expanded="genreOpen"
+                    aria-controls="history-genre-options"
                     class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer text-left"
                     :class="selectedGenres.length ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-muted)]'">
               {% translate "All genres" as media_i18n_32 %}<span class="truncate" x-text="selectedGenres.length ? selectedGenres.join(', ') : '{{ media_i18n_32|escapejs }}'"></span>
@@ -760,11 +829,16 @@
                  class="z-[70] flex flex-col bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
               <div class="px-2 pt-2 pb-1 shrink-0">
                 <input type="text"
+                       aria-label="Search genres"
                        x-model="genreSearch"
                        placeholder="{% translate "Filter genres…" %}"
                        class="w-full px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text-secondary)] placeholder-[var(--color-text-muted)] border border-[var(--color-surface-border)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]">
               </div>
-              <div class="overflow-y-auto flex-1 py-1">
+              <div id="history-genre-options"
+                   role="listbox"
+                   aria-label="Genres"
+                   aria-multiselectable="true"
+                   class="overflow-y-auto flex-1 py-1">
                 <template x-if="genresLoading">
                   <div class="px-4 py-3 text-sm text-[var(--color-text-muted)] text-center">{% translate "Loading…" %}</div>
                 </template>
@@ -773,6 +847,8 @@
                 </template>
                 <template x-for="g in filteredAvailableGenres()" :key="g">
                   <button type="button"
+                          role="option"
+                          :aria-selected="selectedGenres.includes(g)"
                           @click="toggleGenre(g)"
                           class="flex items-center w-full px-4 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer">
                     <span class="flex-1 min-w-0 truncate" x-text="g"></span>
@@ -791,6 +867,9 @@
                     x-ref="impliedGenreTrigger"
                     @click="openImpliedGenreDropdown()"
                     @keydown.escape.window="impliedGenreOpen = false"
+                    aria-haspopup="listbox"
+                    :aria-expanded="impliedGenreOpen"
+                    aria-controls="history-implied-genre-options"
                     class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-[var(--color-surface-border)] rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)] focus:border-transparent cursor-pointer text-left"
                     :class="selectedImpliedGenres.length ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-text-muted)]'">
               {% translate "All implied genres" as media_i18n_33 %}<span class="truncate" x-text="selectedImpliedGenres.length ? selectedImpliedGenres.join(', ') : '{{ media_i18n_33|escapejs }}'"></span>
@@ -810,11 +889,16 @@
                  class="z-[70] flex flex-col bg-[var(--color-panel)] rounded-md shadow-lg border border-[var(--color-surface-border)]">
               <div class="px-2 pt-2 pb-1 shrink-0">
                 <input type="text"
+                       aria-label="Search implied genres"
                        x-model="impliedGenreSearch"
                        placeholder="{% translate "Filter implied genres…" %}"
                        class="w-full px-3 py-1.5 rounded-md bg-[var(--color-surface)] text-sm text-[var(--color-text-secondary)] placeholder-[var(--color-text-muted)] border border-[var(--color-surface-border)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]">
               </div>
-              <div class="overflow-y-auto flex-1 py-1">
+              <div id="history-implied-genre-options"
+                   role="listbox"
+                   aria-label="Implied genres"
+                   aria-multiselectable="true"
+                   class="overflow-y-auto flex-1 py-1">
                 <template x-if="genresLoading">
                   <div class="px-4 py-3 text-sm text-[var(--color-text-muted)] text-center">{% translate "Loading…" %}</div>
                 </template>
@@ -823,6 +907,8 @@
                 </template>
                 <template x-for="g in filteredAvailableImpliedGenres()" :key="g">
                   <button type="button"
+                          role="option"
+                          :aria-selected="selectedImpliedGenres.includes(g)"
                           @click="toggleImpliedGenre(g)"
                           class="flex w-full items-center px-4 py-2 text-left text-sm transition-colors cursor-pointer text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
                     <span class="truncate" x-text="g"></span>
@@ -838,12 +924,14 @@
 
         {# Action buttons #}
         <div class="flex gap-3 mt-6">
-          <button @click="clear()"
+          <button type="button"
+                  @click="clear()"
                   class="flex-1 px-4 py-2 rounded-md border border-[var(--color-surface-border)] text-[var(--color-text-secondary)] hover:text-[var(--color-text)] hover:border-[var(--color-text-muted)] text-sm transition-colors cursor-pointer">
             {% translate "Clear filters" %}
           </button>
-          <button @click="apply()"
-                  class="flex-1 px-4 py-2 rounded-md bg-[var(--color-accent)] hover:brightness-110 text-[var(--color-page-bg)] text-sm font-medium transition-colors cursor-pointer">
+          <button type="button"
+                  @click="apply()"
+                  class="flex-1 px-4 py-2 rounded-md bg-[var(--color-accent)] hover:brightness-110 text-[var(--color-accent-contrast)] text-sm font-medium transition-colors cursor-pointer">
             {% translate "Apply" %}
           </button>
         </div>

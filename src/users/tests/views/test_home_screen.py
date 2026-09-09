@@ -4,6 +4,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
 from django.core.cache import cache
@@ -3127,7 +3128,7 @@ class HomeScreenCompanionParityTests(TestCase):
                             "media_id": "103516",
                             "source": Sources.TMDB.value,
                             "title": "An Adventure Hour in Space",
-                            "season_number": 3,
+                            "season_number": 0,
                             "episode_number": 4,
                             "played_at_local": timezone.now(),
                             "item": {
@@ -3136,7 +3137,7 @@ class HomeScreenCompanionParityTests(TestCase):
                                 "media_id": "103516",
                                 "source": Sources.TMDB.value,
                                 "title": "An Adventure Hour in Space",
-                                "season_number": 3,
+                                "season_number": 0,
                                 "episode_number": 4,
                             },
                         }
@@ -3159,6 +3160,28 @@ class HomeScreenCompanionParityTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "An Adventure Hour in Space")
+        self.assertContains(response, "S00E04")
+        self.assertContains(
+            response,
+            'class="home-row-heading-title text-lg font-semibold leading-none '
+            'text-[var(--color-text)] flex items-center gap-x-2"',
+            html=False,
+        )
+
+    def test_activity_journal_respects_display_preferences_and_specials(self):
+        template_path = (
+            settings.BASE_DIR / "templates/app/components/home_activity_journal.html"
+        )
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertNotIn('time:"H:i"', template)
+        self.assertIn("user_time_format:user", template)
+        self.assertIn("show_media_score:user", template)
+        self.assertIn("score_display:user", template)
+        self.assertIn("season_number != None", template)
+        self.assertNotIn("x-collapse", template)
+        self.assertIn('aria-label="Toggle episodes for', template)
+        self.assertIn('aria-controls="activity-journal-group-', template)
 
     def test_home_screen_settings_saves_binge_on_the_activity_journal_row(self):
         response = self.client.post(
