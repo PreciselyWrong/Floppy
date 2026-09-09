@@ -4,94 +4,128 @@
   if (window.__floppyHorizontalScrollBound) return;
   window.__floppyHorizontalScrollBound = true;
 
-  const selector = '[data-horizontal-scroll="true"]';
-  const dragThreshold = 6;
-  let activeDrag = null;
-  let suppressClick = false;
-  let clickResetTimer = null;
-
-  function reducedMotion() {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  }
+  const rowSelector = '[data-horizontal-scroll="true"]';
+  let drag = null;
+  let suppressedSurface = null;
+  let suppressionTimer = null;
 
   function finishDrag(event) {
-    if (!activeDrag || (event && event.pointerId !== activeDrag.pointerId)) return;
+    if (!drag || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
 
-    const { surface, pointerId, dragging } = activeDrag;
+    const { pointerId, surface, moved } = drag;
+    drag = null;
     surface.classList.remove("is-dragging");
-    if (surface.hasPointerCapture && surface.hasPointerCapture(pointerId)) {
-      surface.releasePointerCapture(pointerId);
+    if (typeof surface.releasePointerCapture === "function") {
+      try {
+        if (typeof surface.hasPointerCapture !== "function" || surface.hasPointerCapture(pointerId)) {
+          surface.releasePointerCapture(pointerId);
+        }
+      } catch (_) {}
     }
-    activeDrag = null;
 
-    if (dragging) {
-      clearTimeout(clickResetTimer);
-      clickResetTimer = setTimeout(() => {
-        suppressClick = false;
+    if (moved) {
+      suppressedSurface = surface;
+      clearTimeout(suppressionTimer);
+      suppressionTimer = setTimeout(() => {
+        suppressedSurface = null;
       }, 0);
     }
   }
 
-  document.addEventListener("pointerdown", (event) => {
-    if (event.pointerType === "touch" || event.button !== 0 || !event.isPrimary) return;
+  function onPointerDown(event) {
+    if (event.pointerType !== "mouse" || event.button !== 0 || event.isPrimary === false) return;
 
-    const surface = event.target.closest(selector);
-    if (!surface || event.target.closest("button, input, select, textarea, [contenteditable]")) return;
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (target.closest("button, input, select, textarea, [contenteditable], [role='button']")) return;
 
-    activeDrag = {
-      surface,
+    const surface = target.closest(rowSelector);
+    if (!surface) return;
+
+    drag = {
       pointerId: event.pointerId,
+      surface,
       startX: event.clientX,
-      startScrollLeft: surface.scrollLeft,
-      dragging: false,
+      startScrollLeft: surface.scrollLeft || 0,
+      moved: false,
     };
-  });
+    suppressedSurface = null;
+    clearTimeout(suppressionTimer);
+  }
 
-  document.addEventListener("pointermove", (event) => {
-    if (!activeDrag || event.pointerId !== activeDrag.pointerId) return;
-
-    const deltaX = event.clientX - activeDrag.startX;
-    if (!activeDrag.dragging && Math.abs(deltaX) < dragThreshold) return;
-
-    if (!activeDrag.dragging) {
-      activeDrag.surface.setPointerCapture(event.pointerId);
+  function onPointerMove(event) {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (event.buttons === 0) {
+      finishDrag(event);
+      return;
     }
-    activeDrag.dragging = true;
-    suppressClick = true;
-    activeDrag.surface.classList.add("is-dragging");
-    activeDrag.surface.scrollLeft = activeDrag.startScrollLeft - deltaX;
-    event.preventDefault();
-  });
 
+    const deltaX = event.clientX - drag.startX;
+    if (!drag.moved) {
+      if (Math.abs(deltaX) <= 6) return;
+
+      drag.moved = true;
+      drag.surface.classList.add("is-dragging");
+      if (typeof drag.surface.setPointerCapture === "function") {
+        try {
+          drag.surface.setPointerCapture(event.pointerId);
+        } catch (_) {}
+      }
+    }
+
+    event.preventDefault();
+    drag.surface.scrollLeft = drag.startScrollLeft - deltaX;
+  }
+
+  function onClick(event) {
+    if (!suppressedSurface) return;
+
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+    if (target.closest(rowSelector) !== suppressedSurface) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    suppressedSurface = null;
+    clearTimeout(suppressionTimer);
+  }
+
+  function onKeyDown(event) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+
+    const target = event.target;
+    if (!target || typeof target.closest !== "function") return;
+
+    const surface = target.closest(rowSelector);
+    if (!surface || target !== surface) return;
+
+    event.preventDefault();
+    const distance = Math.round((surface.clientWidth || 0) * 0.85);
+    const delta = event.key === "ArrowRight" ? distance : -distance;
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "auto"
+      : "smooth";
+
+    if (typeof surface.scrollBy === "function") {
+      surface.scrollBy({ left: delta, behavior });
+    } else {
+      surface.scrollLeft += delta;
+    }
+  }
+
+  document.addEventListener("pointerdown", onPointerDown);
+  document.addEventListener("pointermove", onPointerMove);
   document.addEventListener("pointerup", finishDrag);
   document.addEventListener("pointercancel", finishDrag);
-
-  document.addEventListener(
-    "click",
-    (event) => {
-      if (!suppressClick || !event.target.closest(selector)) return;
-      suppressClick = false;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    },
-    true,
-  );
-
-  document.addEventListener("dragstart", (event) => {
-    if (activeDrag && activeDrag.surface.contains(event.target)) {
+  document.addEventListener("lostpointercapture", finishDrag);
+  document.addEventListener("dragstart", event => {
+    const target = event.target;
+    if (target && typeof target.closest === "function" && target.closest(rowSelector)) {
       event.preventDefault();
     }
   });
-
-  document.addEventListener("keydown", (event) => {
-    const surface = event.target.closest(selector);
-    if (!surface || event.target !== surface || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
-
-    const direction = event.key === "ArrowLeft" ? -1 : 1;
-    surface.scrollBy({
-      left: direction * surface.clientWidth * 0.85,
-      behavior: reducedMotion() ? "auto" : "smooth",
-    });
-    event.preventDefault();
-  });
+  document.addEventListener("click", onClick, true);
+  document.addEventListener("keydown", onKeyDown);
+  window.addEventListener("blur", finishDrag);
 })();

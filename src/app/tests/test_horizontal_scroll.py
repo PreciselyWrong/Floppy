@@ -22,7 +22,7 @@ class HorizontalScrollContractTests(SimpleTestCase):
             self.assertIn('tabindex="0"', template)
             self.assertIn('role="region"', template)
 
-        self.assertIn('aria-label="Media carousel"', shared_row)
+        self.assertIn('aria-label="{{ row.title|default:row.title_main }}"', shared_row)
 
     def test_global_controller_supports_drag_without_breaking_touch(self):
         base = self.read("templates/base.html")
@@ -33,9 +33,13 @@ class HorizontalScrollContractTests(SimpleTestCase):
         self.assertIn("pointermove", controller)
         self.assertIn("pointerup", controller)
         self.assertIn("pointercancel", controller)
-        self.assertIn('event.pointerType === "touch"', controller)
+        self.assertIn('event.pointerType !== "mouse"', controller)
         self.assertIn("event.preventDefault()", controller)
-        self.assertIn("suppressClick", controller)
+        self.assertIn("suppressedSurface", controller)
+        self.assertIn('document.addEventListener("dragstart"', controller)
+        self.assertIn('window.addEventListener("blur"', controller)
+        self.assertIn("event.buttons === 0", controller)
+        self.assertIn("event.altKey", controller)
         self.assertIn("ArrowLeft", controller)
         self.assertIn("ArrowRight", controller)
 
