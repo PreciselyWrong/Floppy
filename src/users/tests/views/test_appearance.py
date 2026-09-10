@@ -132,6 +132,17 @@ class AppearanceViewTests(TestCase):
         self.assertContains(response, "--theme-surface-opacity: 72%")
         self.assertNotContains(response, "background:url")
 
+    def test_explicit_preset_is_rendered_on_the_root_element(self):
+        self.user.theme = "glass"
+        self.user.save(update_fields=["theme"])
+
+        response = self.client.get(reverse("appearance"))
+
+        self.assertContains(
+            response,
+            'class="glass bg-[var(--color-page-bg)]"',
+        )
+
     def test_detail_section_attributes_apply_visibility_and_order(self):
         self.user.detail_page_layouts = {
             "episode": {"content": ["crew", "notes"]}

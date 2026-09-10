@@ -101,6 +101,16 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("(!hasExplicitTheme && systemPrefersLight)", template)
         self.assertIn("html.classList.remove(...explicitThemes)", template)
 
+    def test_root_element_receives_every_explicit_theme_class(self):
+        template = Path(settings.BASE_DIR, "templates", "base.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "user.is_authenticated and user.theme != 'system' %}{{ user.theme }}",
+            template,
+        )
+
     def test_every_explicit_theme_defines_shape_and_motion(self):
         """Radius and movement are part of each preset's identity."""
         css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
