@@ -244,7 +244,7 @@
                   role="tab"
                   @click="selectedFamily = familyKey"
                   :aria-selected="(selectedFamily === familyKey).toString()"
-                  :class="selectedFamily === familyKey ? 'bg-[var(--color-accent)] text-white' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'"
+                  :class="selectedFamily === familyKey ? 'bg-[var(--color-accent)] text-[var(--color-accent-contrast)]' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'"
                   class="rounded-full px-4 py-2 text-sm font-medium transition-colors cursor-pointer"
                   x-text="family.label"></button>
         </template>
@@ -292,7 +292,7 @@
         <p class="text-sm text-[var(--color-text-muted)]">Changes apply after saving.</p>
       </div>
       <button type="submit"
-              class="rounded-lg bg-[var(--color-accent)] px-5 py-2.5 font-medium text-white transition-[filter] hover:brightness-110 cursor-pointer">
+              class="rounded-lg bg-[var(--color-accent)] px-5 py-2.5 font-medium text-[var(--color-accent-contrast)] transition-[filter] hover:brightness-110 cursor-pointer">
         Save appearance
       </button>
     </div>

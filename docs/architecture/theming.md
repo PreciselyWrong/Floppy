@@ -43,9 +43,14 @@ systems: [Catppuccin](https://python.catppuccin.com/docs/catppuccin/palette.html
 [Dracula](https://github.com/dracula/dracula-theme),
 [Nord](https://www.nordtheme.com/) and
 [Gruvbox](https://github.com/morhetz/gruvbox). `html.glass` adds a fixed translucent cinema treatment.
-`html.custom` inherits the dark defaults; `base.html` adds the six validated
+`html.custom` inherits the dark defaults; `base.html` adds the seven validated
 colours plus bounded radius, blur and surface-opacity values as inline variables.
 `users.appearance` is the allowlist and validation boundary for those values.
+
+`--color-accent-contrast` is the foreground for controls filled with
+`--color-accent`. Every preset defines the pair together because most preset
+accents are too bright for white text. The custom palette exposes both values so
+users can keep their own accent legible.
 
 Every explicit preset also owns its shape and motion through
 `--theme-radius`, `--motion-duration`, `--motion-distance`, and

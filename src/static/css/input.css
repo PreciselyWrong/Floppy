@@ -182,6 +182,7 @@ html.catppuccin_mocha {
   --color-text-secondary: #bac2de;
   --color-text-muted: #a6adc8;
   --color-accent: #cba6f7;
+  --color-accent-contrast: #11111b;
   --color-link: #89b4fa;
   --color-link-hover: #b4befe;
   color-scheme: dark;
@@ -208,6 +209,7 @@ html.dracula {
   --color-text-secondary: #e2e2dc;
   --color-text-muted: #b7bdd5;
   --color-accent: #bd93f9;
+  --color-accent-contrast: #21222c;
   --color-link: #8be9fd;
   --color-link-hover: #c7f5ff;
   color-scheme: dark;
@@ -234,6 +236,7 @@ html.nord {
   --color-text-secondary: #d8dee9;
   --color-text-muted: #b9c1d0;
   --color-accent: #88c0d0;
+  --color-accent-contrast: #242933;
   --color-link: #81a1c1;
   --color-link-hover: #8fbcbb;
   color-scheme: dark;
@@ -260,6 +263,7 @@ html.gruvbox {
   --color-text-secondary: #d5c4a1;
   --color-text-muted: #bdae93;
   --color-accent: #fabd2f;
+  --color-accent-contrast: #1d2021;
   --color-link: #83a598;
   --color-link-hover: #8ec07c;
   color-scheme: dark;
@@ -286,6 +290,7 @@ html.oled {
   --color-text-secondary: #e5e5e5;
   --color-text-muted: #a3a3a3;
   --color-accent: #22d3ee;
+  --color-accent-contrast: #000000;
   --color-link: #67e8f9;
   --color-link-hover: #a5f3fc;
   color-scheme: dark;
@@ -311,6 +316,7 @@ html.glass {
   --color-text-secondary: #d7dcf2;
   --color-text-muted: #aab3d1;
   --color-accent: #8b7cff;
+  --color-accent-contrast: #070a14;
   --color-link: #67e8f9;
   --color-link-hover: #a5f3fc;
   --theme-radius: 18px;
@@ -346,6 +352,7 @@ html.plex {
   --color-text-secondary: #dedede;
   --color-text-muted: #b6b6b6;
   --color-accent: #e5a00d;
+  --color-accent-contrast: #090909;
   --color-link: #ffc83d;
   --color-link-hover: #ffdb73;
   color-scheme: dark;
@@ -372,6 +379,7 @@ html.projector {
   --color-text-secondary: #ead9ad;
   --color-text-muted: #bba97e;
   --color-accent: #f2a93b;
+  --color-accent-contrast: #15130f;
   --color-link: #ffc866;
   --color-link-hover: #ffe0a3;
 }
@@ -397,11 +405,13 @@ html.video_store {
   --color-text-secondary: #d8d9ff;
   --color-text-muted: #aeb3df;
   --color-accent: #ff4fa3;
+  --color-accent-contrast: #090b1d;
   --color-link: #58e1d4;
   --color-link-hover: #9af4eb;
 }
 
 html.custom {
+  --color-accent-contrast: #111827;
   --theme-radius: 12px;
   --theme-blur: 12px;
   --theme-surface-opacity: 82%;

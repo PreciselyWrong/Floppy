@@ -27,6 +27,11 @@ CUSTOM_THEME_COLORS = {
     "text": {"label": "Text", "default": "#f6f1df", "token": "text"},
     "muted": {"label": "Muted text", "default": "#adb7cc", "token": "text-muted"},
     "accent": {"label": "Accent", "default": "#ffb454", "token": "accent"},
+    "accent_text": {
+        "label": "Text on accent",
+        "default": "#111827",
+        "token": "accent-contrast",
+    },
 }
 
 CUSTOM_THEME_EFFECTS = {
