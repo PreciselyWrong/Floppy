@@ -128,6 +128,26 @@ class ThemeTokenContractTests(SimpleTestCase):
             ):
                 self.assertIn(token, block.group("body"), f"{theme}: {token}")
 
+    def test_accent_backgrounds_use_a_theme_contrast_token(self):
+        """Bright accent presets must not leave white text unreadable."""
+        offenders = []
+        for path in _template_files():
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            ):
+                if "bg-[var(--color-accent)]" in line and "text-white" in line:
+                    offenders.append(f"{path.name}:{number}")
+
+        self.assertEqual(offenders, [])
+
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        for theme in (theme for theme in THEME_PRESETS if theme != "system"):
+            block = re.search(rf"html\.{theme}\s*\{{(?P<body>.*?)\n\}}", css, re.DOTALL)
+            self.assertIsNotNone(block, theme)
+            self.assertIn("--color-accent-contrast", block.group("body"), theme)
+
     def test_motion_has_an_accessibility_killswitch(self):
         css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
             encoding="utf-8"
