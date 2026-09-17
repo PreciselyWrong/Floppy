@@ -99,6 +99,7 @@ docker compose up -d
 - ⛔ Supposer que le branding privé apparaît avant connexion — la page publique exige une publication explicite, puis une vérification déconnectée.
 - ⛔ Tronquer le nom de démonstration dans le logo texte — vérifier sa largeur réelle sur la barre latérale et dans les captures.
 - ⛔ Laisser un nom de logo libre occuper la navigation — borner les nouvelles saisies côté formulaire et serveur, sans effacer les noms déjà sauvegardés.
+- ⛔ Faire dépendre la publication du branding d’un formulaire caché ciblé par `form=` — le clic peut enregistrer Appearance sans publier; le bouton visible doit envoyer `public_branding_action` et un test navigateur doit vérifier le message et la connexion déconnectée.
 - ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
 - ⛔ Afficher le switcher soleil/lune avec un thème autre que `System`, `Light` ou `Dark` — il écraserait le thème choisi.
 - ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.
