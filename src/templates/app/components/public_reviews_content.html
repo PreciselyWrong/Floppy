@@ -7,7 +7,7 @@
     </nav>
     {% if feed.reviews|length > 1 %}
       <nav class="flex flex-wrap gap-2" aria-label="Review sorting">
-        {% for option in sort_options %}<a href="{{ option.url }}" class="rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] {% if selected_sort == option.value %}bg-[var(--color-accent)] text-white{% else %}bg-[var(--color-surface)]{% endif %}">{{ option.label }}</a>{% endfor %}
+        {% for option in sort_options %}<a href="{{ option.url }}" class="rounded-lg px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] {% if selected_sort == option.value %}bg-[var(--color-accent)] text-[var(--color-accent-contrast)]{% else %}bg-[var(--color-surface)]{% endif %}">{{ option.label }}</a>{% endfor %}
       </nav>
     {% endif %}
   </div>
@@ -17,7 +17,7 @@
     <div class="mt-4 flex flex-wrap items-center gap-3">{% for problem in feed.problems %}<p class="text-[var(--color-warning-text)]">{{ problem.provider }} reviews couldn't load.</p>{% endfor %}<button type="button" hx-get="{{ retry_url }}" hx-target="#public-review-feed" hx-swap="outerHTML" class="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]">Retry</button></div>
   {% endif %}
   {% if next_page_url %}
-    <div class="mt-6 flex justify-center"><button type="button" hx-get="{{ next_page_url }}" hx-target="#public-review-feed" hx-swap="outerHTML" hx-push-url="true" class="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2">Load more</button></div>
+    <div class="mt-6 flex justify-center"><button type="button" hx-get="{{ next_page_url }}" hx-target="#public-review-feed" hx-swap="outerHTML" hx-push-url="true" class="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-accent-contrast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2">Load more</button></div>
   {% endif %}
   <footer class="mt-8 flex flex-wrap items-center gap-4 border-t border-[var(--color-border)] pt-4 text-xs text-[var(--color-text-muted)]">
     <span>Reviews provided by</span>
