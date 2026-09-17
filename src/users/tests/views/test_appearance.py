@@ -11,6 +11,7 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from PIL import Image
 
+from app.models import ApplicationSettings
 from users import branding
 from users.appearance import DETAIL_LAYOUT_FAMILIES, THEME_PRESETS
 from users.models import LogoStyleChoices, ThemeChoices
@@ -103,6 +104,43 @@ class AppearanceViewTests(TestCase):
         self.assertEqual(self.user.logo_style, "text")
         self.assertEqual(self.user.logo_text, "Nicolas Floppy")
 
+    def test_appearance_rejects_long_wordmark_without_saving_theme(self):
+        self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "glass",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "M" * 21,
+            },
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "colorful")
+        self.assertEqual(self.user.theme, "system")
+
+    def test_existing_long_wordmark_survives_unrelated_appearance_save(self):
+        previous_name = "My Very Long Media Shelf Name"
+        self.user.logo_style = "text"
+        self.user.logo_text = previous_name
+        self.user.save(update_fields=["logo_style", "logo_text"])
+
+        self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "glass",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": previous_name,
+            },
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_text, previous_name)
+        self.assertEqual(self.user.theme, "glass")
+
     def test_appearance_persists_text_typography(self):
         response = self.client.post(
             reverse("appearance"),
@@ -174,6 +212,13 @@ class AppearanceViewTests(TestCase):
         self.assertIn("justify-content: center;", css)
         self.assertIn("transform-origin: center;", css)
 
+    def test_custom_logo_upload_has_a_live_preview(self):
+        response = self.client.get(reverse("appearance"))
+
+        self.assertContains(response, '@change="previewLogoUpload($event)"')
+        self.assertContains(response, ':src="customLogoPreview"')
+        self.assertContains(response, "previewLogoUpload(event)")
+
     def test_appearance_normalizes_custom_logo_upload(self):
         source = BytesIO()
         Image.new("RGBA", (900, 300), (255, 0, 120, 180)).save(source, "PNG")
@@ -198,6 +243,151 @@ class AppearanceViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.logo_style, "custom")
         self.assertTrue(self.user.custom_logo_data.startswith("data:image/webp;base64,"))
+        self.assertLessEqual(
+            len(self.user.custom_logo_data), branding.MAX_LOGO_DATA_URL_LENGTH
+        )
+        home = self.client.get(reverse("home"))
+        self.assertContains(home, 'data-brand-mode="custom"')
+        self.assertContains(home, f'src="{self.user.custom_logo_data}"')
+
+    def test_text_fill_is_saved_and_rendered_in_navigation(self):
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "Media Shelf",
+                "logo_text_fill": "custom_gradient",
+                "logo_text_color_start": "#e8f8ff",
+                "logo_text_color_end": "#638bff",
+            },
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_text_fill, "custom_gradient")
+        self.assertEqual(self.user.logo_text_color_start, "#e8f8ff")
+        self.assertEqual(self.user.logo_text_color_end, "#638bff")
+        home = self.client.get(reverse("home"))
+        self.assertContains(home, 'data-brand-fill="custom_gradient"')
+        self.assertContains(home, "--brand-color-start: #e8f8ff")
+        self.assertContains(home, "--brand-color-end: #638bff")
+
+    def test_custom_gradient_defaults_are_readable_on_light_theme(self):
+        self.assertEqual(self.user.logo_text_color_start, "#1f2937")
+        self.assertEqual(self.user.logo_text_color_end, "#2563eb")
+
+    def test_invalid_text_fill_rejects_entire_appearance_post(self):
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "glass",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text_fill": "custom_gradient",
+                "logo_text_color_start": "red; background:url(https://example.test)",
+                "logo_text_color_end": "#638bff",
+            },
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.theme, "system")
+        self.assertEqual(self.user.logo_style, "colorful")
+
+    def test_superuser_can_publish_a_snapshot_to_the_sign_in_page(self):
+        self.user.is_superuser = True
+        self.user.logo_style = "text"
+        self.user.logo_text = "Media Shelf"
+        self.user.save(update_fields=["is_superuser", "logo_style", "logo_text"])
+
+        response = self.client.post(
+            reverse("appearance"), {"public_branding_action": "publish"}
+        )
+
+        self.assertRedirects(response, reverse("appearance"))
+        published = ApplicationSettings.objects.get(pk=1).public_branding
+        self.assertEqual(published["logo_text"], "Media Shelf")
+
+        self.client.logout()
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, 'data-brand-mode="text"')
+        self.assertContains(sign_in, "Media Shelf")
+
+        self.user.logo_text = "Private rename"
+        self.user.save(update_fields=["logo_text"])
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, "Media Shelf")
+        self.assertNotContains(sign_in, "Private rename")
+
+    def test_existing_long_wordmark_can_still_be_published(self):
+        previous_name = "My Very Long Media Shelf Name"
+        self.user.is_superuser = True
+        self.user.logo_style = "text"
+        self.user.logo_text = previous_name
+        self.user.save(update_fields=["is_superuser", "logo_style", "logo_text"])
+
+        self.client.post(reverse("appearance"), {"public_branding_action": "publish"})
+        self.client.logout()
+
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, previous_name)
+
+    def test_published_image_reaches_sign_in_without_changing_other_users(self):
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+        source = BytesIO()
+        Image.new("RGBA", (400, 100), (30, 80, 220, 255)).save(source, "PNG")
+        upload = SimpleUploadedFile("brand.png", source.getvalue(), content_type="image/png")
+        self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "custom",
+                "logo_upload": upload,
+            },
+        )
+        self.user.refresh_from_db()
+        self.client.post(reverse("appearance"), {"public_branding_action": "publish"})
+        self.client.logout()
+
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, 'data-brand-mode="custom"')
+        self.assertContains(sign_in, f'src="{self.user.custom_logo_data}"')
+
+        other = get_user_model().objects.create_user(username="other", password="testpass123")
+        self.client.force_login(other)
+        home = self.client.get(reverse("home"))
+        self.assertContains(home, 'data-brand-mode="colorful"')
+        self.assertNotContains(home, self.user.custom_logo_data)
+
+    def test_superuser_can_restore_original_public_branding(self):
+        self.user.is_superuser = True
+        self.user.logo_style = "text"
+        self.user.logo_text = "Media Shelf"
+        self.user.save(update_fields=["is_superuser", "logo_style", "logo_text"])
+        self.client.post(reverse("appearance"), {"public_branding_action": "publish"})
+
+        self.client.post(reverse("appearance"), {"public_branding_action": "reset"})
+
+        self.assertEqual(ApplicationSettings.objects.get(pk=1).public_branding, {})
+        self.client.logout()
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, 'data-brand-mode="colorful"')
+        self.assertNotContains(sign_in, "Media Shelf")
+
+    def test_non_superuser_cannot_change_public_branding(self):
+        response = self.client.post(
+            reverse("appearance"), {"public_branding_action": "publish"}
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(ApplicationSettings.objects.filter(pk=1).exists())
 
     def test_appearance_rejects_non_image_custom_logo(self):
         upload = SimpleUploadedFile(
@@ -370,6 +560,11 @@ class AppearanceViewTests(TestCase):
 
 
 class BrandingValidationTests(SimpleTestCase):
+    def test_wordmark_is_limited_to_twenty_characters(self):
+        self.assertEqual(branding.normalize_logo_text("M" * 20), "M" * 20)
+        with self.assertRaisesMessage(ValidationError, "20 characters"):
+            branding.normalize_logo_text("M" * 21)
+
     def test_logo_dimensions_are_rejected_before_pixel_data_is_loaded(self):
         upload = SimpleUploadedFile("brand.png", b"png", content_type="image/png")
         source = MagicMock(format="PNG", width=8192, height=8192)

@@ -95,6 +95,10 @@ docker compose up -d
 - ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.
 - ⛔ Placer les réglages du logo hors de `Settings > Appearance` ou laisser le logo de la sidebar se contracter — l'identité visuelle doit rester trouvable et lisible.
 - ⛔ Aligner le logo ou le mot-symbole sur un bord du bandeau de sidebar — toutes les variantes restent centrées dans la colonne.
+- ⛔ Présenter une prévisualisation non enregistrée comme une capture de résultat — sauvegarder, recharger et vérifier la barre avant d’illustrer le branding.
+- ⛔ Supposer que le branding privé apparaît avant connexion — la page publique exige une publication explicite, puis une vérification déconnectée.
+- ⛔ Tronquer le nom de démonstration dans le logo texte — vérifier sa largeur réelle sur la barre latérale et dans les captures.
+- ⛔ Laisser un nom de logo libre occuper la navigation — borner les nouvelles saisies côté formulaire et serveur, sans effacer les noms déjà sauvegardés.
 - ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
 - ⛔ Afficher le switcher soleil/lune avec un thème autre que `System`, `Light` ou `Dark` — il écraserait le thème choisi.
 - ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.

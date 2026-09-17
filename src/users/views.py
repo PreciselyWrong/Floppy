@@ -20,7 +20,13 @@ from django.core.exceptions import ValidationError
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError
 from django.db.models import Count, Q
-from django.http import Http404, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import (
+    Http404,
+    HttpResponse,
+    HttpResponseForbidden,
+    JsonResponse,
+    StreamingHttpResponse,
+)
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.defaultfilters import pluralize
 from django.urls import reverse
@@ -36,6 +42,7 @@ from app.discover.registry import DISCOVER_MEDIA_TYPES
 from app.models import (
     Album,
     AlbumTracker,
+    ApplicationSettings,
     Artist,
     ArtistTracker,
     Item,
@@ -83,6 +90,8 @@ from users.media_type_chips import (
     normalize_media_type_chip_colors,
 )
 from users.models import (
+    LOGO_TEXT_INPUT_MAX_LENGTH,
+    LOGO_TEXT_STORAGE_MAX_LENGTH,
     PERSON_KNOWN_FOR_LIMIT_MAX,
     ActivityHistoryViewChoices,
     AnimeLibraryModeChoices,
@@ -93,6 +102,7 @@ from users.models import (
     ImportFrequencyChoices,
     ImportModeChoices,
     LogoStyleChoices,
+    LogoTextFillChoices,
     LogoTextFontChoices,
     LogoTextWeightChoices,
     MediaCardSubtitleDisplayChoices,
@@ -954,6 +964,27 @@ def appearance(request):
             messages.error(request, "This section is view-only for demo accounts.")
             return redirect("appearance")
 
+        public_action = request.POST.get("public_branding_action")
+        if public_action is not None:
+            if not request.user.is_superuser:
+                return HttpResponseForbidden()
+            if public_action not in {"publish", "reset"}:
+                return HttpResponse(status=400)
+            published = (
+                branding.public_branding_snapshot(request.user)
+                if public_action == "publish"
+                else {}
+            )
+            ApplicationSettings.objects.update_or_create(
+                pk=1,
+                defaults={"public_branding": published},
+            )
+            messages.success(
+                request,
+                "Sign-in branding updated" if published else "Original sign-in logo restored",
+            )
+            return redirect("appearance")
+
         theme = request.POST.get("theme")
         if theme not in ThemeChoices.values:
             messages.error(request, "Unsupported theme.")
@@ -980,8 +1011,14 @@ def appearance(request):
             detail_layouts = appearance_config.parse_detail_layouts(
                 request.POST.get("detail_layouts")
             )
+            posted_logo_text = request.POST.get("logo_text", request.user.logo_text)
             logo_text = branding.normalize_logo_text(
-                request.POST.get("logo_text", request.user.logo_text)
+                posted_logo_text,
+                max_length=(
+                    LOGO_TEXT_STORAGE_MAX_LENGTH
+                    if posted_logo_text == request.user.logo_text
+                    else LOGO_TEXT_INPUT_MAX_LENGTH
+                ),
             )
             (
                 logo_text_font,
@@ -993,6 +1030,17 @@ def appearance(request):
                 request.POST.get("logo_text_size", request.user.logo_text_size),
                 request.POST.get("logo_text_weight", request.user.logo_text_weight),
                 request.POST.get("logo_text_spacing", request.user.logo_text_spacing),
+            )
+            (
+                logo_text_fill,
+                logo_text_color_start,
+                logo_text_color_end,
+            ) = branding.normalize_logo_text_fill(
+                request.POST.get("logo_text_fill", request.user.logo_text_fill),
+                request.POST.get(
+                    "logo_text_color_start", request.user.logo_text_color_start
+                ),
+                request.POST.get("logo_text_color_end", request.user.logo_text_color_end),
             )
             custom_logo_data = request.user.custom_logo_data
             if logo_style == LogoStyleChoices.CUSTOM and logo_upload is not None:
@@ -1014,6 +1062,9 @@ def appearance(request):
         request.user.logo_text_size = logo_text_size
         request.user.logo_text_weight = logo_text_weight
         request.user.logo_text_spacing = logo_text_spacing
+        request.user.logo_text_fill = logo_text_fill
+        request.user.logo_text_color_start = logo_text_color_start
+        request.user.logo_text_color_end = logo_text_color_end
         request.user.custom_logo_data = custom_logo_data
         request.user.save(
             update_fields=[
@@ -1027,6 +1078,9 @@ def appearance(request):
                 "logo_text_size",
                 "logo_text_weight",
                 "logo_text_spacing",
+                "logo_text_fill",
+                "logo_text_color_start",
+                "logo_text_color_end",
                 "custom_logo_data",
             ]
         )
@@ -1054,8 +1108,15 @@ def appearance(request):
         "custom_theme_effects": appearance_config.CUSTOM_THEME_EFFECTS,
         "appearance_theme": request.user.theme,
         "logo_style_choices": LogoStyleChoices.choices,
+        "logo_text_max_length": LOGO_TEXT_INPUT_MAX_LENGTH,
         "logo_text_font_choices": LogoTextFontChoices.choices,
         "logo_text_weight_choices": LogoTextWeightChoices.choices,
+        "logo_text_fill_choices": LogoTextFillChoices.choices,
+        "public_branding_active": bool(
+            ApplicationSettings.objects.filter(pk=1)
+            .values_list("public_branding", flat=True)
+            .first()
+        ) if request.user.is_superuser else False,
         "custom_theme_json": palette,
         "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
         "detail_layouts_json": appearance_config.resolved_detail_layouts(

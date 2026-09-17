@@ -112,15 +112,19 @@ class PreferencesViewTests(TestCase):
         self.assertNotIn("book", self.user.home_media_type_chip_colors)
 
     def test_preferences_display_labels_and_logo(self):
-        """The display cards expose the simplified labels and logo choice."""
+        """The display cards keep their labels without duplicating branding."""
         response = self.client.get(reverse("preferences"))
 
         self.assertNotContains(response, 'name="logo_style"')
         self.assertContains(response, "System default — Aug 12, 2025 / 12 Aug 2025")
         self.assertContains(response, "System default — 6:45 PM / 18:45")
         self.assertNotContains(response, "System default (locale)")
-        self.assertContains(response, "/static/img/floppy-logo.png")
-        self.assertNotContains(response, "/static/img/floppy-logo-white.png")
+
+    def test_preferences_post_cannot_change_branding(self):
+        self.client.post(reverse("preferences"), {"logo_style": "monochrome"})
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "colorful")
 
     def test_preferences_keeps_all_theme_choices(self):
         response = self.client.get(reverse("preferences"))
