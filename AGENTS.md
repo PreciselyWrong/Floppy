@@ -129,4 +129,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Le centrage et la typographie réglable du logo sont déployés sur `unraid-server` avec l'image `sha-ba463cdd`; attendre le verdict de Nicolas avant toute proposition de PR.
+- Le branding personnalisé est déployé sur `unraid-server` avec l'image `sha-754e5b13aadca99727a485f2d548ad805f245501`; attendre le test visuel et l'accord de Nicolas avant toute proposition de PR.
