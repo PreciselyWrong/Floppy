@@ -188,9 +188,9 @@
             {% if public_branding_active %}Custom branding is published.{% else %}Visitors see the original Floppy logo.{% endif %}
           </p>
           <div class="mt-3 flex flex-wrap gap-3">
-            <button type="submit" form="public-branding-publish" class="rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-[var(--color-accent-contrast)] hover:brightness-110 cursor-pointer">Publish saved branding</button>
+            <button type="submit" name="public_branding_action" value="publish" class="rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-[var(--color-accent-contrast)] hover:brightness-110 cursor-pointer">Publish saved branding</button>
             {% if public_branding_active %}
-              <button type="submit" form="public-branding-reset" class="rounded-lg border border-[var(--color-surface-border)] px-4 py-2.5 text-sm font-medium text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] cursor-pointer">Restore original sign-in logo</button>
+              <button type="submit" name="public_branding_action" value="reset" class="rounded-lg border border-[var(--color-surface-border)] px-4 py-2.5 text-sm font-medium text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] cursor-pointer">Restore original sign-in logo</button>
             {% endif %}
           </div>
         </div>
@@ -339,19 +339,6 @@
       </button>
     </div>
   </form>
-
-  {% if user.is_superuser %}
-    <form id="public-branding-publish" method="post">
-      {% csrf_token %}
-      <input type="hidden" name="public_branding_action" value="publish">
-    </form>
-    {% if public_branding_active %}
-      <form id="public-branding-reset" method="post">
-        {% csrf_token %}
-        <input type="hidden" name="public_branding_action" value="reset">
-      </form>
-    {% endif %}
-  {% endif %}
 
   <script>
     function appearanceEditor() {

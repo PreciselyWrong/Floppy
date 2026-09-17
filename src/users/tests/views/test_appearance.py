@@ -323,6 +323,25 @@ class AppearanceViewTests(TestCase):
         self.assertContains(sign_in, "Media Shelf")
         self.assertNotContains(sign_in, "Private rename")
 
+    def test_public_branding_button_submits_its_action_from_appearance_form(self):
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+        ApplicationSettings.objects.create(public_branding={"logo_style": "text"})
+
+        response = self.client.get(reverse("appearance"))
+        markup = response.content.decode()
+
+        self.assertRegex(
+            markup,
+            r'<button\b[^>]*name="public_branding_action"[^>]*value="publish"[^>]*>',
+        )
+        self.assertRegex(
+            markup,
+            r'<button\b[^>]*name="public_branding_action"[^>]*value="reset"[^>]*>',
+        )
+        self.assertNotIn('form="public-branding-publish"', markup)
+        self.assertNotIn('form="public-branding-reset"', markup)
+
     def test_existing_long_wordmark_can_still_be_published(self):
         previous_name = "My Very Long Media Shelf Name"
         self.user.is_superuser = True
