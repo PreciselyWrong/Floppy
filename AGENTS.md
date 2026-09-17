@@ -130,4 +130,4 @@ docker compose up -d
 ## État
 
 - Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Le branding personnalisé est déployé sur `unraid-server` avec l'image `sha-754e5b13aadca99727a485f2d548ad805f245501`; attendre le test visuel et l'accord de Nicolas avant toute proposition de PR.
+- Le branding personnalisé corrigé est déployé sur `unraid-server` avec l'image `sha-9e6011fbdd50123c947d39c330b50ba7ea99ac46`; attendre le test visuel et l'accord de Nicolas avant toute proposition de PR.
