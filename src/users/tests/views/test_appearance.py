@@ -651,7 +651,7 @@ class BrandingValidationTests(SimpleTestCase):
         source.__enter__.return_value = source
 
         with (
-            patch.object(branding.Image, "open", return_value=source),
+            patch.object(Image, "open", return_value=source),
             self.assertRaisesMessage(
                 ValidationError,
                 "Logo image dimensions are too large.",
