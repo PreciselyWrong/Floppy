@@ -970,20 +970,24 @@ def appearance(request):
                 return HttpResponseForbidden()
             if public_action not in {"publish", "reset"}:
                 return HttpResponse(status=400)
-            published = (
-                branding.public_branding_snapshot(request.user)
-                if public_action == "publish"
-                else {}
-            )
-            ApplicationSettings.objects.update_or_create(
-                pk=1,
-                defaults={"public_branding": published},
-            )
-            messages.success(
-                request,
-                "Sign-in branding updated" if published else "Original sign-in logo restored",
-            )
-            return redirect("appearance")
+            if public_action == "reset":
+                ApplicationSettings.objects.update_or_create(
+                    pk=1,
+                    defaults={"public_branding": {}},
+                )
+                messages.success(request, "Original sign-in logo restored")
+                return redirect("appearance")
+            if "theme" not in request.POST:
+                ApplicationSettings.objects.update_or_create(
+                    pk=1,
+                    defaults={
+                        "public_branding": branding.public_branding_snapshot(
+                            request.user
+                        )
+                    },
+                )
+                messages.success(request, "Sign-in branding updated")
+                return redirect("appearance")
 
         theme = request.POST.get("theme")
         if theme not in ThemeChoices.values:
@@ -1084,7 +1088,16 @@ def appearance(request):
                 "custom_logo_data",
             ]
         )
-        messages.success(request, "Appearance updated")
+        if public_action == "publish":
+            ApplicationSettings.objects.update_or_create(
+                pk=1,
+                defaults={
+                    "public_branding": branding.public_branding_snapshot(request.user)
+                },
+            )
+            messages.success(request, "Sign-in branding updated")
+        else:
+            messages.success(request, "Appearance updated")
         return redirect("appearance")
 
     saved_palette = (

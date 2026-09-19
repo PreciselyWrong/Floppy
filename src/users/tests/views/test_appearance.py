@@ -342,6 +342,42 @@ class AppearanceViewTests(TestCase):
         self.assertNotIn('form="public-branding-publish"', markup)
         self.assertNotIn('form="public-branding-reset"', markup)
 
+    def test_publish_saves_submitted_branding_before_snapshotting_it(self):
+        self.user.is_superuser = True
+        self.user.logo_style = "custom"
+        self.user.logo_text = "Old branding"
+        self.user.custom_logo_data = "data:image/webp;base64,UklGRg=="
+        self.user.save(
+            update_fields=[
+                "is_superuser",
+                "logo_style",
+                "logo_text",
+                "custom_logo_data",
+            ]
+        )
+
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "public_branding_action": "publish",
+                "theme": "system",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "New branding",
+            },
+            follow=True,
+        )
+
+        self.user.refresh_from_db()
+        published = ApplicationSettings.objects.get(pk=1).public_branding
+        self.assertEqual(self.user.logo_style, "text")
+        self.assertEqual(self.user.logo_text, "New branding")
+        self.assertEqual(published["logo_style"], "text")
+        self.assertEqual(published["logo_text"], "New branding")
+        self.assertContains(response, "Sign-in branding updated")
+        self.assertNotContains(response, "Appearance updated")
+
     def test_existing_long_wordmark_can_still_be_published(self):
         previous_name = "My Very Long Media Shelf Name"
         self.user.is_superuser = True
