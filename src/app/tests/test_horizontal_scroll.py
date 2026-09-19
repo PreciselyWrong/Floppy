@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from django.conf import settings
+from django.template.loader import render_to_string
 from django.test import SimpleTestCase
 
 
@@ -22,7 +23,23 @@ class HorizontalScrollContractTests(SimpleTestCase):
             self.assertIn('tabindex="0"', template)
             self.assertIn('role="region"', template)
 
-        self.assertIn('aria-label="{{ row.title|default:row.title_main }}"', shared_row)
+        self.assertIn('aria-label="{% firstof row.title row.title_main %}"', shared_row)
+        self.assertNotIn("default:row.title_main", shared_row)
+
+    def test_shared_row_renders_when_only_title_is_available(self):
+        rendered = render_to_string(
+            "app/components/_scrollable_row.html",
+            {
+                "row": {
+                    "row_id": "detail-cast",
+                    "title": "Cast",
+                    "items": [],
+                    "loaded_count": 0,
+                }
+            },
+        )
+
+        self.assertIn('aria-label="Cast"', rendered)
 
     def test_global_controller_supports_drag_without_breaking_touch(self):
         base = self.read("templates/base.html")
