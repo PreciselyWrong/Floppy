@@ -966,7 +966,7 @@ def appearance(request):
 
         public_action = request.POST.get("public_branding_action")
         if public_action is not None:
-            if not request.user.is_superuser:
+            if not branding.can_publish_public_appearance(request.user):
                 return HttpResponseForbidden()
             if public_action not in {"publish", "reset"}:
                 return HttpResponse(status=400)
@@ -1088,14 +1088,20 @@ def appearance(request):
                 "custom_logo_data",
             ]
         )
-        if public_action == "publish":
+        publishes_public = branding.can_publish_public_appearance(request.user)
+        if public_action == "publish" or publishes_public:
             ApplicationSettings.objects.update_or_create(
                 pk=1,
                 defaults={
                     "public_branding": branding.public_branding_snapshot(request.user)
                 },
             )
-            messages.success(request, "Sign-in branding updated")
+            messages.success(
+                request,
+                "Sign-in branding updated"
+                if public_action == "publish"
+                else "Appearance and sign-in updated",
+            )
         else:
             messages.success(request, "Appearance updated")
         return redirect("appearance")
@@ -1125,11 +1131,14 @@ def appearance(request):
         "logo_text_font_choices": LogoTextFontChoices.choices,
         "logo_text_weight_choices": LogoTextWeightChoices.choices,
         "logo_text_fill_choices": LogoTextFillChoices.choices,
+        "can_publish_public_appearance": branding.can_publish_public_appearance(
+            request.user
+        ),
         "public_branding_active": bool(
             ApplicationSettings.objects.filter(pk=1)
             .values_list("public_branding", flat=True)
             .first()
-        ) if request.user.is_superuser else False,
+        ) if branding.can_publish_public_appearance(request.user) else False,
         "custom_theme_json": palette,
         "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
         "detail_layouts_json": appearance_config.resolved_detail_layouts(

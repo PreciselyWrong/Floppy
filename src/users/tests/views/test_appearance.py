@@ -323,24 +323,25 @@ class AppearanceViewTests(TestCase):
         self.assertContains(sign_in, "Media Shelf")
         self.assertNotContains(sign_in, "Private rename")
 
-    def test_public_branding_button_submits_its_action_from_appearance_form(self):
-        self.user.is_superuser = True
-        self.user.save(update_fields=["is_superuser"])
-        ApplicationSettings.objects.create(public_branding={"logo_style": "text"})
-
-        response = self.client.get(reverse("appearance"))
-        markup = response.content.decode()
-
-        self.assertRegex(
-            markup,
-            r'<button\b[^>]*name="public_branding_action"[^>]*value="publish"[^>]*>',
+    def test_instance_owner_save_also_publishes_the_sign_in_appearance(self):
+        response = self.client.post(
+            reverse("appearance"),
+            {
+                "theme": "dracula",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "Media Shelf",
+            },
+            follow=True,
         )
-        self.assertRegex(
-            markup,
-            r'<button\b[^>]*name="public_branding_action"[^>]*value="reset"[^>]*>',
-        )
-        self.assertNotIn('form="public-branding-publish"', markup)
-        self.assertNotIn('form="public-branding-reset"', markup)
+
+        published = ApplicationSettings.objects.get(pk=1).public_branding
+        self.assertEqual(published["theme"], "dracula")
+        self.assertEqual(published["logo_style"], "text")
+        self.assertEqual(published["logo_text"], "Media Shelf")
+        self.assertContains(response, "Appearance and sign-in updated")
+        self.assertNotContains(response, "Publish sign-in appearance")
 
     def test_publish_saves_submitted_branding_before_snapshotting_it(self):
         self.user.is_superuser = True
@@ -483,6 +484,12 @@ class AppearanceViewTests(TestCase):
         self.assertNotContains(sign_in, "Media Shelf")
 
     def test_non_superuser_cannot_change_public_branding(self):
+        other = get_user_model().objects.create_user(
+            username="other-user",
+            password="testpass123",
+        )
+        self.client.force_login(other)
+
         response = self.client.post(
             reverse("appearance"), {"public_branding_action": "publish"}
         )

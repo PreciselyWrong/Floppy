@@ -130,6 +130,21 @@ def public_branding_snapshot(user):
     return validated_public_branding(snapshot)
 
 
+def can_publish_public_appearance(user):
+    """Allow the instance owner, or an explicit superuser, to brand public pages."""
+    if not getattr(user, "is_authenticated", False) or getattr(user, "is_demo", False):
+        return False
+    if user.is_superuser:
+        return True
+    owner_id = (
+        user._meta.model.objects.filter(is_demo=False)
+        .order_by("date_joined", "pk")
+        .values_list("pk", flat=True)
+        .first()
+    )
+    return user.pk == owner_id
+
+
 def validated_public_branding(value):
     """Fall back to the stock logo if a stored public snapshot is malformed."""
     if not isinstance(value, dict) or not value:
