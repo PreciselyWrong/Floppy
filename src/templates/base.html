@@ -1,13 +1,15 @@
 {% load static %}
 {% load app_tags %}
 {% load user_tags %}
+{% load brand_tags %}
 {% load i18n %}
 
+{% branding_for user as appearance %}
 <!DOCTYPE html>
 <html lang="{{ LANGUAGE_CODE }}"
       data-img-none="{{ IMG_NONE }}"
-      class="{% if user.is_authenticated and user.theme != 'system' %}{{ user.theme }}{% endif %} bg-[var(--color-page-bg)]"
-      style="{% custom_theme_style user %}">
+      class="{% if appearance.theme != 'system' %}{{ appearance.theme }}{% endif %} bg-[var(--color-page-bg)]"
+      style="{% custom_theme_style appearance %}">
   <head>
     {# Required meta tags #}
     <meta charset="UTF-8">
@@ -169,9 +171,9 @@
     </script>
     <link rel="shortcut icon" href="{% static "favicon/favicon.ico" %}">
     <meta name="msapplication-TileColor" content="#181a1b">
-    {% if user.is_authenticated and user.theme == 'light' %}
+    {% if appearance.theme == 'light' %}
       <meta name="theme-color" content="#f8f9fa">
-    {% elif user.is_authenticated and user.theme == 'dark' %}
+    {% elif appearance.theme == 'dark' %}
       <meta name="theme-color" content="#181a1b">
     {% else %}
       <meta name="theme-color"

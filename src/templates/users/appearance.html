@@ -180,15 +180,15 @@
 
       {% if user.is_superuser %}
         <div class="mt-5 border-t border-[var(--color-surface-border)] pt-5">
-          <h3 class="text-sm font-semibold text-[var(--color-text)]">Sign-in page</h3>
+          <h3 class="text-sm font-semibold text-[var(--color-text)]">Sign-in appearance</h3>
           <p class="mt-1 text-sm text-[var(--color-text-secondary)]">
-            This page is public. Save your branding first, then publish a copy. Later personal changes stay private until you publish again.
+            Publish the branding and theme currently selected above. Later personal changes stay private until you publish again.
           </p>
           <p class="mt-2 text-xs text-[var(--color-text-muted)]">
             {% if public_branding_active %}Custom branding is published.{% else %}Visitors see the original Floppy logo.{% endif %}
           </p>
           <div class="mt-3 flex flex-wrap gap-3">
-            <button type="submit" name="public_branding_action" value="publish" class="rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-[var(--color-accent-contrast)] hover:brightness-110 cursor-pointer">Publish saved branding</button>
+            <button type="submit" name="public_branding_action" value="publish" class="rounded-lg bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-[var(--color-accent-contrast)] hover:brightness-110 cursor-pointer">Publish sign-in appearance</button>
             {% if public_branding_active %}
               <button type="submit" name="public_branding_action" value="reset" class="rounded-lg border border-[var(--color-surface-border)] px-4 py-2.5 text-sm font-medium text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] cursor-pointer">Restore original sign-in logo</button>
             {% endif %}

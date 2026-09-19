@@ -1,10 +1,12 @@
 import base64
+import json
 import re
 from io import BytesIO
 
 from django.core.exceptions import ValidationError
 from PIL import Image, UnidentifiedImageError
 
+from users.appearance import parse_custom_theme
 from users.models import (
     LOGO_TEXT_INPUT_MAX_LENGTH,
     LOGO_TEXT_SIZES,
@@ -14,6 +16,7 @@ from users.models import (
     LogoTextFillChoices,
     LogoTextFontChoices,
     LogoTextWeightChoices,
+    ThemeChoices,
 )
 
 MAX_LOGO_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -35,6 +38,8 @@ HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}\Z")
 PUBLIC_LOGO_DATA = re.compile(r"data:image/webp;base64,[A-Za-z0-9+/]+={0,2}\Z")
 
 DEFAULT_PUBLIC_BRANDING = {
+    "theme": ThemeChoices.SYSTEM,
+    "custom_theme": {},
     "logo_style": LogoStyleChoices.COLORFUL,
     "logo_text": "Floppy",
     "logo_text_font": LogoTextFontChoices.DISPLAY,
@@ -131,7 +136,11 @@ def validated_public_branding(value):
         return DEFAULT_PUBLIC_BRANDING.copy()
     if value.get("logo_style") not in LogoStyleChoices.values:
         return DEFAULT_PUBLIC_BRANDING.copy()
+    theme = value.get("theme", ThemeChoices.SYSTEM)
+    if theme not in ThemeChoices.values:
+        return DEFAULT_PUBLIC_BRANDING.copy()
     try:
+        custom_theme = parse_custom_theme(json.dumps(value.get("custom_theme", {})))
         text = normalize_logo_text(
             value.get("logo_text"), max_length=LOGO_TEXT_STORAGE_MAX_LENGTH
         )
@@ -156,6 +165,8 @@ def validated_public_branding(value):
     if value["logo_style"] == LogoStyleChoices.CUSTOM and not image_data:
         return DEFAULT_PUBLIC_BRANDING.copy()
     return {
+        "theme": theme,
+        "custom_theme": custom_theme,
         "logo_style": value["logo_style"],
         "logo_text": text,
         "logo_text_font": font,

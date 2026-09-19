@@ -378,6 +378,52 @@ class AppearanceViewTests(TestCase):
         self.assertContains(response, "Sign-in branding updated")
         self.assertNotContains(response, "Appearance updated")
 
+    def test_publish_applies_the_submitted_theme_to_the_sign_in_page(self):
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+
+        self.client.post(
+            reverse("appearance"),
+            {
+                "public_branding_action": "publish",
+                "theme": "dracula",
+                "custom_theme": "{}",
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "Media Shelf",
+            },
+        )
+        self.client.logout()
+
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, 'class="dracula bg-[var(--color-page-bg)]"')
+        self.assertContains(sign_in, 'data-brand-mode="text"')
+        self.assertContains(sign_in, "Media Shelf")
+
+    def test_publish_applies_custom_theme_tokens_to_the_sign_in_page(self):
+        self.user.is_superuser = True
+        self.user.save(update_fields=["is_superuser"])
+
+        self.client.post(
+            reverse("appearance"),
+            {
+                "public_branding_action": "publish",
+                "theme": "custom",
+                "custom_theme": json.dumps(
+                    {"page_bg": "#112233", "accent": "#abcdef"}
+                ),
+                "detail_layouts": "{}",
+                "logo_style": "text",
+                "logo_text": "Media Shelf",
+            },
+        )
+        self.client.logout()
+
+        sign_in = self.client.get(reverse("account_login"))
+        self.assertContains(sign_in, 'class="custom bg-[var(--color-page-bg)]"')
+        self.assertContains(sign_in, "--color-page-bg: #112233")
+        self.assertContains(sign_in, "--color-accent: #abcdef")
+
     def test_existing_long_wordmark_can_still_be_published(self):
         previous_name = "My Very Long Media Shelf Name"
         self.user.is_superuser = True
