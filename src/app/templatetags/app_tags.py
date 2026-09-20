@@ -17,10 +17,17 @@ from app import config, helpers, image_cache
 from app.models import Item, MediaTypes, Sources, Status
 from app.providers import tmdb
 from app.services import metadata_resolution
+from users.media_type_chips import media_type_chip_preferences
 from users.models import TimeFormatChoices
 from users.templatetags.user_tags import user_date_format, user_time_format
 
 register = template.Library()
+
+
+@register.simple_tag
+def home_media_type_chip(user, media_type):
+    """Resolve one user's validated Home media-type label appearance."""
+    return media_type_chip_preferences(user, media_type)
 
 
 @register.simple_tag
@@ -1097,14 +1104,18 @@ def _next_episode_number_for_season_item(item, media):
 
     from events.models import Event
 
-    event_numbers = Event.objects.filter(
-        item__media_id=media_id,
-        item__source=source,
-        item__media_type=MediaTypes.SEASON.value,
-        item__season_number=season_number,
-        content_number__isnull=False,
-        datetime__lte=timezone.now(),
-    ).exclude(datetime__year__lt=1900).values_list("content_number", flat=True)
+    event_numbers = (
+        Event.objects.filter(
+            item__media_id=media_id,
+            item__source=source,
+            item__media_type=MediaTypes.SEASON.value,
+            item__season_number=season_number,
+            content_number__isnull=False,
+            datetime__lte=timezone.now(),
+        )
+        .exclude(datetime__year__lt=1900)
+        .values_list("content_number", flat=True)
+    )
     episode_numbers = sorted({int(number) for number in event_numbers})
     if not episode_numbers:
         max_progress = getattr(media, "max_progress", None)
