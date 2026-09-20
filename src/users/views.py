@@ -30,8 +30,8 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from django_celery_beat.models import PeriodicTask
 
 from api import scopes as api_scopes
+from app import config, history_cache, image_cache, statistics_cache
 from app import helpers as app_helpers
-from app import history_cache, image_cache, statistics_cache
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
 from app.models import (
@@ -80,6 +80,12 @@ from users.home_screen import (
     serialize_settings_filter_fields,
     serialize_settings_sections,
     toggle_home_row_direction,
+)
+from users.media_type_chips import (
+    HOME_MEDIA_TYPE_CHIP_STYLES,
+    HOME_MEDIA_TYPE_CHIP_TYPES,
+    default_media_type_chip_color,
+    normalize_media_type_chip_colors,
 )
 from users.models import (
     ActivityHistoryViewChoices,
@@ -242,16 +248,20 @@ def _get_stored_plex_account(user):
 
 def _get_import_data_user(user):
     """Load the Import Data page's account relations in a single query."""
-    return user._meta.model.objects.select_related(
-        "plex_account",
-        "audiobookshelf_account",
-        "pocketcasts_account",
-        "lastfm_account",
-        "koito_account",
-    ).prefetch_related(
-        "radarr_instances",
-        "sonarr_instances",
-    ).get(pk=user.pk)
+    return (
+        user._meta.model.objects.select_related(
+            "plex_account",
+            "audiobookshelf_account",
+            "pocketcasts_account",
+            "lastfm_account",
+            "koito_account",
+        )
+        .prefetch_related(
+            "radarr_instances",
+            "sonarr_instances",
+        )
+        .get(pk=user.pk)
+    )
 
 
 def _refresh_cached_plex_sections(
@@ -942,9 +952,7 @@ def appearance(request):
         return redirect("appearance")
 
     saved_palette = (
-        request.user.custom_theme
-        if isinstance(request.user.custom_theme, dict)
-        else {}
+        request.user.custom_theme if isinstance(request.user.custom_theme, dict) else {}
     )
     palette = {
         key: saved_palette.get(key, definition["default"])
@@ -1014,6 +1022,9 @@ def preferences(request):
         )
         for code, label in metadata_language_choices
     ]
+    saved_chip_colors = normalize_media_type_chip_colors(
+        request.user.home_media_type_chip_colors
+    )
     if request.method == "POST":
         # Prevent demo users from updating preferences
         if request.user.is_demo:
@@ -1039,6 +1050,9 @@ def preferences(request):
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
         progress_bar_raw = request.POST.get("progress_bar")
+        home_media_type_chips_present = request.POST.get(
+            "home_media_type_chips_present"
+        )
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1084,11 +1098,7 @@ def preferences(request):
             request.user.date_format = date_format
             fields_to_update.append("date_format")
 
-        if (
-            theme
-            and theme in ThemeChoices.values
-            and request.user.theme != theme
-        ):
+        if theme and theme in ThemeChoices.values and request.user.theme != theme:
             request.user.theme = theme
             fields_to_update.append("theme")
 
@@ -1222,6 +1232,30 @@ def preferences(request):
                 request.user.progress_bar = progress_bar
                 fields_to_update.append("progress_bar")
 
+        if home_media_type_chips_present is not None:
+            chips_enabled = request.POST.get("home_media_type_chips_enabled") == "1"
+            chip_style = request.POST.get("home_media_type_chip_style")
+            submitted_colors = normalize_media_type_chip_colors(
+                {
+                    media_type: request.POST.get(
+                        f"home_media_type_chip_color_{media_type}"
+                    )
+                    for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+                }
+            )
+            if request.user.home_media_type_chips_enabled != chips_enabled:
+                request.user.home_media_type_chips_enabled = chips_enabled
+                fields_to_update.append("home_media_type_chips_enabled")
+            if (
+                chip_style in HOME_MEDIA_TYPE_CHIP_STYLES
+                and request.user.home_media_type_chip_style != chip_style
+            ):
+                request.user.home_media_type_chip_style = chip_style
+                fields_to_update.append("home_media_type_chip_style")
+            if request.user.home_media_type_chip_colors != submitted_colors:
+                request.user.home_media_type_chip_colors = submitted_colors
+                fields_to_update.append("home_media_type_chip_colors")
+
         if (
             quick_season_update_mobile is not None
             and request.user.quick_season_update_mobile != quick_season_update_mobile
@@ -1274,9 +1308,7 @@ def preferences(request):
             fields_to_update.append("watch_provider_region")
 
         metadata_language = request.POST.get("metadata_language", "")
-        if metadata_language in {
-            choice[0] for choice in metadata_language_choices
-        }:
+        if metadata_language in {choice[0] for choice in metadata_language_choices}:
             if request.user.metadata_language != metadata_language:
                 request.user.metadata_language = metadata_language
                 fields_to_update.append("metadata_language")
@@ -1336,6 +1368,23 @@ def preferences(request):
         "ui_language_choices": UiLanguageChoices.choices,
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
+        "media_type_chip_styles": (
+            ("solid", "Solid"),
+            ("soft", "Soft"),
+            ("outline", "Outline"),
+        ),
+        "media_type_chip_options": [
+            {
+                "value": media_type,
+                "label": app_tags.media_type_readable(media_type),
+                "color": saved_chip_colors.get(
+                    media_type,
+                    default_media_type_chip_color(media_type),
+                ),
+            }
+            for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+            if config.get_config(media_type)
+        ],
     }
 
     return render(request, "users/preferences.html", context)
@@ -1572,9 +1621,7 @@ def import_data(request):
             enabled=True,
         ).first()
         if audiobookshelf_periodic_task and audiobookshelf_periodic_task.interval:
-            audiobookshelf_poll_interval = (
-                audiobookshelf_periodic_task.interval.every
-            )
+            audiobookshelf_poll_interval = audiobookshelf_periodic_task.interval.every
 
     # Get Last.fm periodic task status
     lastfm_periodic_task = None
@@ -2557,8 +2604,9 @@ def integration_token_context(user):
     """Return the named-token context for the integrations page."""
     return {
         "integration_tokens": list(
-            IntegrationToken.objects.filter(user=user, revoked_at__isnull=True)
-            .order_by("-created_at"),
+            IntegrationToken.objects.filter(
+                user=user, revoked_at__isnull=True
+            ).order_by("-created_at"),
         ),
         "integration_scope_choices": [
             {
@@ -2786,9 +2834,7 @@ def update_plex_webhook_share(request):
         messages.error(request, "Enter one or more Plex usernames for this share.")
         return redirect("integrations")
 
-    duplicate_usernames = {
-        username.casefold() for username in plex_usernames
-    }
+    duplicate_usernames = {username.casefold() for username in plex_usernames}
     existing_shares = (
         PlexWebhookShare.objects.filter(owner=user)
         .exclude(pk=share.pk or None)

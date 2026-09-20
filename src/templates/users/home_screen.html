@@ -317,6 +317,7 @@
                       {% translate "Library Row" %}
                     </button>
                     <button type="button"
+                            x-show="section.media_type !== 'all'"
                             class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
                             @click="addRow(section, 'recently_unrated'); section.addRowMenuOpen = false"
                             :disabled="section.rows.some(row => row.row_type === 'recently_unrated')"
@@ -328,6 +329,7 @@
                 </div>
 
                 <button type="button"
+                        x-show="section.media_type !== 'all'"
                         class="inline-flex items-center rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-muted)] cursor-pointer"
                         @click="addRow(section, 'custom_list')">
                   {% include "app/icons/list.svg" with classes="mr-2 h-4 w-4" %}
@@ -473,6 +475,15 @@
         rowTagValues(row) {
           return this.asList(row.filters?.tag).filter(value => value);
         },
+        rowMediaTypeValues(row) {
+          return this.asList(row.filters?.media_types).filter(value => value);
+        },
+        toggleRowMediaType(row, value) {
+          const mediaTypes = this.rowMediaTypeValues(row);
+          row.filters.media_types = mediaTypes.includes(value)
+            ? mediaTypes.filter(mediaType => mediaType !== value)
+            : [...mediaTypes, value];
+        },
         isRowStatusSelected(row, value) {
           if (value === 'all' || value === 'All') return this.rowStatusValues(row).length === 0;
           return this.rowStatusValues(row).includes(value);
@@ -499,11 +510,24 @@
         },
         isRowFilterOptionSelected(row, key, value) {
           if (key === 'tag') return this.rowTagValues(row).includes(value);
+          if (key === 'media_types') return this.rowMediaTypeValues(row).includes(value);
           if (key === 'status') return this.isRowStatusSelected(row, value);
           return this.normalizeFieldValue(value) === this.normalizeFieldValue(row.filters?.[key]);
         },
         rowFilterLabel(section, row) {
           const labels = [];
+          if (section.media_type === 'all') {
+            const mediaTypeField = this.fieldDefinition(section, 'media_types');
+            const selectedMediaTypes = this.rowMediaTypeValues(row);
+            const availableCount = mediaTypeField?.options?.length || 0;
+            if (selectedMediaTypes.length !== availableCount) {
+              labels.push(selectedMediaTypes.length === 0 ? gettext('No media') : (
+                selectedMediaTypes.length === 1
+                  ? this.fieldOptionLabel(section, 'media_types', selectedMediaTypes[0])
+                  : `${selectedMediaTypes.length} ${gettext('Media types')}`
+              ));
+            }
+          }
           const statuses = this.rowStatusValues(row);
           if (statuses.length) {
             const statusLabels = statuses.map(value => this.fieldOptionLabel(section, 'status', value));
@@ -611,6 +635,11 @@
         },
         fieldSelectionLabel(section, row, key) {
           const value = row.filters?.[key];
+          if (key === 'media_types') {
+            const mediaTypes = this.rowMediaTypeValues(row);
+            if (mediaTypes.length === 1) return this.fieldOptionLabel(section, key, mediaTypes[0]);
+            return mediaTypes.length ? `${mediaTypes.length} ${gettext('Types')}` : gettext('None');
+          }
           if (key === 'status') {
             const statuses = this.rowStatusValues(row);
             if (statuses.length === 1) return this.fieldOptionLabel(section, key, statuses[0]);
@@ -647,6 +676,10 @@
           row.filters[key] = value;
         },
         selectRowFilter(row, key, value) {
+          if (key === 'media_types') {
+            this.toggleRowMediaType(row, value);
+            return;
+          }
           if (key === 'tag') {
             this.toggleRowTag(row, value);
             return;
@@ -661,6 +694,7 @@
           for (const [key, value] of Object.entries(defaults)) {
             if (key === 'status') continue;
             if (key === 'subview') continue;
+            if (key === 'media_types') continue;
             row.filters[key] = value;
           }
         },
@@ -699,7 +733,7 @@
           if (rowType !== 'library_query') return {};
           const defaults = {
             status: [gettext('In progress')],
-            progress: ['tv', 'anime'].includes(section.media_type) ? 'not_caught_up' : 'all',
+            progress: ['all', 'tv', 'anime'].includes(section.media_type) ? 'not_caught_up' : 'all',
             rating: 'all',
             collection: 'all',
             genre: '',
@@ -716,6 +750,11 @@
             tag_mode: 'or'
           };
           if (section.media_type === 'music') defaults.subview = 'tracks';
+          if (section.media_type === 'all') {
+            const mediaTypeField = this.fieldDefinition(section, 'media_types');
+            defaults.media_types = (mediaTypeField?.options || section.available_media_types || [])
+              .map(option => typeof option === 'string' ? option : option.value);
+          }
           return defaults;
         },
         removeRow(section, clientId) {
