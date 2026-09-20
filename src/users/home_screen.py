@@ -2179,6 +2179,12 @@ def _apply_progress_filter(
             if entry.media and _is_caught_up_media(entry.media)
         ]
     if normalized_progress == "not_caught_up":
+        if media_type != HOME_ALL_MEDIA_TYPE:
+            return [
+                entry
+                for entry in entries
+                if entry.media and not _is_caught_up_media(entry.media)
+            ]
         return [
             entry
             for entry in entries
