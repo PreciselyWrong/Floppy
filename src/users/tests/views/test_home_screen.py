@@ -331,6 +331,58 @@ class HomeScreenViewTests(TestCase):
         self.assertNotContains(response, "Add Recently Played Row")
         self.assertNotContains(response, "Enabled")
 
+    def test_home_screen_manages_media_type_label_appearance(self):
+        self._set_enabled_media_types(
+            MediaTypes.MOVIE.value,
+            MediaTypes.ANIME.value,
+            MediaTypes.BOOK.value,
+        )
+        self.user.home_media_type_chip_colors = {
+            "movie": "#123ABC",
+            "podcast": "#112233",
+        }
+        self.user.save(update_fields=["home_media_type_chip_colors"])
+
+        response = self.client.get(reverse("home_screen"))
+
+        sections = json.loads(response.context["home_screen_sections_json"])
+        movie_section = next(
+            section
+            for section in sections
+            if section["media_type"] == MediaTypes.MOVIE.value
+        )
+        self.assertEqual(movie_section["media_type_chip_color"], "#123ABC")
+        self.assertContains(response, 'name="home_media_type_chips_enabled"')
+        self.assertContains(response, 'name="home_media_type_chip_style"')
+        self.assertContains(response, "home_media_type_chip_color_")
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {
+                "home_screen_sections": json.dumps(sections),
+                "home_media_type_chips_present": "1",
+                "home_media_type_chips_enabled": "0",
+                "home_media_type_chip_style": "outline",
+                "home_media_type_chip_color_movie": "#456def",
+                "home_media_type_chip_color_anime": "#ABCDEF",
+                "home_media_type_chip_color_book": "javascript:alert(1)",
+                "home_media_type_chip_color_unknown": "#654321",
+            },
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.home_media_type_chips_enabled)
+        self.assertEqual(self.user.home_media_type_chip_style, "outline")
+        self.assertEqual(
+            self.user.home_media_type_chip_colors,
+            {
+                "movie": "#456DEF",
+                "anime": "#ABCDEF",
+                "podcast": "#112233",
+            },
+        )
+
     def test_home_rows_progress_filter_ignores_dropped_tv_seasons(self):
         """Home not-caught-up rows should ignore dropped TV seasons."""
         self._set_enabled_media_types(MediaTypes.TV.value)

@@ -58,33 +58,12 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.theme, "system")
 
-    def test_preferences_manage_home_media_type_chip_appearance(self):
+    def test_preferences_does_not_manage_home_media_type_label_appearance(self):
         response = self.client.get(reverse("preferences"))
-        self.assertContains(response, 'name="home_media_type_chips_enabled"')
-        self.assertContains(response, 'name="home_media_type_chip_style"')
-        self.assertContains(response, 'name="home_media_type_chip_color_movie"')
 
-        response = self.client.post(
-            reverse("preferences"),
-            {
-                "home_media_type_chips_present": "1",
-                "home_media_type_chips_enabled": "0",
-                "home_media_type_chip_style": "outline",
-                "home_media_type_chip_color_movie": "#123abc",
-                "home_media_type_chip_color_anime": "#ABCDEF",
-                "home_media_type_chip_color_book": "javascript:alert(1)",
-                "home_media_type_chip_color_unknown": "#123456",
-            },
-        )
-
-        self.assertRedirects(response, reverse("preferences"))
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.home_media_type_chips_enabled)
-        self.assertEqual(self.user.home_media_type_chip_style, "outline")
-        self.assertEqual(
-            self.user.home_media_type_chip_colors,
-            {"movie": "#123ABC", "anime": "#ABCDEF"},
-        )
+        self.assertNotContains(response, 'name="home_media_type_chips_enabled"')
+        self.assertNotContains(response, 'name="home_media_type_chip_style"')
+        self.assertNotContains(response, "home_media_type_chip_color_")
 
     def test_preferences_display_labels_and_logo(self):
         """The display cards expose the simplified labels and logo choice."""

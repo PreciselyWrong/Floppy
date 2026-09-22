@@ -30,8 +30,8 @@ from django.views.decorators.http import require_GET, require_http_methods, requ
 from django_celery_beat.models import PeriodicTask
 
 from api import scopes as api_scopes
-from app import config, history_cache, image_cache, statistics_cache
 from app import helpers as app_helpers
+from app import history_cache, image_cache, statistics_cache
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
 from app.models import (
@@ -770,18 +770,79 @@ def home_screen(request):
         except HomeScreenValidationError as exc:
             messages.error(request, str(exc))
         else:
-            request.user.home_show_media_type_headers = bool(
-                request.POST.get("show_media_type_headers"),
+            fields_to_update = []
+            show_media_type_headers = (
+                request.POST.get("show_media_type_headers") == "1"
             )
-            request.user.save(update_fields=["home_show_media_type_headers"])
+            if (
+                request.user.home_show_media_type_headers
+                != show_media_type_headers
+            ):
+                request.user.home_show_media_type_headers = show_media_type_headers
+                fields_to_update.append("home_show_media_type_headers")
+
+            if request.POST.get("home_media_type_chips_present") is not None:
+                chips_enabled = (
+                    request.POST.get("home_media_type_chips_enabled") == "1"
+                )
+                chip_style = request.POST.get("home_media_type_chip_style")
+                submitted_colors = {
+                    media_type: request.POST.get(
+                        f"home_media_type_chip_color_{media_type}"
+                    )
+                    for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+                    if f"home_media_type_chip_color_{media_type}" in request.POST
+                }
+                chip_colors = normalize_media_type_chip_colors(
+                    request.user.home_media_type_chip_colors
+                )
+                chip_colors.update(
+                    normalize_media_type_chip_colors(submitted_colors)
+                )
+
+                if request.user.home_media_type_chips_enabled != chips_enabled:
+                    request.user.home_media_type_chips_enabled = chips_enabled
+                    fields_to_update.append("home_media_type_chips_enabled")
+                if (
+                    chip_style in HOME_MEDIA_TYPE_CHIP_STYLES
+                    and request.user.home_media_type_chip_style != chip_style
+                ):
+                    request.user.home_media_type_chip_style = chip_style
+                    fields_to_update.append("home_media_type_chip_style")
+                if request.user.home_media_type_chip_colors != chip_colors:
+                    request.user.home_media_type_chip_colors = chip_colors
+                    fields_to_update.append("home_media_type_chip_colors")
+
+            if fields_to_update:
+                request.user.save(update_fields=fields_to_update)
             messages.success(request, "Home screen updated successfully.")
         return redirect("home_screen")
 
+    sections = serialize_settings_sections(request.user)
+    saved_chip_colors = normalize_media_type_chip_colors(
+        request.user.home_media_type_chip_colors
+    )
+    for section in sections:
+        media_type = section["media_type"]
+        section["media_type_chip_color"] = (
+            saved_chip_colors.get(
+                media_type,
+                default_media_type_chip_color(media_type),
+            )
+            if media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+            else None
+        )
+
     context = {
         "home_screen_sections_json": json.dumps(
-            serialize_settings_sections(request.user), cls=DjangoJSONEncoder
+            sections, cls=DjangoJSONEncoder
         ),
         "show_media_type_headers": request.user.home_show_media_type_headers,
+        "media_type_chip_styles": (
+            ("solid", "Solid"),
+            ("soft", "Soft"),
+            ("outline", "Outline"),
+        ),
         "home_screen_list_search_url": reverse("home_screen_list_search"),
         "home_screen_filter_fields_url": reverse("home_screen_filter_fields"),
         "direction_choices_json": json.dumps(
@@ -1022,9 +1083,6 @@ def preferences(request):
         )
         for code, label in metadata_language_choices
     ]
-    saved_chip_colors = normalize_media_type_chip_colors(
-        request.user.home_media_type_chip_colors
-    )
     if request.method == "POST":
         # Prevent demo users from updating preferences
         if request.user.is_demo:
@@ -1050,9 +1108,6 @@ def preferences(request):
         )
         hide_zero_rating_raw = request.POST.get("hide_zero_rating")
         progress_bar_raw = request.POST.get("progress_bar")
-        home_media_type_chips_present = request.POST.get(
-            "home_media_type_chips_present"
-        )
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1232,30 +1287,6 @@ def preferences(request):
                 request.user.progress_bar = progress_bar
                 fields_to_update.append("progress_bar")
 
-        if home_media_type_chips_present is not None:
-            chips_enabled = request.POST.get("home_media_type_chips_enabled") == "1"
-            chip_style = request.POST.get("home_media_type_chip_style")
-            submitted_colors = normalize_media_type_chip_colors(
-                {
-                    media_type: request.POST.get(
-                        f"home_media_type_chip_color_{media_type}"
-                    )
-                    for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
-                }
-            )
-            if request.user.home_media_type_chips_enabled != chips_enabled:
-                request.user.home_media_type_chips_enabled = chips_enabled
-                fields_to_update.append("home_media_type_chips_enabled")
-            if (
-                chip_style in HOME_MEDIA_TYPE_CHIP_STYLES
-                and request.user.home_media_type_chip_style != chip_style
-            ):
-                request.user.home_media_type_chip_style = chip_style
-                fields_to_update.append("home_media_type_chip_style")
-            if request.user.home_media_type_chip_colors != submitted_colors:
-                request.user.home_media_type_chip_colors = submitted_colors
-                fields_to_update.append("home_media_type_chip_colors")
-
         if (
             quick_season_update_mobile is not None
             and request.user.quick_season_update_mobile != quick_season_update_mobile
@@ -1368,23 +1399,6 @@ def preferences(request):
         "ui_language_choices": UiLanguageChoices.choices,
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
-        "media_type_chip_styles": (
-            ("solid", "Solid"),
-            ("soft", "Soft"),
-            ("outline", "Outline"),
-        ),
-        "media_type_chip_options": [
-            {
-                "value": media_type,
-                "label": app_tags.media_type_readable(media_type),
-                "color": saved_chip_colors.get(
-                    media_type,
-                    default_media_type_chip_color(media_type),
-                ),
-            }
-            for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
-            if config.get_config(media_type)
-        ],
     }
 
     return render(request, "users/preferences.html", context)
