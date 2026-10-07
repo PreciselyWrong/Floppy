@@ -111,6 +111,7 @@ docker compose up -d
 - ⛔ Publier un instantané avant d’enregistrer les valeurs envoyées par le formulaire Appearance — « Publish saved branding » doit sauvegarder puis publier le même branding, vérifié déconnecté.
 - ⛔ Limiter la publication de la page de connexion au seul logo — le thème et sa palette personnalisée doivent être publiés avec le branding et vérifiés déconnecté.
 - ⛔ Exiger une seconde action de publication après « Save appearance » pour le propriétaire de l’instance — son enregistrement doit mettre à jour en une fois l’interface privée et la connexion publique.
+- ⛔ Supposer que le rebuild Unraid laisse Floppy démarré — si autostart est désactivé, Unraid arrête le conteneur reconstruit; démarrer explicitement avant le contrôle de santé, en activation comme en retour arrière.
 
 ## Pièges
 

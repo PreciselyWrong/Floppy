@@ -81,6 +81,8 @@ class DeployUnraidRuntimeTests(unittest.TestCase):
         fail_after_stop: bool = False,
         extra_images: list[str] | None = None,
         failed_stop_state: str = "running",
+        rebuild_stops_app: bool = False,
+        fail_start_app: bool = False,
     ) -> None:
         """Install adapters representing observable Docker and database behavior."""
         python_exe = Path(sys.executable).as_posix()
@@ -123,7 +125,7 @@ if cmd == "inspect":
         if a == "--format" and i + 1 < len(args):
             format_arg = args[i + 1]
     if "Health.Status" in format_arg:
-        if (state_dir / "container_unhealthy").exists():
+        if (state_dir / "container_unhealthy").exists() or (state_dir / "container_stopped").exists():
             print("unhealthy")
         else:
             print("healthy")
@@ -222,6 +224,9 @@ elif cmd == "stop":
 elif cmd == "start":
     target = args[-1]
     log(f"docker:start:{{target}}")
+    if {fail_start_app} and (state_dir / "activated").exists() and not (state_dir / "rolled_back").exists():
+        (state_dir / "in_rollback").touch()
+        sys.exit(1)
     (state_dir / "container_stopped").unlink(missing_ok=True)
     sys.exit(0)
 
@@ -329,7 +334,10 @@ def log(evt):
 
 if "rebuild_container" in " ".join(args):
     log("php:rebuild:Floppy")
-    (state_dir / "container_stopped").unlink(missing_ok=True)
+    if {rebuild_stops_app}:
+        (state_dir / "container_stopped").touch()
+    else:
+        (state_dir / "container_stopped").unlink(missing_ok=True)
     if "sha-previous" in template_file.read_text(encoding="utf-8"):
         (state_dir / "rolled_back").touch()
         (state_dir / "container_unhealthy").unlink(missing_ok=True)
@@ -732,6 +740,45 @@ sys.exit(0)
         events = self.get_events()
         self.assertIn("docker:rmi:floppy:pre-custom-20260101-100000", events)
         self.assertIn("docker:rmi:floppy:pre-custom-20261001-120000", events)
+
+    def test_deploy_starts_rebuilt_container_when_autostart_is_disabled(self):
+        """Restore the running state even when Unraid rebuild leaves it stopped."""
+        self.create_mock_commands(rebuild_stops_app=True)
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.state_dir / "container_stopped").exists())
+        events = self.get_events()
+        self.assertLess(
+            events.index("php:rebuild:Floppy"), events.index("docker:start:Floppy")
+        )
+
+    def test_rollback_starts_rebuilt_container_after_restoring_database(self):
+        """A disabled autostart cannot prevent recovery of the prior release."""
+        self.create_mock_commands(
+            is_postgres=True, fail_activation=True, rebuild_stops_app=True
+        )
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertFalse((self.state_dir / "container_stopped").exists())
+        events = self.get_events()
+        self.assertLess(
+            events.index("docker:run:psql_restore"), events.index("docker:start:Floppy")
+        )
+        self.assertLess(
+            events.index("docker:start:Floppy"),
+            events.index("docker:exec:migrate_check"),
+        )
+
+    def test_failed_new_container_start_recovers_the_previous_release(self):
+        """A start failure still restores the database and starts the old image."""
+        self.create_mock_commands(
+            is_postgres=True, rebuild_stops_app=True, fail_start_app=True
+        )
+        result = self.run_deploy()
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertFalse((self.state_dir / "container_stopped").exists())
+        self.assertEqual(self.get_events().count("docker:start:Floppy"), 2)
+        self.assertNotIn("UNRAID_READY", result.stdout)
 
     def test_term_before_activation_recovers_original_release(self):
         """Recover the original release when activation has not started."""

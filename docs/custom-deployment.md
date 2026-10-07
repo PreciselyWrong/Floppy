@@ -5,7 +5,7 @@
 - `ghcr.io/preciselywrong/floppy:custom` for the newest tested build;
 - `ghcr.io/preciselywrong/floppy:sha-<commit>` for a reproducible rollback.
 
-Unraid runs the immutable commit tag. Publication keeps the existing container settings and `/mnt/user/appdata/floppy/db` mount, creates a database backup, then checks container health.
+Unraid runs the immutable commit tag. Publication keeps the existing container settings and `/mnt/user/appdata/floppy/db` mount, creates a database backup, explicitly starts the rebuilt container, then checks container health. Unraid may stop a rebuilt container when its autostart preference is disabled; deployment restores the running state without changing that preference.
 
 ## Automated rollback and recovery
 
@@ -21,7 +21,7 @@ If container rebuild, health check, preflight, or `COMMIT_SHA` check fails after
 2. The database is restored first:
    - For PostgreSQL: SQL is generated privately with `--file=- --clean --if-exists --no-owner --no-privileges`, prepended with `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`, and executed with `psql --single-transaction --set=ON_ERROR_STOP=1`. If restore fails, the transaction rolls back cleanly, the script fails closed with exit code 5, and the old release is never started against a mismatched database;
    - For SQLite: the backup is restored via `sqlite3 .restore` and validated with `PRAGMA quick_check;`;
-3. The saved template and previous immutable image are restored via container rebuild;
+3. The saved template and previous immutable image are restored via container rebuild and explicit start;
 4. Health, previous `COMMIT_SHA` identity, and clean migration status (`manage.py migrate --check`) are verified before completing rollback (exit code 4).
 5. On successful deployment, temporary files, older redundant `floppy:pre-custom-*` image tags, and superseded `ghcr.io/preciselywrong/floppy:sha-*` tags are pruned, preserving exactly the active image and the newest backup image without modifying other repositories.
 

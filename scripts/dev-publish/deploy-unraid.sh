@@ -186,6 +186,7 @@ rollback() {
     # Restore saved template and rebuild prior container
     cp "$template_backup" "$template"
     if ! php /usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container Floppy ||
+       ! docker start "$container" >/dev/null ||
        ! wait_for_health "$container"; then
         echo "Rollback failed: previous container rebuild or health check failed." >&2
         exit 5
@@ -341,6 +342,11 @@ set_repository "$image"
 deploy_phase="ACTIVATED"
 
 if ! php /usr/local/emhttp/plugins/dynamix.docker.manager/scripts/rebuild_container Floppy; then
+    rollback
+fi
+
+# Unraid rebuild stops containers whose autostart preference is disabled.
+if ! docker start "$container" >/dev/null; then
     rollback
 fi
 
