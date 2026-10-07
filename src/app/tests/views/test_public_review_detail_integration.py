@@ -145,9 +145,7 @@ class PublicReviewDetailIntegrationTests(TestCase):
         )
 
         self.assertContains(response, "Loading public reviews")
-        self.assertContains(
-            response, 'data-detail-section="reviews" style="order: 3"'
-        )
+        self.assertContains(response, 'data-detail-section="reviews" style="order: 4"')
         self.assertContains(response, "season=1&amp;episode=1&amp;tvdb_id=81189")
 
     @patch("app.media_details_views.providers_for_target")

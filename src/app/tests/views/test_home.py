@@ -9,6 +9,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import escape
 
 from app import cache_utils, live_playback
 from app.models import (
@@ -182,10 +183,10 @@ class HomeViewTests(TestCase):
         self.assertContains(response, 'data-home-row="true"', html=False)
         self.assertContains(
             response,
-            'data-home-row-collapse-toggle="true"',
+            'aria-label="Toggle section"',
             html=False,
         )
-        self.assertContains(response, ">View all</a>", html=False)
+        self.assertContains(response, f'href="{escape(season_row["url"])}"', html=False)
         self.assertNotContains(
             response, '<h2 class="text-2xl font-semibold">', html=False
         )
@@ -843,16 +844,16 @@ class HomeViewTests(TestCase):
         row_config.filters = {**row_config.filters, "release": "not_released"}
         row_config.save(update_fields=["filters"])
 
-        initial_response = self.client.get(reverse("home"))
-        season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
-        cached_order = cache.get(
-            cache_utils.build_home_row_order_cache_key(
-                self.user.id,
-                season_row["row_id"],
-            )
-        )
-        self.assertEqual(cached_order["total"], 29)
-        self.assertTrue(all(isinstance(item_id, int) for item_id in cached_order["item_ids"]))
+        from users.home_screen import _library_entries_for_items
+
+        with patch(
+            "users.home_screen._library_entries_for_items", wraps=_library_entries_for_items
+        ) as hydrate:
+            initial_response = self.client.get(reverse("home"))
+            season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
+        self.assertEqual(season_row["total"], 29)
+        self.assertEqual(len(season_row["items"]), 14)
+        self.assertLessEqual(max(len(call.args[1]) for call in hydrate.call_args_list), 14)
         self.assertContains(initial_response, 'data-loaded-count="14"', html=False)
         self.assertContains(
             initial_response, 'data-home-row-sentinel="true"', html=False

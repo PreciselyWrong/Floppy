@@ -297,13 +297,49 @@ PROFILE_CARDS = (
 class CardProfileContractTest(TestCase):
     """A card that ignores the profile fails here."""
 
+    def test_credit_card_honors_person_fields_without_hiding_enrichment(self):
+        user = get_user_model().objects.create_user(username="person-profile")
+        user.card_metadata = {
+            "version": 1,
+            "types": {"person": {"display": "always", "fields": []}},
+        }
+        request = RequestFactory().get("/")
+        request.user = user
+        content = render_to_string(
+            "app/components/person_card_inline.html",
+            {
+                "user": user,
+                "person": {
+                    "name": "Credit Name",
+                    "role": "Director",
+                    "age_at_credit": 32,
+                },
+                "media": {"source": Sources.TMDB.value},
+                "IMG_NONE": "/static/img/placeholder.png",
+            },
+            request=request,
+        )
+        self.assertNotIn("Director", content)
+        self.assertIn("Age 32", content)
+        self.assertIn('alt="Credit Name"', content)
+
     def test_inventory_templates_read_the_profile(self):
         """Every listed card calls the shared line tag."""
-        missing = [
-            name
-            for name in PROFILE_CARDS
-            if "card_lines" not in (TEMPLATES_DIR / name).read_text()
-        ]
+
+        def reads_profile(name, seen):
+            if name in seen:
+                return False
+            seen.add(name)
+            source = (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+            if "card_lines" in source:
+                return True
+            # Shared grids delegate the profile to their card component.
+            components = re.findall(
+                r"(?:include\s+|grid_template=)[\"']([^\"']+\.html)[\"']", source
+            )
+            return any(reads_profile(component, seen) for component in components)
+
+        missing = [name for name in PROFILE_CARDS if not reads_profile(name, set())]
         self.assertEqual(missing, [])
 
     def test_lists_index_has_no_hover_class(self):

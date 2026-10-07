@@ -1,7 +1,9 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from app.media_list_filters import media_list_entries_for_items
@@ -11,7 +13,6 @@ from app.models import (
     AlbumTracker,
     Artist,
     ArtistTracker,
-    BasicMedia,
     CollectionEntry,
     Item,
     ItemTag,
@@ -27,7 +28,7 @@ from app.models import (
 from app.providers import services
 from app.search_views import get_saved_suggestions
 from app.templatetags.app_tags import get_search_media_types
-from users.models import MediaStatusChoices, MetadataSourceDefaultChoices
+from users.models import MetadataSourceDefaultChoices
 
 
 class MediaSearchViewTests(TestCase):
@@ -298,47 +299,37 @@ class MediaSearchViewTests(TestCase):
             user=self.user,
         )
 
-    @patch.object(BasicMedia.objects, "count_media_list", return_value=31)
-    @patch.object(
-        BasicMedia.objects,
-        "get_media_list",
-        wraps=BasicMedia.objects.get_media_list,
-    )
     @patch("app.providers.services.search")
-    def test_media_search_passes_result_limit_to_manager(
-        self,
-        mock_search,
-        mock_get_media_list,
-        mock_count_media_list,
-    ):
-        """Local media search passes result_limit=24 to BasicMedia.objects.get_media_list."""
+    def test_local_search_returns_a_bounded_page_and_the_full_total(self, mock_search):
         mock_search.return_value = {
             "page": 1,
             "total_results": 0,
             "total_pages": 0,
             "results": [],
         }
-
-        response = self.client.get(
-            reverse("search") + "?media_type=movie&q=test",
-        )
-
+        for number in range(31):
+            Movie.objects.create(
+                user=self.user,
+                item=Item.objects.create(
+                    media_id=f"search-bound-{number}",
+                    source=Sources.MANUAL.value,
+                    media_type=MediaTypes.MOVIE.value,
+                    title=f"UpgradeBounded {number:02d}",
+                ),
+                status=Status.COMPLETED.value,
+            )
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(
+                reverse("search") + "?media_type=movie&q=upgradebounded"
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["local_results_total"], 31)
-        mock_count_media_list.assert_called_once_with(
-            self.user,
-            MediaTypes.MOVIE.value,
-            MediaStatusChoices.ALL,
-            search="test",
-        )
-        mock_get_media_list.assert_called_once_with(
-            self.user,
-            MediaTypes.MOVIE.value,
-            MediaStatusChoices.ALL,
-            "title",
-            search="test",
-            direction="asc",
-            result_limit=24,
+        self.assertEqual(len(response.context["local_results"]), 24)
+        self.assertTrue(
+            any(
+                "app_item" in query["sql"] and "LIMIT 24" in query["sql"]
+                for query in queries
+            )
         )
 
     @override_settings(HARDCOVER_API="")

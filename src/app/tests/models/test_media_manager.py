@@ -9,6 +9,8 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from app.library_query import FilterValues, LibraryQuery, LibraryQueryExecutor
+from app.media_list_filters import media_list_entries_for_items
 from app.models import (
     TV,
     Anime,
@@ -536,8 +538,8 @@ class MediaManagerTests(TestCase):
 
         self.assertEqual(media_list[0], self.movie)
 
-    def test_get_media_list_with_result_limit(self):
-        """Test get_media_list with result_limit returns bounded sorted items and aggregates correctly."""
+    def test_library_page_limits_hydration_and_aggregates_repeats(self):
+        """A bounded page keeps sorting, repeat totals and scores intact."""
         manager = MediaManager()
 
         item_a = Item.objects.create(
@@ -593,14 +595,19 @@ class MediaManagerTests(TestCase):
         )
 
         with CaptureQueriesContext(connection) as queries:
-            media_list = manager.get_media_list(
-                user=self.user,
-                media_type=MediaTypes.MOVIE.value,
-                status_filter=MediaStatusChoices.ALL,
-                sort_filter="title",
-                direction="asc",
-                result_limit=2,
-            )
+            page = LibraryQueryExecutor(
+                self.user,
+                LibraryQuery(
+                    media_types=(MediaTypes.MOVIE.value,),
+                    filters=FilterValues(search="Movie"),
+                ),
+            ).page(0, 2)
+            media_list = [
+                entry.media
+                for entry in media_list_entries_for_items(self.user, page.items)
+            ]
+
+        self.assertEqual(page.total, 3)
 
         self.assertEqual(len(media_list), 2)
         self.assertEqual(media_list[0].item.title, "Alpha Movie")

@@ -2219,6 +2219,9 @@ class MediaManager(models.Manager.from_queryset(ImportScopedQuerySet)):
 
         for season in season_list:
             item = season.item
+            if item.source == Sources.MANUAL.value:
+                fallback.append(season)
+                continue
             if item.source in batched_sources and item.season_number is not None:
                 seasons_by_show[(item.source, item.media_id)].append(season)
             else:

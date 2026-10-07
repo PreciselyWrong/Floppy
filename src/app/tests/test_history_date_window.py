@@ -112,7 +112,11 @@ class HistoryDateWindowTests(TestCase):
             (
                 day["date"],
                 day["total_minutes"],
-                [entry["entry_key"] for entry in day["entries"]],
+                [
+                    member["entry_key"]
+                    for entry in day["entries"]
+                    for member in entry.get("group_entries", [entry])
+                ],
             )
             for day in days
         ]
@@ -121,7 +125,8 @@ class HistoryDateWindowTests(TestCase):
         """Same days, same totals, same entries, in the same order."""
         date_filters = self._range()
         built = history_cache.get_history_days(
-            self.user, date_filters=date_filters,
+            self.user,
+            date_filters=date_filters,
         )
         cache.clear()
         windowed, total_days = history_cache_reader.get_cached_history_window(
@@ -133,6 +138,16 @@ class HistoryDateWindowTests(TestCase):
 
         self.assertEqual(self._comparable(windowed), self._comparable(built))
         self.assertEqual(total_days, len(built))
+        groups = [
+            entry
+            for day in windowed
+            for entry in day["entries"]
+            if entry.get("is_episode_group")
+        ]
+        self.assertTrue(groups)
+        for group in groups:
+            self.assertEqual(group["group_count"], EPISODES_PER_DAY)
+            self.assertEqual(len(group["group_entries"]), EPISODES_PER_DAY)
 
     def test_the_range_bounds_are_inclusive(self):
         """A day named by start_date or end_date stays in the result."""

@@ -1,12 +1,12 @@
-from unittest.mock import patch
-
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from app.models import BasicMedia, Item, MediaTypes, Movie, Sources
+from app.models import Item, MediaTypes, Movie, Sources
 from app.search_views import get_saved_suggestions
-from users.models import MediaStatusChoices, Status
+from users.models import Status
 
 
 class SearchSuggestionsViewTests(TestCase):
@@ -88,30 +88,29 @@ class SearchSuggestionsViewTests(TestCase):
         response = self._get("godfa")
         self.assertEqual(response.status_code, 302)
 
-    @patch.object(
-        BasicMedia.objects,
-        "get_media_list",
-        wraps=BasicMedia.objects.get_media_list,
-    )
-    def test_get_saved_suggestions_passes_result_limit_to_manager(
-        self,
-        mock_get_media_list,
-    ):
-        """Saved suggestions should pass explicit result_limit to media manager."""
-        suggestions = get_saved_suggestions(
-            self.user,
-            MediaTypes.MOVIE.value,
-            "godfa",
-            limit=3,
+    def test_saved_suggestions_are_sorted_and_bounded_in_sql(self):
+        for number in range(3):
+            Movie.objects.create(
+                user=self.user,
+                item=Item.objects.create(
+                    media_id=f"suggest-bound-{number}",
+                    source=Sources.MANUAL.value,
+                    media_type=MediaTypes.MOVIE.value,
+                    title=f"The Godfather {number}",
+                ),
+                status=Status.COMPLETED.value,
+            )
+        with CaptureQueriesContext(connection) as queries:
+            suggestions = get_saved_suggestions(
+                self.user, MediaTypes.MOVIE.value, "godfa", limit=3
+            )
+        self.assertEqual(
+            [row["title"] for row in suggestions],
+            ["The Godfather", "The Godfather 0", "The Godfather 1"],
         )
-        self.assertEqual(len(suggestions), 1)
-        self.assertEqual(suggestions[0]["title"], "The Godfather")
-        mock_get_media_list.assert_called_once_with(
-            self.user,
-            MediaTypes.MOVIE.value,
-            MediaStatusChoices.ALL,
-            "title",
-            search="godfa",
-            direction="asc",
-            result_limit=3,
+        self.assertTrue(
+            any(
+                "app_item" in query["sql"] and "LIMIT 3" in query["sql"]
+                for query in queries
+            )
         )

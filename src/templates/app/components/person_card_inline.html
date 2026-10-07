@@ -3,7 +3,7 @@
 {% load app_tags %}
 {% load user_tags %}
 <div class="w-36 shrink-0" data-person-credit-card="true">
-  <div class="person-credit-card flex flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg transition-colors hover:border-[var(--color-link)] group">
+  <div class="person-credit-card media-card{% card_subtitle_class 'person' %}{% card_title_classes 'person' %} flex flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg transition-colors hover:border-[var(--color-link)] group">
     <div class="relative">
       {% if person.person_id and person.name %}
         <a href="{% url 'person_detail' source=media.source person_id=person.person_id name=person.name|slug %}">
@@ -30,8 +30,8 @@
           <p class="media-card-title text-sm font-semibold text-[var(--color-text)] line-clamp-1 min-w-0" title="{{ person.name|default:'Unknown Person' }}">{{ person.name|default:"Unknown Person" }}</p>
         {% endif %}
       </div>
+      {% card_lines 'person' person %}
       <div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
-        {% if person.role or person.department %}<span class="line-clamp-1">{% if person.role %}{{ person.role }}{% else %}{{ person.department }}{% endif %}</span>{% endif %}
         {% if person.age_at_credit is not None %}<span class="rounded-full bg-[var(--color-surface-alt)] px-1.5 py-0.5">Age {{ person.age_at_credit }}</span>{% endif %}
       </div>
       {% if person.known_for %}
