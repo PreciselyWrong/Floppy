@@ -77,10 +77,10 @@ Floppy provides three validated deployment profiles depending on host hardware c
 ```json
 {
   "minimal": {
-    "description": "Single-worker footprint for low-memory appliances (<= 1GB RAM)",
-    "worker_count": 1,
+    "description": "Two isolated workers with minimal budgets for low-memory appliances",
+    "worker_count": 2,
     "concurrency_per_worker": 2,
-    "queue_assignments": ["celery,interactive,discover"]
+    "queue_assignments": ["interactive", "celery,discover"]
   },
   "constrained": {
     "description": "Two-worker standard homelab profile (2GB-4GB RAM)",

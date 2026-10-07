@@ -585,7 +585,7 @@ count, batch sizes, and background task cadence accordingly. The chosen tier and
 Celery worker topology are logged on the first line of the container's output:
 
 ```
-[entrypoint] resources tier=minimal mem=1.9GiB swap=0 cpus=2 -> gunicorn 1x2, celery workers background=on(celery,interactive,discover) interactive=off(combined) discover=off(merged)
+[entrypoint] resources tier=minimal mem=1.9GiB swap=0 cpus=2 -> gunicorn 1x2, celery workers background=on(celery,discover) interactive=on(interactive) discover=off(merged)
 ```
 
 - **standard** (3 GB+): one threaded gunicorn worker and two Celery workers. Discover and
@@ -593,8 +593,8 @@ Celery worker topology are logged on the first line of the container's output:
   scrobbles are never stuck behind a backfill.
 - **constrained** (under 3 GB): the same lean process layout as standard, with smaller
   worker-recycling and cache budgets.
-- **minimal** (under 1.5 GB): one gunicorn worker and a single Celery worker serving every
-  queue.
+- **minimal** (under 1.5 GB): one gunicorn worker and two Celery workers with smaller
+  budgets. The interactive queue stays isolated from background work on this fork.
 
 **On a small host, swap matters as much as the memory figure.** Each Celery worker holds
 its own full copy of the application, so below about 6 GB a host with no swap gets bumped

@@ -1620,9 +1620,8 @@ if not CELERY_TASK_SOFT_TIME_LIMIT:
 # interactive work strands it behind every background batch.
 CELERY_TASK_PRIORITY_INTERACTIVE = 0
 CELERY_TASK_PRIORITY_FOLLOWUP = 3
-# A background Statistics sync yields to webhooks (0) but, on the minimal-tier
-# combined worker, still drains ahead of FOLLOWUP imports and backfills: at 3 a
-# chunk of the old refresh run could wait behind them indefinitely (#1272).
+# A Statistics sync drains ahead of FOLLOWUP imports and backfills within the
+# background worker: at 3 a chunk could wait behind them indefinitely (#1272).
 CELERY_TASK_PRIORITY_STATISTICS_SYNC = 1
 CELERY_TASK_PRIORITY_DEFAULT = 5
 CELERY_TASK_PRIORITY_BACKGROUND = 9

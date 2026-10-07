@@ -369,8 +369,8 @@ class SizingTests(SimpleTestCase):
         ):
             self.assertEqual(web_concurrency(profile), 1)
 
-    def test_queue_plan_collapses_gradually(self):
-        """Interactive isolation is the last thing given up, not the first."""
+    def test_every_tier_keeps_interactive_work_isolated(self):
+        """Bulk backfills never share the interactive worker, even on minimal."""
         standard = celery_queue_plan(self._profile(TIER_STANDARD))
         self.assertEqual(standard["queues"], "celery,discover")
         self.assertEqual(standard["start_interactive"], "true")
@@ -384,10 +384,10 @@ class SizingTests(SimpleTestCase):
         self.assertEqual(constrained["role"], "background")
 
         minimal = celery_queue_plan(self._profile(TIER_MINIMAL))
-        self.assertEqual(minimal["queues"], "celery,interactive,discover")
-        self.assertEqual(minimal["start_interactive"], "false")
+        self.assertEqual(minimal["queues"], "celery,discover")
+        self.assertEqual(minimal["start_interactive"], "true")
         self.assertEqual(minimal["start_discover"], "false")
-        self.assertEqual(minimal["role"], "combined")
+        self.assertEqual(minimal["role"], "background")
 
     def test_every_queue_is_served_on_every_tier(self):
         """No tier may leave a queue with no consumer, or tasks vanish."""
@@ -402,19 +402,20 @@ class SizingTests(SimpleTestCase):
                 self.assertEqual(served, {"celery", "interactive", "discover"})
 
     def test_emit_env_logs_the_full_worker_topology(self):
-        """Startup output must expose the isolated interactive worker."""
-        profile = self._profile(TIER_STANDARD)
-        stdout = StringIO()
-        stderr = StringIO()
-
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            runtime_profile.emit_env(profile)
-
-        self.assertIn("background=on(celery,discover)", stderr.getvalue())
-        self.assertIn("interactive=on(interactive)", stderr.getvalue())
-        self.assertIn("discover=off(merged)", stderr.getvalue())
-        self.assertIn("export FLOPPY_START_INTERACTIVE_WORKER='true'", stdout.getvalue())
-
+        """Startup exports keep the isolated worker enabled on every tier."""
+        for tier in (TIER_MINIMAL, TIER_CONSTRAINED, TIER_STANDARD):
+            with self.subTest(tier=tier):
+                profile = self._profile(tier)
+                stdout = StringIO()
+                stderr = StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    runtime_profile.emit_env(profile)
+                self.assertIn("background=on(celery,discover)", stderr.getvalue())
+                self.assertIn("interactive=on(interactive)", stderr.getvalue())
+                self.assertIn("discover=off(merged)", stderr.getvalue())
+                self.assertIn(
+                    "export FLOPPY_START_INTERACTIVE_WORKER='true'", stdout.getvalue()
+                )
 
 class SizingSourceTests(SimpleTestCase):
     """Telling an operator's choice apart from the profile's own."""

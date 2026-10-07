@@ -404,28 +404,13 @@ def gunicorn_threads(profile: ResourceProfile | None = None) -> int:
 
 
 def celery_queue_plan(profile: ResourceProfile | None = None) -> dict[str, str]:
-    """Return which Celery workers to start, and what each consumes.
+    """Keep interactive work isolated at every resource tier.
 
-    The three-worker split exists so bulk backfills can never starve
-    interactive webhook processing - see ``get_process_role`` in
-    ``app/providers/services.py``. Each worker is a whole Django import, so on
-    small hosts that isolation has to be traded away, but gradually:
-
-    * standard and constrained: two - the Discover queue joins the background
-      worker while the interactive worker stays isolated. This avoids a third
-      resident Django import without allowing bulk work to block the UI.
-    * minimal: one, consuming every queue. In-queue priority ordering takes
-      over from cross-process isolation.
+    Discover shares the background worker to reduce the resident process count;
+    bulk backfills must never occupy the interactive worker on this fork.
     """
     resolved = profile or PROFILE
-    if resolved.tier == TIER_MINIMAL:
-        return {
-            "queues": "celery,interactive,discover",
-            "role": "combined",
-            "start_interactive": "false",
-            "start_discover": "false",
-        }
-    if resolved.tier in (TIER_CONSTRAINED, TIER_STANDARD):
+    if resolved.tier in TIERS:
         return {
             "queues": "celery,discover",
             "role": "background",

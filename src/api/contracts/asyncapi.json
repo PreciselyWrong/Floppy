@@ -264,7 +264,7 @@
   "x-floppy-worker-plan": {
     "description": "Queues the background worker consumes at each resource tier. A tier that omits a queue from this list starts a dedicated worker for it instead; no queue is ever dropped.",
     "byTier": {
-      "minimal": "celery,interactive,discover",
+      "minimal": "celery,discover",
       "constrained": "celery,discover",
       "standard": "celery,discover"
     }
