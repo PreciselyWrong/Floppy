@@ -4,7 +4,6 @@ import re
 from io import BytesIO
 
 from django.core.exceptions import ValidationError
-from PIL import Image, UnidentifiedImageError
 
 from users.appearance import parse_custom_theme
 from users.models import (
@@ -55,6 +54,8 @@ DEFAULT_PUBLIC_BRANDING = {
 
 def normalize_logo_upload(upload):
     """Return a small metadata-free WebP data URL from a validated raster image."""
+    from PIL import Image, UnidentifiedImageError
+
     if upload.size > MAX_LOGO_UPLOAD_BYTES:
         raise ValidationError(UPLOAD_TOO_LARGE_MESSAGE)
 
