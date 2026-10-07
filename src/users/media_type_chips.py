@@ -16,8 +16,8 @@ HOME_MEDIA_TYPE_CHIP_TYPES = tuple(
     }
 )
 HOME_MEDIA_TYPE_CHIP_STYLES = {"solid", "soft", "outline"}
+SRGB_LINEAR_THRESHOLD = 0.04045
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
-LIGHT_COLOR_LUMINANCE_THRESHOLD = 160000
 
 
 def default_media_type_chip_color(media_type: str) -> str:
@@ -46,9 +46,23 @@ def media_type_chip_preferences(user, media_type: str) -> dict[str, str]:
     style = user.home_media_type_chip_style
     if style not in HOME_MEDIA_TYPE_CHIP_STYLES:
         style = "soft"
-    red, green, blue = (int(color[index : index + 2], 16) for index in (1, 3, 5))
-    luminance = red * 299 + green * 587 + blue * 114
-    contrast = (
-        "#111827" if luminance > LIGHT_COLOR_LUMINANCE_THRESHOLD else "#FFFFFF"
-    )
+    luminance = _relative_luminance(color)
+    dark_contrast = (luminance + 0.05) / (_relative_luminance("#111827") + 0.05)
+    light_contrast = 1.05 / (luminance + 0.05)
+    contrast = "#111827" if dark_contrast >= light_contrast else "#FFFFFF"
+
     return {"color": color, "contrast": contrast, "style": style}
+
+
+def _relative_luminance(color: str) -> float:
+    channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [
+        value / 12.92
+        if value <= SRGB_LINEAR_THRESHOLD
+        else ((value + 0.055) / 1.055) ** 2.4
+        for value in channels
+    ]
+    return sum(
+        value * weight
+        for value, weight in zip(linear, (0.2126, 0.7152, 0.0722), strict=True)
+    )

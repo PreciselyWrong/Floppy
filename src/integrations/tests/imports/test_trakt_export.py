@@ -25,6 +25,7 @@ from app.providers import services
 from integrations.imports import helpers
 from integrations.imports.helpers import MediaImportError
 from integrations.imports.trakt_export import TraktExportArchive, importer
+from integrations.upload_staging import discard_staged_upload
 from lists.models import CustomList, CustomListItem
 
 
@@ -275,6 +276,36 @@ class ImportTraktExport(TestCase):
             TV.objects.get(user=self.user, item__media_id="12345").status,
             Status.COMPLETED.value,
         )
+
+    @patch("integrations.imports.trakt.HISTORY_LOG_EVERY", 2)
+    @patch("integrations.imports.trakt.TraktImporter._get_metadata")
+    def test_import_logs_stages_and_progress_not_every_entry(self, mock_get_metadata):
+        """A long export leaves one line per stage, not one line per watch."""
+        mock_get_metadata.side_effect = _metadata_side_effect
+        export = _zip_bytes(
+            {
+                "user-profile.json": {"username": "someone"},
+                "watched-history-1.json": [
+                    {
+                        "type": "episode",
+                        "watched_at": f"2023-01-0{number}T00:00:00.000Z",
+                        "episode": {"season": 1, "number": number, "title": "Ep"},
+                        "show": _show(),
+                    }
+                    for number in (1, 2, 3, 4)
+                ],
+            },
+        )
+
+        with self.assertLogs("integrations.imports.trakt", level="INFO") as logs:
+            importer(export, self.user, "new")
+
+        output = "\n".join(logs.output)
+        self.assertNotIn("Processing episode", output)
+        self.assertEqual(output.count("Trakt history progress"), 2)
+        for stage in ("history", "collection", "save media", "finish shows"):
+            self.assertIn(f"Trakt import stage started: {stage}", output)
+            self.assertIn(f"Trakt import stage finished: {stage} in", output)
 
     @patch("integrations.imports.trakt.TraktImporter._get_metadata")
     def test_history_is_replayed_oldest_first(self, mock_get_metadata):
@@ -688,7 +719,9 @@ class TraktExportUploadViewTests(TestCase):
         self._post(upload)
 
         mock_delay.assert_called_once()
-        self.assertEqual(mock_delay.call_args.kwargs["file"], payload)
+        queued = mock_delay.call_args.kwargs["file"]
+        self.addCleanup(discard_staged_upload, queued)
+        self.assertTrue(queued.endswith(".zip"))
 
     @patch("integrations.views.tasks.import_trakt_export.delay")
     def test_loose_json_uploads_are_repackaged_as_a_zip(self, mock_delay):
@@ -701,7 +734,8 @@ class TraktExportUploadViewTests(TestCase):
         self._post(uploads)
 
         queued = mock_delay.call_args.kwargs["file"]
-        with zipfile.ZipFile(BytesIO(queued)) as archive:
+        self.addCleanup(discard_staged_upload, queued)
+        with zipfile.ZipFile(queued) as archive:
             self.assertEqual(
                 sorted(archive.namelist()),
                 ["ratings-shows.json", "watched-history-1.json"],
@@ -719,14 +753,21 @@ class TraktExportUploadViewTests(TestCase):
         self._post(upload)
 
         mock_delay.assert_called_once()
+        self.addCleanup(
+            discard_staged_upload,
+            mock_delay.call_args.kwargs["file"],
+        )
 
     @patch("integrations.views.tasks.import_trakt_export.delay")
-    def test_oversize_upload_is_rejected(self, mock_delay):
-        """An upload above the size cap is refused before queueing anything."""
-        with patch("integrations.views.TRAKT_EXPORT_MAX_UPLOAD_BYTES", 10):
-            self._post(SimpleUploadedFile("export.zip", b"x" * 100, "application/zip"))
+    def test_large_upload_is_queued(self, mock_delay):
+        """Large uploads are staged instead of rejected by an application cap."""
+        self._post(SimpleUploadedFile("export.zip", b"x" * 100, "application/zip"))
 
-        mock_delay.assert_not_called()
+        mock_delay.assert_called_once()
+        self.addCleanup(
+            discard_staged_upload,
+            mock_delay.call_args.kwargs["file"],
+        )
 
     @patch("integrations.views.tasks.import_trakt_export.delay")
     def test_missing_file_is_rejected(self, mock_delay):

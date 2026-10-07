@@ -20,6 +20,7 @@ from django.db import connection, reset_queries
 from django.test import RequestFactory, TestCase, tag
 from django.test.utils import override_settings
 
+from app.media_list_filters import media_list_entries_for_items
 from app.models import (
     BasicMedia,
     Item,
@@ -372,7 +373,7 @@ class DuplicateAggregationTests(TestCase):
 
 @tag("slow", "benchmark")
 class MaterializationWasteTests(TestCase):
-    """Show that list() loads ALL items even though only 32 are displayed."""
+    """Regression coverage for SQL-first page slicing."""
 
     @classmethod
     def setUpTestData(cls):
@@ -384,38 +385,63 @@ class MaterializationWasteTests(TestCase):
         cls.factory = RequestFactory()
 
     def test_loads_all_items_for_one_page(self):
-        """1000 items loaded into Python for a 32-item page display.
-
-        The view does: media_list = list(media_queryset) which forces
-        evaluation of all 1000 items, runs build_filter_data_from_items
-        on all 1000, applies Python filters on all 1000, THEN paginates
-        to show 32.
-        """
+        """A cold first page and a later page request the database slice."""
         _bulk_create_movie_items_and_entries(self.user, 1000)
+        cache.clear()
 
-        from app.views import media_list
-
-        request = self.factory.get("/medialist/movie")
-        request.user = self.user
+        self.client.force_login(self.user)
 
         with override_settings(DEBUG=True):
             reset_queries()
             start = time.perf_counter()
-            response = media_list(request, MediaTypes.MOVIE.value)
+            with patch(
+                "app.media_list_views.media_list_entries_for_items",
+                wraps=media_list_entries_for_items,
+            ) as hydrate:
+                response = self.client.get("/medialist/movie", follow=True)
             elapsed_ms = (time.perf_counter() - start) * 1000
             queries = connection.queries[:]
 
         sql_ms = sum(float(q["time"]) for q in queries) * 1000
-        print("\n[PERF] Materialization waste (1000 items, page 1 of 32):")
+        hydrated = [len(call.args[1]) for call in hydrate.call_args_list]
+        print("\n[PERF] SQL-first pagination (1000 items, page 1 of 32):")
         print(f"  Wall-clock:   {elapsed_ms:.0f}ms")
         print(f"  SQL time:     {sql_ms:.0f}ms")
         print(f"  Python time:  {elapsed_ms - sql_ms:.0f}ms")
-        print("  Items loaded: 1000")
-        print("  Items shown:  32 (page 1)")
-        print(f"  Waste ratio:  {1000 / 32:.0f}x")
-        print("  All 1000 items go through: build_filter_data_from_items,")
-        print("  apply_latest_status_filter, and all Python filter functions")
-        print("  before pagination reduces to 32.")
+        print(f"  Items hydrated: {hydrated}")
+        self.assertEqual(response.context["media_list"].paginator.count, 1000)
+        self.assertEqual(len(response.context["media_list"].object_list), 32)
+        self.assertEqual(hydrated, [32])
+        self.assertTrue(
+            any("LIMIT 32" in query["sql"].upper() for query in queries),
+            "the visible tracker query should contain the SQL page limit",
+        )
+        first_page_ids = {
+            entry.item_id for entry in response.context["media_list"].object_list
+        }
+
+        with override_settings(DEBUG=True):
+            reset_queries()
+            second_response = self.client.get(
+                "/medialist/movie?page=2",
+                follow=True,
+            )
+            second_queries = connection.queries[:]
+
+        self.assertEqual(
+            len(second_response.context["media_list"].object_list),
+            32,
+        )
+        self.assertTrue(
+            first_page_ids.isdisjoint(
+                entry.item_id
+                for entry in second_response.context["media_list"].object_list
+            )
+        )
+        self.assertTrue(
+            any("OFFSET 32" in query["sql"].upper() for query in second_queries),
+            "the second page should advance the SQL offset",
+        )
 
 
 @tag("slow", "benchmark")

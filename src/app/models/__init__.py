@@ -2,10 +2,17 @@
 # resolve app.models.providers, from when app/models.py was a single module.
 from app import providers  # noqa: F401
 from app.models.application_settings import ApplicationSettings
-from app.models.choices import MediaTypes, ProviderMetadataStatus, Sources, Status
+from app.models.choices import (
+    USER_HELD_STATUSES,
+    MediaTypes,
+    ProviderMetadataStatus,
+    Sources,
+    Status,
+)
 from app.models.credits import (
     CREDITS_BACKFILL_VERSION,
     DISCOVER_MOVIE_METADATA_BACKFILL_VERSION,
+    PERSON_PROFILE_BACKFILL_VERSION,
     TRAKT_POPULARITY_BACKFILL_VERSION,
     BackfillReconcileState,
     CreditRoleType,
@@ -35,6 +42,7 @@ from app.models.discovery import (
     ItemTag,
     Tag,
 )
+from app.models.episode_order import EpisodeOrder, EpisodeOrderChange
 from app.models.episode_runtimes import (
     build_episode_runtime_index,
     prefill_episode_runtime_index,
@@ -74,9 +82,18 @@ from app.models.podcast import (
     PodcastShow,
     PodcastShowTracker,
 )
+from app.models.progress_change import (
+    ProgressChange,
+    ProgressChangeKind,
+)
 from app.models.provider_credential import (
     InstanceProviderCredential,
     UserProviderCredential,
+)
+from app.models.statistics import (
+    StatisticsDirtyDay,
+    StatisticsSnapshot,
+    StatisticsSyncState,
 )
 from app.models.tombstone import DeletedMedia
 from app.models.tv import (
@@ -85,6 +102,7 @@ from app.models.tv import (
     RewatchAlreadyCompleteError,
     Season,
 )
+from app.models.video import Video, VideoPlay
 from app.models.watch_state import (
     WatchState,
     WatchStateChange,
@@ -97,8 +115,10 @@ from app.models.watch_state import (
 __all__ = [
     "CREDITS_BACKFILL_VERSION",
     "DISCOVER_MOVIE_METADATA_BACKFILL_VERSION",
+    "PERSON_PROFILE_BACKFILL_VERSION",
     "TRAKT_POPULARITY_BACKFILL_VERSION",
     "TV",
+    "USER_HELD_STATUSES",
     "ActiveAnimeManager",
     "ActiveAnimeQuerySet",
     "Album",
@@ -129,6 +149,8 @@ __all__ = [
     "DiscoverRowCache",
     "DiscoverTasteProfile",
     "Episode",
+    "EpisodeOrder",
+    "EpisodeOrderChange",
     "Game",
     "HardcoverEditionPreference",
     "InstanceProviderCredential",
@@ -155,15 +177,22 @@ __all__ = [
     "PodcastEpisode",
     "PodcastShow",
     "PodcastShowTracker",
+    "ProgressChange",
+    "ProgressChangeKind",
     "ProviderMetadataStatus",
     "RewatchAlreadyCompleteError",
     "Season",
     "Sources",
+    "StatisticsDirtyDay",
+    "StatisticsSnapshot",
+    "StatisticsSyncState",
     "Status",
     "Studio",
     "Tag",
     "Track",
     "UserProviderCredential",
+    "Video",
+    "VideoPlay",
     "WatchState",
     "WatchStateChange",
     "WatchStateChangeKind",

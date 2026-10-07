@@ -15,12 +15,14 @@ from app.history_cache_utils import (
     HISTORY_CACHE_TIMEOUT,
     HISTORY_DAY_CACHE_TIMEOUT,
     _cache_key,
+    _current_history_era,
     _day_cache_key,
     _day_key_for_date,
     _day_key_from_value,
     _localize_datetime,
     _music_history_user_q,
     _normalize_logging_style,
+    _touch_history_era,
     _typed_history_index_key,
     _typed_history_index_registry_key,
     expand_history_media_types,
@@ -35,6 +37,7 @@ from app.models import (
     Manga,
     Movie,
     Status,
+    VideoPlay,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,10 +65,11 @@ def build_history_index(
     include_podcast = requested_media_types is None or "podcast" in requested_media_types
     include_game = requested_media_types is None or "game" in requested_media_types
     include_boardgame = requested_media_types is None or "boardgame" in requested_media_types
+    include_video = requested_media_types is None or "video" in requested_media_types
     days = set()
 
     episode_days = (
-        Episode.objects.filter(
+        Episode.all_objects.filter(
             related_season__user=user,
             end_date__isnull=False,
         )
@@ -75,7 +79,21 @@ def build_history_index(
         .values_list("day", flat=True)
         .distinct()
     ) if include_episode else []
+    # An open play is indexed on the day it started, as a movie is.
+    episode_start_days = (
+        Episode.all_objects.filter(
+            related_season__user=user,
+            end_date__isnull=True,
+            start_date__isnull=False,
+        )
+        .annotate(
+            day=TruncDate("start_date"),
+        )
+        .values_list("day", flat=True)
+        .distinct()
+    ) if include_episode else []
     episode_count = _add_days(days, episode_days)
+    episode_count += _add_days(days, episode_start_days)
 
     movie_qs = Movie.objects.none()
     if include_movie:
@@ -164,6 +182,16 @@ def build_history_index(
             .distinct()
         )
     podcast_count = _add_days(days, podcast_days)
+
+    video_count = 0
+    if include_video:
+        video_days = (
+            VideoPlay.objects.filter(video__user=user)
+            .annotate(day=TruncDate("end_date"))
+            .values_list("day", flat=True)
+            .distinct()
+        )
+        video_count = _add_days(days, video_days)
 
     game_count = 0
     boardgame_count = 0
@@ -317,7 +345,7 @@ def build_history_index(
     day_list = sorted(days, reverse=True)
     day_keys = [_day_key_for_date(day) for day in day_list]
     logger.info(
-        "history_index_build user_id=%s logging_style=%s days=%s episode_days=%s movie_days=%s reading_days=%s music_days=%s podcast_days=%s game_days=%s boardgame_days=%s elapsed_ms=%.2f",
+        "history_index_build user_id=%s logging_style=%s days=%s episode_days=%s movie_days=%s reading_days=%s music_days=%s podcast_days=%s video_days=%s game_days=%s boardgame_days=%s elapsed_ms=%.2f",
         user.id,
         logging_style,
         len(day_keys),
@@ -326,6 +354,7 @@ def build_history_index(
         reading_count,
         music_count,
         podcast_count,
+        video_count,
         game_count,
         boardgame_count,
         (time.perf_counter() - build_start) * 1000,
@@ -338,7 +367,12 @@ def cache_history_days(user_id: int, logging_style: str, history_days):
     cache_history_payloads(user_id, logging_style, history_days)
 
 
-def cache_history_payloads(user_id: int, logging_style: str, history_days):
+def cache_history_payloads(
+    user_id: int,
+    logging_style: str,
+    history_days,
+    era: str | None = None,
+):
     """Persist index + per-day history payloads in cache."""
     logging_style = _normalize_logging_style(logging_style)
     index_days = []
@@ -360,11 +394,14 @@ def cache_history_payloads(user_id: int, logging_style: str, history_days):
             _serialize_history_day(day)
         )
 
+    if era is None:
+        era = _current_history_era(user_id, logging_style)
     cache.set(
         _cache_key(user_id, logging_style),
         {
             "days": index_days,
             "built_at": timezone.now(),
+            "era": era,
         },
         timeout=HISTORY_CACHE_TIMEOUT,
     )
@@ -385,26 +422,40 @@ def cache_history_index(
     day_keys,
     built_at=None,
     media_types=None,
+    era: str | None = None,
 ):
-    """Return the cache history index."""
+    """Return the cache history index.
+
+    ``era`` must be the token captured *before* the rows the index was built
+    from were read (callers that build from rows pass their captured token;
+    callers without row reads may omit it and the current era is resolved at
+    publish time). The token is embedded in the payload and, for typed
+    indexes, namespaced into the key, which is what lets invalidation retire
+    a concurrent builder's publish without deleting it first.
+    """
     logging_style = _normalize_logging_style(logging_style)
     if built_at is None:
         built_at = timezone.now()
+    if era is None:
+        era = _current_history_era(user_id, logging_style)
     cache_key = _cache_key(user_id, logging_style)
     if media_types is not None:
         cache_key = _typed_history_index_key(
             user_id,
             logging_style,
             media_types,
+            era,
         )
     cache.set(
         cache_key,
         {
             "days": day_keys,
             "built_at": built_at,
+            "era": era,
         },
         timeout=HISTORY_CACHE_TIMEOUT,
     )
+    _touch_history_era(user_id, logging_style)
     if media_types is not None:
         registry_key = _typed_history_index_registry_key(user_id, logging_style)
         registry = cache.get(registry_key) or []

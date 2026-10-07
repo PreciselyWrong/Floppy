@@ -3,6 +3,16 @@ from django.urls import path, re_path
 from integrations import views
 
 urlpatterns = [
+    path(
+        "matches/<int:item_id>/",
+        views.match_fix,
+        name="match_fix",
+    ),
+    path(
+        "matches/<int:reference_id>/<str:status>/",
+        views.match_reference_status,
+        name="match_reference_status",
+    ),
     path("import/trakt-oauth", views.trakt_oauth, name="trakt_oauth"),
     path(
         "import/trakt/private",
@@ -65,6 +75,7 @@ urlpatterns = [
         name="import_anilist_public",
     ),
     path("import/kitsu", views.import_kitsu, name="import_kitsu"),
+    path("import/mangabaka", views.import_mangabaka, name="import_mangabaka"),
     path("import/yamtrack", views.import_yamtrack, name="import_yamtrack"),
     path("import/clz", views.import_clz, name="import_clz"),
     path("import/hltb", views.import_hltb, name="import_hltb"),
@@ -73,12 +84,33 @@ urlpatterns = [
     path("import/radarr/connect", views.radarr_connect, name="radarr_connect"),
     path("import/radarr/disconnect", views.radarr_disconnect, name="radarr_disconnect"),
     path("import/radarr", views.import_radarr, name="import_radarr"),
+    path("import/mylar/connect", views.mylar_connect, name="mylar_connect"),
+    path("import/mylar/disconnect", views.mylar_disconnect, name="mylar_disconnect"),
+    path("import/mylar", views.import_mylar, name="import_mylar"),
+    path("import/kapowarr/connect", views.kapowarr_connect, name="kapowarr_connect"),
+    path(
+        "import/kapowarr/disconnect",
+        views.kapowarr_disconnect,
+        name="kapowarr_disconnect",
+    ),
+    path("import/kapowarr", views.import_kapowarr, name="import_kapowarr"),
     path("import/sonarr/connect", views.sonarr_connect, name="sonarr_connect"),
     path("import/sonarr/disconnect", views.sonarr_disconnect, name="sonarr_disconnect"),
     path("import/sonarr", views.import_sonarr, name="import_sonarr"),
     path("jellyfin/connect", views.jellyfin_connect, name="jellyfin_connect"),
     path("jellyfin/disconnect", views.jellyfin_disconnect, name="jellyfin_disconnect"),
     path("jellyfin/settings", views.jellyfin_settings, name="jellyfin_settings"),
+    path(
+        "sync/direction",
+        views.sync_direction_settings,
+        name="sync_direction_settings",
+    ),
+    path("sync/pause", views.sync_kill_switch, name="sync_kill_switch"),
+    path(
+        "sync/conflicts/resolve",
+        views.sync_resolve_conflict,
+        name="sync_resolve_conflict",
+    ),
     path("jellyfin/push", views.jellyfin_push_now, name="jellyfin_push_now"),
     path("jellyfin/pull", views.jellyfin_pull_now, name="jellyfin_pull_now"),
     path(
@@ -91,6 +123,7 @@ urlpatterns = [
     path("import/hardcover", views.import_hardcover, name="import_hardcover"),
     path("import/storygraph", views.import_storygraph, name="import_storygraph"),
     path("import/tvtime", views.import_tvtime, name="import_tvtime"),
+    path("import/wetrakr", views.import_wetrakr, name="import_wetrakr"),
     path(
         "import/audiobookshelf/connect",
         views.audiobookshelf_connect,
@@ -105,6 +138,41 @@ urlpatterns = [
         "import/audiobookshelf",
         views.import_audiobookshelf,
         name="import_audiobookshelf",
+    ),
+    path(
+        "import/hardcover/sync",
+        views.hardcover_sync,
+        name="hardcover_sync",
+    ),
+    path(
+        "import/kavita/connect",
+        views.kavita_connect,
+        name="kavita_connect",
+    ),
+    path(
+        "import/kavita/disconnect",
+        views.kavita_disconnect,
+        name="kavita_disconnect",
+    ),
+    path(
+        "import/kavita",
+        views.import_kavita,
+        name="import_kavita",
+    ),
+    path(
+        "import/komga/connect",
+        views.komga_connect,
+        name="komga_connect",
+    ),
+    path(
+        "import/komga/disconnect",
+        views.komga_disconnect,
+        name="komga_disconnect",
+    ),
+    path(
+        "import/komga",
+        views.import_komga,
+        name="import_komga",
     ),
     path(
         "import/audiobookshelf/cover/<str:token>",
@@ -218,6 +286,16 @@ urlpatterns = [
         name="jellyseerr_webhook",
     ),
     path(
+        "library/<str:source>/<str:media_type>/<str:media_id>/",
+        views.library_panel,
+        name="library_panel",
+    ),
+    path(
+        "seerr/<str:media_type>/<int:media_id>/",
+        views.seerr_request,
+        name="seerr_request",
+    ),
+    path(
         "webhook/seerr/global/",
         views.seerr_global_webhook,
         name="seerr_global_webhook",
@@ -266,6 +344,13 @@ urlpatterns = [
         r"(?P<catalog_id>[^/]+?)(?:/(?P<extra>.*))?\.json$",
         views.stremio_addon_catalog,
         name="stremio_addon_catalog",
+    ),
+    re_path(
+        r"^stremio-addon/(?P<token>[^/]+)/meta/"
+        r"(?P<media_type>movie|series)/"
+        r"(?P<media_id>[^/]+?)\.json$",
+        views.stremio_addon_meta,
+        name="stremio_addon_meta",
     ),
     re_path(
         r"^stremio-addon/(?P<token>[^/]+)/subtitles/"

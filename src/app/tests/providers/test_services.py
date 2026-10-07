@@ -400,6 +400,15 @@ class ServicesTests(TestCase):
 
         self.assertNotIn("external_links", response)
 
+    def test_igdb_get_access_token_raises_not_configured_without_credentials(self):
+        """Missing IGDB credentials should raise a clear config error, not a raw Twitch error."""
+        with patch("app.providers.credentials.is_configured", return_value=False):
+            with self.assertRaises(services.ProviderNotConfiguredError) as cm:
+                igdb.get_access_token()
+
+        self.assertEqual(cm.exception.provider, Sources.IGDB.value)
+        self.assertIn("not configured", str(cm.exception))
+
     @patch("app.providers.mal.anime")
     def test_get_media_metadata_anime(self, mock_anime):
         """Test the get_media_metadata function for anime."""
@@ -414,6 +423,20 @@ class ServicesTests(TestCase):
         self.assert_metadata_title_payload(result, "Test Anime")
 
         mock_anime.assert_called_once_with("1")
+
+    @patch("app.providers.mangabaka.manga")
+    def test_get_media_metadata_manga_mangabaka(self, mock_manga):
+        """Test the get_media_metadata function for manga from MangaBaka."""
+        mock_manga.return_value = {"title": "Test Manga"}
+
+        result = services.get_media_metadata(
+            MediaTypes.MANGA.value,
+            "1",
+            Sources.MANGABAKA.value,
+        )
+
+        self.assert_metadata_title_payload(result, "Test Manga")
+        mock_manga.assert_called_once_with("1")
 
     @patch("app.providers.mangaupdates.manga")
     def test_get_media_metadata_manga_mangaupdates(self, mock_manga):
@@ -530,7 +553,7 @@ class ServicesTests(TestCase):
 
         self.assert_metadata_title_payload(result, "Test Season")
 
-        mock_tv_with_seasons.assert_called_once_with("1", [1], None)
+        mock_tv_with_seasons.assert_called_once_with("1", [1], None, missing_seasons=set())
 
     @patch("app.providers.tmdb.episode")
     def test_get_media_metadata_episode(self, mock_episode):
@@ -844,6 +867,19 @@ class ServicesTests(TestCase):
         self.assertEqual(context.exception.status_code, 404)
 
     @patch("app.providers.services.musicbrainz.recording")
+    def test_get_media_metadata_music_title_slug_is_not_requested(self, mock_recording):
+        """A long title-like id passed the old length check and earned a 400."""
+        with self.assertRaises(services.ProviderAPIError) as context:
+            services.get_media_metadata(
+                MediaTypes.MUSIC.value,
+                "the-lord-of-the-rings-the-fellowship-of-the-ring",
+                Sources.MUSICBRAINZ.value,
+            )
+
+        self.assertEqual(context.exception.status_code, 404)
+        mock_recording.assert_not_called()
+
+    @patch("app.providers.services.musicbrainz.recording")
     def test_get_media_metadata_music_provider_not_found_is_propagated(
         self,
         mock_recording,
@@ -915,6 +951,21 @@ class ServicesTests(TestCase):
 
         self.assertEqual(result, {"results": []})
         mock_search.assert_called_once_with(MediaTypes.ANIME.value, "test", 1, None)
+
+    @patch("app.providers.mangabaka.search")
+    def test_search_manga_mangabaka(self, mock_search):
+        """Test the search function for manga from MangaBaka."""
+        mock_search.return_value = [{"title": "Test Manga"}]
+
+        result = services.search(
+            MediaTypes.MANGA.value,
+            "test",
+            1,
+            source=Sources.MANGABAKA.value,
+        )
+
+        self.assertEqual(result, [{"title": "Test Manga"}])
+        mock_search.assert_called_once_with("test", 1)
 
     @patch("app.providers.mangaupdates.search")
     def test_search_manga_mangaupdates(self, mock_search):

@@ -52,6 +52,7 @@ def build_time_left_cache_key(
     pinned_providers: str = "",
     completed_date_from: str = "",
     completed_date_to: str = "",
+    range_filters: str = "",
 ) -> str:
     """Create the cache key used for time-left sorted TV lists."""
     normalized_status = status_filter or ""
@@ -85,6 +86,7 @@ def build_time_left_cache_key(
         f"{normalized_tag}_{normalized_tag_mode}_{normalized_provider}_{normalized_region}_"
         f"{normalized_media_status}_{normalized_pinned_providers}_"
         f"{normalized_completed_date_from}_{normalized_completed_date_to}"
+        f"_{range_filters or ''}"
     )
 
 
@@ -157,6 +159,7 @@ def build_media_list_cache_key(
     pinned_providers: str = "",
     completed_date_from: str = "",
     completed_date_to: str = "",
+    range_filters: str = "",
 ) -> str:
     """Create the cache key for a fully-processed media list page."""
     parts = [
@@ -191,6 +194,7 @@ def build_media_list_cache_key(
         pinned_providers or "",
         completed_date_from or "",
         completed_date_to or "",
+        range_filters or "",
     ]
     return "_".join(parts)
 
@@ -254,8 +258,7 @@ def build_media_list_filter_cache_key(
     return "_".join(parts)
 
 
-HOME_ROW_CACHE_PREFIX = "home_row_v1"
-HOME_ROW_ORDER_CACHE_PREFIX = "home_row_order_v1"
+HOME_ROW_CACHE_PREFIX = "home_row_v2"
 HOME_ROW_CACHE_TTL = 60  # seconds — matches the media-list cache horizon
 _HOME_ROW_REGISTRY_TEMPLATE = f"{HOME_ROW_CACHE_PREFIX}_registry_{{user_id}}"
 
@@ -263,11 +266,6 @@ _HOME_ROW_REGISTRY_TEMPLATE = f"{HOME_ROW_CACHE_PREFIX}_registry_{{user_id}}"
 def build_home_row_cache_key(user_id: int, row_id: int, items_limit: int) -> str:
     """Cache key for one built home-row section."""
     return f"{HOME_ROW_CACHE_PREFIX}_{user_id}_{row_id}_{items_limit}"
-
-
-def build_home_row_order_cache_key(user_id: int, row_id: int) -> str:
-    """Cache key for one compact, fully sorted Home row order."""
-    return f"{HOME_ROW_ORDER_CACHE_PREFIX}_{user_id}_{row_id}"
 
 
 def _home_row_registry_key(user_id: int) -> str:
@@ -338,3 +336,11 @@ def clear_media_list_cache_for_user(user_id: int) -> None:
         deleted,
         user_id,
     )
+
+
+HOME_ROW_ORDER_CACHE_PREFIX = "home_row_order_v1"
+
+
+def build_home_row_order_cache_key(user_id: int, row_id: int) -> str:
+    """Cache key for one compact, fully sorted Home row order."""
+    return f"{HOME_ROW_ORDER_CACHE_PREFIX}_{user_id}_{row_id}"

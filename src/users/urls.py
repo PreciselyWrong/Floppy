@@ -58,6 +58,10 @@ urlpatterns = [
     path("test_notification", views.test_notification, name="test_notification"),
     path("settings/ui", views.ui_preferences, name="ui_preferences"),
     path("settings/appearance", views.appearance, name="appearance"),
+    path("settings/cards", views.cards, name="cards"),
+    path("settings/cards/preview", views.cards_preview, name="cards_preview"),
+    path("settings/cards/<str:media_type>", views.cards, name="cards_type"),
+
     path("settings/sidebar", views.sidebar, name="sidebar"),
     path("settings/home-screen", views.home_screen, name="home_screen"),
     path(
@@ -80,6 +84,13 @@ urlpatterns = [
         views.toggle_home_screen_row_direction,
         name="toggle_home_screen_row_direction",
     ),
+    path("saved-views/create", views.saved_view_create, name="saved_view_create"),
+    path(
+        "saved-views/<int:view_id>/delete",
+        views.saved_view_delete,
+        name="saved_view_delete",
+    ),
+    path("saved-views/reorder", views.saved_view_reorder, name="saved_view_reorder"),
     path(
         "settings/toggle-obfuscate-episodes",
         views.toggle_obfuscate_episodes,
@@ -91,7 +102,17 @@ urlpatterns = [
         views.convert_anime_library,
         name="convert_anime_library",
     ),
+    path(
+        "settings/metadata/convert-tv-library",
+        views.convert_tv_library,
+        name="convert_tv_library",
+    ),
     path("settings/integrations", views.integrations, name="integrations"),
+    path(
+        "settings/integrations/stremio-catalog-status",
+        views.stremio_catalog_status,
+        name="stremio_catalog_status",
+    ),
     path("settings/rss", views.rss_settings, name="rss_settings"),
     path(
         "settings/metadata",
@@ -112,6 +133,11 @@ urlpatterns = [
         "settings/metadata/<str:slug>/personal",
         metadata_views.save_personal_credential,
         name="save_personal_credential",
+    ),
+    path(
+        "settings/metadata/provider-default/<str:media_type>",
+        metadata_views.set_media_type_provider,
+        name="set_media_type_provider",
     ),
     path("settings/import", views.import_data, name="import_data"),
     path(
@@ -169,6 +195,11 @@ urlpatterns = [
         name="cancel_import_run",
     ),
     path(
+        "cancel_pending_import/<str:task_id>",
+        views.cancel_pending_import,
+        name="cancel_pending_import",
+    ),
+    path(
         "bulk_delete_by_import_source/<str:media_type>/<str:source>",
         views.bulk_delete_by_import_source,
         name="bulk_delete_by_import_source",
@@ -189,6 +220,26 @@ urlpatterns = [
         name="delete_export_schedule",
     ),
     path("regenerate_token", views.regenerate_token, name="regenerate_token"),
+    path(
+        "settings/integrations/catalog-grants/create",
+        views.create_catalog_grant,
+        name="create_catalog_grant",
+    ),
+    path(
+        "settings/integrations/catalog-grants/<int:grant_id>/revoke",
+        views.revoke_catalog_grant,
+        name="revoke_catalog_grant",
+    ),
+    path(
+        "settings/integrations/tokens/create",
+        views.create_integration_token,
+        name="create_integration_token",
+    ),
+    path(
+        "settings/integrations/tokens/<int:token_id>/revoke",
+        views.revoke_integration_token,
+        name="revoke_integration_token",
+    ),
     path("clear_search_cache", views.clear_search_cache, name="clear_search_cache"),
     path(
         "clear_history_cache",
@@ -231,6 +282,11 @@ urlpatterns = [
         "delete_plex_webhook_share",
         views.delete_plex_webhook_share,
         name="delete_plex_webhook_share",
+    ),
+    path(
+        "update_plex_mark_watched",
+        views.update_plex_mark_watched,
+        name="update_plex_mark_watched",
     ),
     path(
         "update_jellyfin_webhook_events",

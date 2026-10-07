@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import OperationalError
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -20,10 +21,11 @@ from app.models import (
     Season,
     Sources,
     Status,
+    Video,
 )
 from lists import smart_rules
 from lists.feeds import FloppyRssFeed
-from lists.models import CustomList, CustomListItem, ListActivity
+from lists.models import CustomList, CustomListItem, ListActivity, ListRecommendation
 from users.models import DateFormatChoices
 
 
@@ -116,6 +118,74 @@ class ListsViewTests(TestCase):
         self.assertTemplateUsed(response, "lists/custom_lists.html")
         self.assertIn("custom_lists", response.context)
         self.assertIn("form", response.context)
+
+    def test_cards_do_not_materialize_memberships(self):
+        """Card summaries stay in SQL, including watched sorting and completion."""
+        self.client.force_login(self.user)
+        Movie.objects.bulk_create(
+            [
+                Movie(
+                    item=self.item1,
+                    user=self.user,
+                    status=Status.COMPLETED.value,
+                    end_date=timezone.now(),
+                ),
+            ]
+        )
+        for sort in ("name", "last_watched"):
+            with (
+                self.subTest(sort=sort),
+                patch.object(
+                    CustomListItem,
+                    "from_db",
+                    wraps=CustomListItem.from_db,
+                ) as load_membership,
+            ):
+                response = self.client.get(reverse("lists"), {"sort": sort})
+                self.assertEqual(response.status_code, 200)
+                cards = {card.id: card for card in response.context["custom_lists"]}
+                self.assertEqual(cards[self.list1.id].completed_count, 1)
+                self.assertEqual(cards[self.list1.id].completion_percent, 100)
+                load_membership.assert_not_called()
+
+    def test_last_watched_paginated_before_card_hydration(self):
+        """Only one page of full list rows is loaded even for a Python sort."""
+        CustomList.objects.bulk_create(
+            [
+                CustomList(owner=self.user, name=f"Extra {index:03}")
+                for index in range(30)
+            ]
+        )
+        self.client.force_login(self.user)
+        with patch.object(CustomList, "from_db", wraps=CustomList.from_db) as load:
+            response = self.client.get(reverse("lists"), {"sort": "last_watched"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context["custom_lists"]), 20)
+        self.assertEqual(response.context["custom_lists"].paginator.count, 32)
+        self.assertEqual(load.call_count, 20)
+
+    def test_cover_loads_only_first_membership(self):
+        """The cover endpoint must not prefetch the entire list."""
+        CustomListItem.objects.create(
+            custom_list=self.list1,
+            item=self.item2,
+            added_by=self.user,
+        )
+        self.client.force_login(self.user)
+        with (
+            patch.object(
+                CustomListItem,
+                "from_db",
+                wraps=CustomListItem.from_db,
+            ) as load,
+            patch.object(CustomList, "_get_tmdb_backdrop", return_value=None),
+        ):
+            response = self.client.get(
+                reverse("list_cover_image", args=[self.list1.id])
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(load.call_count, 1)
+        self.assertContains(response, self.item1.image)
 
     @patch.object(get_user_model(), "update_preference")
     def test_lists_view_search_filter(self, mock_update_preference):
@@ -392,6 +462,27 @@ class ListsViewTests(TestCase):
         )
         self.assertContains(response, "More list actions")
 
+    @patch.object(get_user_model(), "update_preference")
+    def test_lists_view_marks_only_smart_lists_with_badge(
+        self,
+        mock_update_preference,
+    ):
+        """Smart list cards carry the bolt badge; manual list cards do not."""
+        mock_update_preference.return_value = "name"
+        self.client.login(**self.credentials)
+
+        response = self.client.get(reverse("lists"))
+        self.assertNotContains(response, 'aria-label="Smart List"')
+
+        CustomList.objects.create(
+            name="Smart List",
+            owner=self.user,
+            is_smart=True,
+        )
+
+        response = self.client.get(reverse("lists"))
+        self.assertContains(response, 'aria-label="Smart List"', count=1)
+
 
 class ListDetailViewTests(TestCase):
     """Tests for the list_detail view."""
@@ -451,6 +542,125 @@ class ListDetailViewTests(TestCase):
             custom_list=self.custom_list,
             item=self.anime_item,
         )
+
+    def test_public_list_exposes_kometa_episode_identity(self):
+        """Expose an episode-aware TVDB anchor without changing its visible link."""
+        self.custom_list.visibility = "public"
+        self.custom_list.save(update_fields=["visibility"])
+        self.tv_item.provider_external_ids = {"tvdb_id": "81189"}
+        self.tv_item.save(update_fields=["provider_external_ids"])
+        episode_item = Item.objects.create(
+            media_id=self.tv_item.media_id,
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="Pilot",
+            season_number=1,
+            episode_number=2,
+        )
+        CustomListItem.objects.create(
+            custom_list=self.custom_list,
+            item=episode_item,
+        )
+        self.client.logout()
+
+        response = self.client.get(reverse("list_detail", args=[self.custom_list.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "/details/tvdb/tv/81189/test-tv-show/season/1/episode/2",
+        )
+        self.assertContains(
+            response,
+            "/details/tmdb/tv/1668/pilot/season/1/episode/2",
+        )
+
+    def test_public_list_exposes_kometa_anchor_for_non_tmdb_episode(self):
+        """Anime (non-TMDB) episode sources should also get a TVDB anchor."""
+        self.custom_list.visibility = "public"
+        self.custom_list.save(update_fields=["visibility"])
+        self.anime_item.provider_external_ids = {"tvdb_id": "12345"}
+        self.anime_item.save(update_fields=["provider_external_ids"])
+        anime_episode_item = Item.objects.create(
+            media_id=self.anime_item.media_id,
+            source=Sources.MAL.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="Episode 1",
+            season_number=1,
+            episode_number=1,
+        )
+        CustomListItem.objects.create(
+            custom_list=self.custom_list,
+            item=anime_episode_item,
+        )
+        self.client.logout()
+
+        response = self.client.get(reverse("list_detail", args=[self.custom_list.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "/details/tvdb/tv/12345/test-anime/season/1/episode/1",
+        )
+
+    def test_public_list_table_layout_exposes_kometa_anchor(self):
+        """Table layout must also emit the hidden Kometa episode anchor."""
+        self.custom_list.visibility = "public"
+        self.custom_list.save(update_fields=["visibility"])
+        self.tv_item.provider_external_ids = {"tvdb_id": "81189"}
+        self.tv_item.save(update_fields=["provider_external_ids"])
+        episode_item = Item.objects.create(
+            media_id=self.tv_item.media_id,
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="Pilot",
+            season_number=1,
+            episode_number=2,
+        )
+        CustomListItem.objects.create(
+            custom_list=self.custom_list,
+            item=episode_item,
+        )
+        self.client.logout()
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.custom_list.id]),
+            {"layout": "table"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            "/details/tvdb/tv/81189/test-tv-show/season/1/episode/2",
+        )
+
+    @patch("app.tasks_external_ids.enqueue_external_ids_backfill_items")
+    def test_public_list_queues_backfill_when_tvdb_id_missing(
+        self, mock_enqueue
+    ):
+        """Missing TVDB id for a parent show should trigger a best-effort backfill."""
+        self.custom_list.visibility = "public"
+        self.custom_list.save(update_fields=["visibility"])
+        episode_item = Item.objects.create(
+            media_id=self.tv_item.media_id,
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="Pilot",
+            season_number=1,
+            episode_number=2,
+        )
+        CustomListItem.objects.create(
+            custom_list=self.custom_list,
+            item=episode_item,
+        )
+        self.client.logout()
+
+        response = self.client.get(reverse("list_detail", args=[self.custom_list.id]))
+
+        self.assertEqual(response.status_code, 200)
+        mock_enqueue.assert_called_once()
+        (queued_ids,), _kwargs = mock_enqueue.call_args
+        self.assertEqual(list(queued_ids), [self.tv_item.id])
 
     @patch.object(get_user_model(), "update_preference")
     @patch.object(CustomList, "user_can_view")
@@ -805,6 +1015,45 @@ class ListDetailViewTests(TestCase):
 
     @patch("app.providers.services.get_media_metadata")
     @patch.object(CustomList, "_get_tmdb_backdrop", return_value=None)
+    def test_public_list_table_hides_owner_entry_source(
+        self,
+        _mock_backdrop,
+        mock_get_media_metadata,
+    ):
+        """Anonymous and signed-in visitors never see the owner's entry source (issue #1258)."""
+        mock_get_media_metadata.return_value = {
+            "max_progress": 1,
+            "related": {"seasons": []},
+            "title": "Test Movie",
+        }
+        Movie.objects.create(
+            item=self.movie_item,
+            status=Status.COMPLETED.value,
+            user=self.user,
+            entry_source="plex",
+        )
+        url = reverse("list_detail", args=[self.custom_list.id]) + "?layout=table"
+
+        # The owner sees the source.
+        response = self.client.get(url)
+        self.assertContains(response, ">Plex</div>")
+
+        self.custom_list.visibility = "public"
+        self.custom_list.save(update_fields=["visibility"])
+        viewer = get_user_model().objects.create_user(
+            username="source-viewer",
+            password="12345",
+        )
+        for logged_in_viewer in (None, viewer):
+            self.client.logout()
+            if logged_in_viewer:
+                self.client.force_login(logged_in_viewer)
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotContains(response, ">Plex</div>")
+
+    @patch("app.providers.services.get_media_metadata")
+    @patch.object(CustomList, "_get_tmdb_backdrop", return_value=None)
     def test_public_smart_list_table_hides_and_shows_owner_notes(
         self,
         _mock_backdrop,
@@ -1149,6 +1398,92 @@ class ListDetailViewTests(TestCase):
         # Third item should have lowest rating (7.5)
         self.assertEqual(items[2].media.score, 7.5)
 
+    def test_python_sort_paginates_after_batched_media_scan(self):
+        """Derived list sorts hydrate batches, then only the requested page."""
+        items = [
+            Item(
+                media_id=f"batch-movie-{index}",
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.MOVIE.value,
+                title=f"Batch Movie {index:02d}",
+            )
+            for index in range(20)
+        ]
+        Item.objects.bulk_create(items)
+        items = list(
+            Item.objects.filter(media_id__startswith="batch-movie-").order_by("id")
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(
+                    item=item,
+                    user=self.user,
+                    status=Status.IN_PROGRESS.value,
+                    score=index,
+                )
+                for index, item in enumerate(items)
+            ]
+        )
+        CustomListItem.objects.bulk_create(
+            [CustomListItem(custom_list=self.custom_list, item=item) for item in items]
+        )
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.custom_list.public_reference])
+            + "?sort=rating&page=2",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["items_count"], 23)
+        self.assertEqual(response.context["filtered_items_count"], 23)
+        self.assertEqual(len(response.context["items"].object_list), 7)
+        self.assertEqual(response.context["items"].object_list[0].media.score, 3)
+
+    def test_smart_python_sort_keeps_count_and_page_size(self):
+        """Smart-list derived sorts preserve count while paging page-sized media."""
+        items = [
+            Item(
+                media_id=f"smart-batch-movie-{index}",
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.MOVIE.value,
+                title=f"Smart Batch Movie {index:02d}",
+            )
+            for index in range(20)
+        ]
+        Item.objects.bulk_create(items)
+        items = list(
+            Item.objects.filter(media_id__startswith="smart-batch-movie-").order_by("id")
+        )
+        Movie.objects.bulk_create(
+            [
+                Movie(
+                    item=item,
+                    user=self.user,
+                    status=Status.IN_PROGRESS.value,
+                    score=index,
+                )
+                for index, item in enumerate(items)
+            ]
+        )
+        smart_list = CustomList.objects.create(
+            name="Smart Batch List",
+            owner=self.user,
+            is_smart=True,
+            smart_media_types=[MediaTypes.MOVIE.value],
+            smart_filters={"status": "all", "sort": "rating"},
+        )
+
+        response = self.client.get(
+            reverse("list_detail", args=[smart_list.public_reference])
+            + "?page=2",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["items_count"], 20)
+        self.assertEqual(response.context["filtered_items_count"], 20)
+        self.assertEqual(len(response.context["items"].object_list), 4)
+        self.assertEqual(response.context["items"].object_list[0].media.score, 3)
+
     @patch.object(get_user_model(), "update_preference")
     @patch.object(CustomList, "user_can_view")
     def test_list_detail_view_htmx_request(
@@ -1187,6 +1522,75 @@ class ListDetailViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "lists/components/media_grid.html")
         self.assertNotIn("form", response.context)
+        trigger = json.loads(response["HX-Trigger"])
+        self.assertEqual(trigger["listCountUpdated"]["count"], 3)
+        self.assertEqual(trigger["listCountUpdated"]["label"], "3 items")
+
+    def test_a_video_can_join_a_custom_list(self):
+        """A video is added to a list like any other item and the list renders."""
+        video_item = Item.objects.create(
+            media_id="vid1",
+            source=Sources.YOUTUBE.value,
+            media_type=MediaTypes.VIDEO.value,
+            title="A Listed Video",
+            image="http://example.com/video.jpg",
+        )
+        Video.objects.create(
+            item=video_item, user=self.user, status=Status.COMPLETED.value
+        )
+
+        response = self.client.post(
+            reverse("list_item_toggle"),
+            {"item_id": video_item.id, "custom_list_id": self.custom_list.id},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            CustomListItem.objects.filter(
+                custom_list=self.custom_list, item=video_item
+            ).exists()
+        )
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.custom_list.public_reference])
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "A Listed Video")
+
+    def test_list_detail_htmx_count_tracks_membership_toggle(self):
+        """A refreshed manual-list response reports the committed item count."""
+        response = self.client.post(
+            reverse("list_item_toggle"),
+            {
+                "item_id": self.movie_item.id,
+                "custom_list_id": self.custom_list.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.custom_list.public_reference]),
+            headers={"hx-request": "true"},
+        )
+        trigger = json.loads(response["HX-Trigger"])
+        self.assertEqual(trigger["listCountUpdated"]["count"], 2)
+        self.assertEqual(trigger["listCountUpdated"]["label"], "2 items")
+
+        response = self.client.post(
+            reverse("list_item_toggle"),
+            {
+                "item_id": self.movie_item.id,
+                "custom_list_id": self.custom_list.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            reverse("list_detail", args=[self.custom_list.public_reference]),
+            headers={"hx-request": "true"},
+        )
+        trigger = json.loads(response["HX-Trigger"])
+        self.assertEqual(trigger["listCountUpdated"]["count"], 3)
+        self.assertEqual(trigger["listCountUpdated"]["label"], "3 items")
 
     @patch.object(get_user_model(), "update_preference")
     @patch.object(CustomList, "user_can_view")
@@ -1235,6 +1639,7 @@ class ListDetailViewTests(TestCase):
                 "date_added",
                 "start_date",
                 "end_date",
+                "entry_source",
                 "notes",
                 "synopsis",
             ],
@@ -1486,6 +1891,7 @@ class ListDetailViewTests(TestCase):
                     "date_added",
                     "start_date",
                     "end_date",
+                    "entry_source",
                     "notes",
                     "synopsis",
                 ],
@@ -1512,6 +1918,51 @@ class ListDetailViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "lists/smart_list_detail.html")
         self.assertTrue(response.context["is_smart_list"])
+        self.assertContains(response, "data-list-item-count", html=False)
+        self.assertContains(response, "list-count-updated.camel.window", html=False)
+
+    def test_smart_list_htmx_count_tracks_linked_manual_membership(self):
+        """Smart-list partials report counts after linked-list membership changes."""
+        manual_list = CustomList.objects.create(
+            name="Linked Manual List",
+            owner=self.user,
+        )
+        CustomListItem.objects.create(
+            custom_list=manual_list,
+            item=self.movie_item,
+        )
+        smart_list = CustomList.objects.create(
+            name="Linked Smart List",
+            owner=self.user,
+            is_smart=True,
+            smart_media_types=[MediaTypes.MOVIE.value],
+            smart_filters={"list": [manual_list.id]},
+        )
+
+        response = self.client.get(
+            reverse("list_detail", args=[smart_list.public_reference]),
+            headers={"hx-request": "true"},
+        )
+        trigger = json.loads(response["HX-Trigger"])
+        self.assertEqual(trigger["listCountUpdated"]["count"], 1)
+        self.assertEqual(trigger["listCountUpdated"]["label"], "1 item")
+
+        response = self.client.post(
+            reverse("list_item_toggle"),
+            {
+                "item_id": self.movie_item.id,
+                "custom_list_id": manual_list.id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            reverse("list_detail", args=[smart_list.public_reference]),
+            headers={"hx-request": "true"},
+        )
+        trigger = json.loads(response["HX-Trigger"])
+        self.assertEqual(trigger["listCountUpdated"]["count"], 0)
+        self.assertEqual(trigger["listCountUpdated"]["label"], "0 items")
 
     def test_smart_filter_form_carries_every_persisted_rule_key(self):
         """Every saved rule must have a form input, or it silently saves empty.
@@ -1537,10 +1988,18 @@ class ListDetailViewTests(TestCase):
             "search": "q",
             "sort_direction": "direction",
         }
+        # Keys the page only offers when its filter_data carries options for
+        # them, so their absence here is the gating working, not a dropped
+        # field. `provider` needs a watch region; this fixture has none.
+        conditionally_offered = {"provider"}
+        # Stored on the list and kept by every save; never edited in the form.
+        not_editable = {"semantics_version"}
         missing = [
             key
             for key in smart_rules.SMART_FILTER_KEYS
-            if f'name="{field_names.get(key, key)}"' not in html
+            if key not in conditionally_offered
+            and key not in not_editable
+            and f'name="{field_names.get(key, key)}"' not in html
         ]
         self.assertEqual(missing, [])
 
@@ -2207,6 +2666,93 @@ class ListDetailViewTests(TestCase):
         # card. `{% comment %}...{% endcomment %}` is the multi-line form.
         self.assertNotContains(response, "hero_track_button")
         self.assertNotContains(response, "empty overlay")
+
+    def test_select_items_button_sits_inside_the_bulk_selection_scope(self):
+        """The header's Select Items button must be inside bulkSelection, or it is dead.
+
+        Alpine reads selectMode from the closest component; a button above it
+        threw "selectMode is not defined" and did nothing.
+        """
+        smart_list = CustomList.objects.create(
+            name="Smart Scope",
+            owner=self.user,
+            is_smart=True,
+        )
+        for custom_list in (self.custom_list, smart_list):
+            with self.subTest(smart=custom_list.is_smart):
+                content = self.client.get(
+                    reverse("list_detail", args=[custom_list.id]),
+                ).content.decode()
+                scope = content.index('x-data="bulkSelection(')
+                self.assertGreater(content.index("toggleSelectMode()"), scope)
+                # $refs cannot see a ref inside the nested bulkSelection component.
+                self.assertNotIn("$refs.itemsView", content)
+
+    def test_viewer_who_can_only_recommend_gets_no_select_items_button(self):
+        """Bulk actions edit the list, so a recommend-only viewer has no selection."""
+        self.custom_list.visibility = "public"
+        self.custom_list.allow_recommendations = True
+        self.custom_list.save()
+        self.client.login(**self.other_credentials)
+
+        response = self.client.get(reverse("list_detail", args=[self.custom_list.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Recommend Item")
+        self.assertNotContains(response, "toggleSelectMode()")
+
+    @patch.object(get_user_model(), "update_preference")
+    @patch.object(CustomList, "user_can_view")
+    def test_list_detail_episode_card_shows_rating(
+        self,
+        mock_user_can_view,
+        mock_update_preference,
+    ):
+        """A rated episode's card shows its rating, like every other card."""
+        mock_update_preference.side_effect = ["date_added", None]
+        mock_user_can_view.return_value = True
+
+        episode_item = Item.objects.create(
+            media_id="9002",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            title="The Rated One",
+            season_number=1,
+            episode_number=1,
+            image=settings.IMG_NONE,
+        )
+        season_item = Item.objects.create(
+            media_id="9002",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            season_number=1,
+            image=settings.IMG_NONE,
+        )
+        tv_item = Item.objects.create(
+            media_id="9002",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            image=settings.IMG_NONE,
+        )
+        tv = TV.objects.create(item=tv_item, user=self.user, status=Status.IN_PROGRESS.value)
+        season = Season.objects.create(
+            item=season_item,
+            user=self.user,
+            related_tv=tv,
+            status=Status.IN_PROGRESS.value,
+        )
+        episode = Episode.objects.create(
+            item=episode_item,
+            related_season=season,
+            score=7.5,
+        )
+        episode_list = CustomList.objects.create(name="Rated Episodes", owner=self.user)
+        CustomListItem.objects.create(custom_list=episode_list, item=episode_item)
+
+        response = self.client.get(reverse("list_detail", args=[episode_list.id]))
+
+        self.assertContains(response, f'id="media-card-rating-{episode.id}"')
+        self.assertContains(response, ">7.5</span>")
 
     @patch("lists.views.services.get_media_metadata")
     @patch.object(get_user_model(), "update_preference")
@@ -3114,6 +3660,9 @@ class ListItemToggleTests(TestCase):
         self.assertContains(response, "__floppyListToggleRefreshHandler")
         self.assertContains(response, "removeEventListener(")
         self.assertContains(response, "itemsView.isConnected")
+        self.assertContains(response, "data-list-item-count", html=False)
+        self.assertContains(response, "__floppyListCountUpdatedHandler")
+        self.assertContains(response, "listCountUpdated")
 
     def test_list_item_toggle_response_no_longer_relies_on_self_swap_hx_on(self):
         """The toggle button must not re-introduce the non-firing hx-on hook.
@@ -3269,6 +3818,7 @@ class ListItemToggleTests(TestCase):
         trigger = json.loads(response.headers["HX-Trigger"])
         self.assertEqual(trigger["showToast"]["type"], "error")
         self.assertIn("try again", trigger["showToast"]["message"])
+        self.assertNotIn("listCountUpdated", trigger)
 
         # Nothing committed: the item is still in the list.
         self.assertIn(self.item, self.list.items.all())
@@ -3295,9 +3845,70 @@ class ListItemToggleTests(TestCase):
         self.assertEqual(response.status_code, 500)
         trigger = json.loads(response.headers["HX-Trigger"])
         self.assertEqual(trigger["showToast"]["type"], "error")
+        self.assertNotIn("listCountUpdated", trigger)
 
         # Nothing committed: the item was never added.
         self.assertNotIn(self.item, self.list.items.all())
+
+    def _toggle_post(self):
+        return self.client.post(
+            reverse("list_item_toggle"),
+            {"item_id": self.item.id, "custom_list_id": self.list.id},
+        )
+
+    @patch("lists.views_list_actions.time.sleep")
+    @patch("lists.views_list_actions._toggle_list_membership")
+    def test_list_item_toggle_retries_an_immediate_lock_error(self, mock_toggle, _sleep):
+        """A stale-snapshot lock error is instant, so a quick retry succeeds."""
+        self.client.login(**self.credentials)
+        mock_toggle.side_effect = [OperationalError("database is locked"), True]
+
+        response = self._toggle_post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_toggle.call_count, 2)
+
+    @patch("lists.views_list_actions.time.sleep")
+    @patch(
+        "lists.views_list_actions._toggle_list_membership",
+        side_effect=OperationalError("database is locked"),
+    )
+    def test_list_item_toggle_lock_failure_is_a_busy_toast_with_diagnostics(
+        self,
+        mock_toggle,
+        _sleep,
+    ):
+        self.client.login(**self.credentials)
+
+        with self.assertLogs("lists.views_list_actions", level="ERROR") as logs:
+            response = self._toggle_post()
+
+        self.assertEqual(response.status_code, 503)
+        trigger = json.loads(response.headers["HX-Trigger"])
+        self.assertEqual(trigger["showToast"]["type"], "error")
+        self.assertIn("busy", trigger["showToast"]["message"])
+        self.assertEqual(mock_toggle.call_count, 3)
+        output = "".join(logs.output)
+        self.assertIn("contention=True", output)
+        self.assertIn("attempts=3", output)
+        self.assertIn("elapsed_ms=", output)
+
+    @patch("lists.views_list_actions.LIST_TOGGLE_QUICK_FAILURE_SECONDS", -1)
+    @patch(
+        "lists.views_list_actions._toggle_list_membership",
+        side_effect=OperationalError("database is locked"),
+    )
+    def test_list_item_toggle_does_not_retry_a_lock_that_waited_out_the_timeout(
+        self,
+        mock_toggle,
+    ):
+        self.client.login(**self.credentials)
+
+        with self.assertLogs("lists.views_list_actions", level="ERROR"):
+            response = self._toggle_post()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(mock_toggle.call_count, 1)
 
     def test_list_item_toggle_rolls_back_membership_when_activity_fails(self):
         """Membership and its activity record must commit or roll back together."""
@@ -3411,6 +4022,31 @@ class ListRssFeedTests(TestCase):
             "https://example.com/rss-movie.jpg",
         )
 
+    def test_public_list_rss_feed_preserves_custom_list_order(self):
+        """Return feed items in the list's persisted custom order."""
+        second_item = Item.objects.create(
+            media_id="rss-2",
+            source=Sources.IGDB.value,
+            media_type=MediaTypes.GAME.value,
+            title="RSS Second Movie",
+        )
+        CustomListItem.objects.create(
+            custom_list=self.custom_list,
+            item=second_item,
+        )
+        CustomListItem.objects.filter(
+            custom_list=self.custom_list,
+            item=self.movie_item,
+        ).update(date_added=timezone.now() + timedelta(minutes=1))
+
+        response = self.client.get(reverse("list_rss", args=[self.custom_list.id]))
+        root = ET.fromstring(response.content)
+        titles = [
+            item.findtext("title") for item in root.findall("./channel/item")
+        ]
+
+        self.assertEqual(titles, ["RSS Second Movie", "RSS Movie"])
+
     def test_public_list_rss_feed_accepts_slug(self):
         """RSS feeds should resolve custom public slugs."""
         self.custom_list.public_slug = "public-rss-list"
@@ -3495,6 +4131,30 @@ class ListJsonExportTests(TestCase):
         # Should only include TMDB movies
         self.assertEqual(len(data), 1)
         self.assertIn({"id": 12345}, data)
+
+    def test_radarr_json_preserves_custom_list_order(self):
+        """Return public movie IDs in the list's persisted custom order."""
+        second_movie = Item.objects.create(
+            media_id="99999",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Second Movie",
+        )
+        CustomListItem.objects.create(
+            custom_list=self.custom_list,
+            item=second_movie,
+        )
+        CustomListItem.objects.filter(
+            custom_list=self.custom_list,
+            item=self.movie_item,
+        ).update(date_added=timezone.now() + timedelta(minutes=1))
+
+        response = self.client.get(
+            reverse("list_json", args=[self.custom_list.id]) + "?arr=radarr",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [{"id": 99999}, {"id": 12345}])
 
     def test_radarr_json_accepts_slug(self):
         """JSON exports should resolve custom public slugs."""
@@ -3952,3 +4612,56 @@ class QuickAddListItemTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Test Track - Test Artist")
         self.assertContains(response, "Showing page 1 of 3")
+
+
+class ListRecommendationsViewTests(TestCase):
+    """Tests for the list recommendations queue."""
+
+    def setUp(self):
+        """Create a list owner with one tracked and one untracked recommendation."""
+        self.credentials = {"username": "owner", "password": "12345"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+        self.custom_list = CustomList.objects.create(name="Queue", owner=self.user)
+        self.tracked_item = Item.objects.create(
+            media_id="rec-tracked",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Tracked Recommendation",
+        )
+        self.untracked_item = Item.objects.create(
+            media_id="rec-untracked",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Untracked Recommendation",
+        )
+        ListRecommendation.objects.create(
+            custom_list=self.custom_list,
+            item=self.tracked_item,
+            anonymous_name="Friend",
+        )
+        ListRecommendation.objects.create(
+            custom_list=self.custom_list,
+            item=self.untracked_item,
+            anonymous_name="Friend",
+        )
+
+    def test_card_shows_viewer_rating_and_status_for_tracked_items(self):
+        """A recommended item the owner already tracks shows their rating and status."""
+        movie = Movie.objects.create(
+            item=self.tracked_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            score=9,
+        )
+        self.client.login(**self.credentials)
+
+        response = self.client.get(
+            reverse("list_recommendations", args=[self.custom_list.id]),
+        )
+
+        content = response.content.decode()
+        self.assertIn("Untracked Recommendation", content)
+        self.assertIn(f'id="media-card-rating-{movie.id}"', content)
+        self.assertIn(f'id="media-status-chip-{movie.id}"', content)
+        self.assertEqual(content.count('class="media-status-chip '), 1)

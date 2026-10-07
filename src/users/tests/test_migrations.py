@@ -2,7 +2,7 @@ from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.db import models
+from django.db import migrations, models
 from django.test import SimpleTestCase
 
 migration_0043 = import_module(
@@ -16,6 +16,14 @@ migration_0090 = import_module(
 )
 migration_0128_history = import_module(
     "users.migrations.0128_add_history_home_row_type",
+)
+appearance_migrations = tuple(
+    import_module(f"users.migrations.{name}")
+    for name in (
+        "0128_user_appearance",
+        "0131_user_logo_customization",
+        "0132_user_logo_typography",
+    )
 )
 
 
@@ -261,3 +269,26 @@ class Migration0090HomeScreenSeedTests(SimpleTestCase):
         self.assertEqual(rows[0].direction, "asc")
         self.assertEqual(rows[1].sort_by, "recent")
         self.assertEqual(rows[1].direction, "desc")
+
+
+class ForkAppearanceMigrationTests(SimpleTestCase):
+    def test_fork_graph_contains_all_appearance_fields(self):
+        added_fields = {
+            operation.name
+            for migration in appearance_migrations
+            for operation in migration.Migration.operations
+            if isinstance(operation, migrations.AddField)
+        }
+
+        self.assertTrue(
+            {
+                "custom_theme",
+                "detail_page_layouts",
+                "logo_text",
+                "custom_logo_data",
+                "logo_text_font",
+                "logo_text_size",
+                "logo_text_weight",
+                "logo_text_spacing",
+            }.issubset(added_fields),
+        )

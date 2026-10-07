@@ -2,9 +2,12 @@
 
 import logging
 import sys
+import time
+import uuid
 from datetime import datetime, timedelta
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import models
 from django.utils import timezone
 
@@ -40,13 +43,69 @@ HISTORY_INDEX_PREFIX = f"history_index_v{HISTORY_CACHE_VERSION}"
 HISTORY_DAY_PREFIX = f"history_day_v{HISTORY_CACHE_VERSION}"
 HISTORY_CACHE_PREFIX = HISTORY_INDEX_PREFIX
 HISTORY_CACHE_TIMEOUT = 60 * 60 * 6  # 6 hours for the history index
-HISTORY_DAY_CACHE_TIMEOUT = getattr(settings, "HISTORY_DAY_CACHE_TIMEOUT", None)
+# Era keys must outlive any index published under them: if the era key
+# expires while its typed indexes are still alive, those indexes are
+# orphaned and readers rebuild — correct, but wasteful. 24h comfortably
+# covers the 6h index TTL even when nothing refreshes it.
+HISTORY_ERA_TIMEOUT = 60 * 60 * 24
+# Finite so day payloads are evictable: Redis runs volatile-lru, which only
+# evicts keys that carry a TTL, so payloads without one crowded out sessions
+# and page caches instead. Expired days are rebuilt by the coverage repair.
+HISTORY_DAY_CACHE_TIMEOUT = getattr(
+    settings, "HISTORY_DAY_CACHE_TIMEOUT", 30 * 24 * 60 * 60
+)
 HISTORY_STALE_AFTER = _coerce_timedelta(
     getattr(settings, "HISTORY_CACHE_STALE_AFTER", None),
     timedelta(hours=1),
 )
 HISTORY_DAYS_PER_PAGE = 30
 HISTORY_ENTRIES_PER_DAY_PAGE = 30
+
+HISTORY_UNREAD_ITEM_FIELDS = (
+    "watch_providers",
+    "synopsis",
+    "provider_keywords",
+    "provider_game_lengths",
+    "themes",
+    "studios",
+    "languages",
+    "creators",
+    "authors",
+    "isbn",
+    "platforms",
+    "manual_metadata",
+    "provider_collection_name",
+    "source_url",
+    "publishers",
+    "series_name",
+    "source_material",
+)
+
+
+def history_deferred_item_fields(*relations):
+    """Return the item columns history never reads, per select_related path.
+
+    History builds cards from a handful of item columns (title, image, genres,
+    numbers, runtime). It reads none of these. ``watch_providers`` is the one
+    that matters: TMDB's availability for every region it knows, around 146 KiB
+    a title. An episode row select_relates three items -- the episode, its
+    season and its show -- so a filtered history request decoded it three times
+    per play. On a 6,454-play filtered request that cost a web worker ~790 MiB
+    of anonymous memory to return a 56 KiB response (#1180 follow-up).
+
+    Deferring rather than ``only()`` is the safe direction: an unforeseen
+    reader loads the column late instead of seeing it missing.
+
+    Pass the select_related paths that reach an item ("item",
+    "related_season__item", ...); pass "" for the item model itself.
+    """
+    return tuple(
+        f"{relation}__{field}" if relation else field
+        for relation in relations
+        for field in HISTORY_UNREAD_ITEM_FIELDS
+    )
+
+
 HISTORY_WARM_DAYS = getattr(settings, "HISTORY_CACHE_WARM_DAYS", 0)
 HISTORY_COLD_MISS_WARM_DAYS = getattr(
     settings,
@@ -81,12 +140,12 @@ def apply_history_entry_cap(history_days, cap):
     total_entries = 0
     for day_payload in history_days:
         entries = day_payload.get("entries", [])
-        entry_count = len(entries)
+        entry_count = day_payload.get("entry_count", len(entries))
         total_entries += entry_count
         if entry_count > cap:
             day_payload["entries"] = entries[:cap]
         day_payload["entry_count"] = entry_count
-        day_payload["entries_truncated"] = entry_count > cap
+        day_payload["entries_truncated"] = entry_count > len(day_payload["entries"])
     return total_entries
 
 
@@ -105,6 +164,7 @@ _HISTORY_MEDIA_TYPE_ALIASES = {
     "board_games": MediaTypes.BOARDGAME.value,
     "musics": MediaTypes.MUSIC.value,
     "podcasts": MediaTypes.PODCAST.value,
+    "videos": MediaTypes.VIDEO.value,
 }
 
 
@@ -163,10 +223,74 @@ def _cache_key(user_id: int, logging_style: str) -> str:
     return f"{HISTORY_CACHE_PREFIX}_{user_id}_{logging_style or 'repeats'}"
 
 
-def _typed_history_index_key(user_id: int, logging_style: str, media_types) -> str:
+def _history_era_key(user_id: int, logging_style: str) -> str:
+    """Return the key holding the current index era token for a user/style."""
+    return (
+        f"history_era_v{HISTORY_CACHE_VERSION}_{user_id}_{logging_style or 'repeats'}"
+    )
+
+
+def _new_history_era_token() -> str:
+    """Return a globally unique era token (never reuses a prior identity)."""
+    return f"{time.time_ns() // 1_000_000:013d}{uuid.uuid4().hex[:8]}"
+
+
+def _current_history_era(user_id: int, logging_style: str) -> str:
+    """Return the current era token, creating it if absent.
+
+    The token is only ever compared for equality: readers accept an index
+    published under the token they read, and invalidation replaces the token
+    outright. A missing key (never set, expired, or evicted) is seeded with a
+    fresh unique token — it can never alias an older era, so resurrecting an
+    orphaned typed index is impossible by construction (no ABA).
+    """
+    era_key = _history_era_key(user_id, logging_style)
+    era = cache.get(era_key)
+    if isinstance(era, str) and era:
+        return era
+    era = _new_history_era_token()
+    if cache.add(era_key, era, HISTORY_ERA_TIMEOUT):
+        return era
+    # Lost the create race or the cache dropped the write: adopt the winner
+    # if one exists, otherwise return an unpublished token. Publishing under
+    # an unpublished token is always safe — no reader will ever look there.
+    era = cache.get(era_key)
+    if isinstance(era, str) and era:
+        return era
+    return _new_history_era_token()
+
+
+def _bump_history_era(user_id: int, logging_style: str) -> str:
+    """Retire the current era and return the new one.
+
+    An unconditional write of a fresh unique token: concurrent invalidations
+    simply race to install distinct tokens, and *any* winner retires every
+    older namespace, so there is no lost-update window to exploit. Builders
+    still holding the previous token can only publish into a namespace no
+    reader will select again.
+    """
+    era = _new_history_era_token()
+    cache.set(_history_era_key(user_id, logging_style), era, HISTORY_ERA_TIMEOUT)
+    return era
+
+
+def _touch_history_era(user_id: int, logging_style: str) -> None:
+    """Refresh the era key's TTL so it outlives indexes published under it."""
+    cache.touch(_history_era_key(user_id, logging_style), HISTORY_ERA_TIMEOUT)
+
+
+def _typed_history_index_key(
+    user_id: int,
+    logging_style: str,
+    media_types,
+    era: str | None = None,
+) -> str:
     """Return a cache key for an index narrowed to concrete media types."""
     signature = ",".join(sorted(media_types))
-    return f"{_cache_key(user_id, logging_style)}_types_{signature}"
+    key = f"{_cache_key(user_id, logging_style)}_types_{signature}"
+    if era:
+        key = f"{key}_e{era}"
+    return key
 
 
 def _typed_history_index_registry_key(user_id: int, logging_style: str) -> str:

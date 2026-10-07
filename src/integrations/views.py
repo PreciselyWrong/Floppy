@@ -2,23 +2,23 @@
 
 import base64
 import binascii
+import hashlib
 import hmac
 import json
 import logging
 import re
 import secrets
-import zipfile
 import zoneinfo
 from datetime import datetime, timedelta
 from http import HTTPStatus
-from io import BytesIO
 from urllib.parse import unquote
 
 import croniter
 import requests
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth.decorators import login_not_required
+from django.contrib.auth.decorators import login_not_required, login_required
+from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -33,43 +33,58 @@ from django.templatetags.static import static
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.utils.translation import gettext
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import (
+    require_GET,
+    require_http_methods,
+    require_POST,
+)
 
 import users
 from app import helpers as app_helpers
 from app import image_cache
+from app.db_retry import run_retryable_db_operation
 from app.log_safety import exception_summary
-from app.models import MediaTypes
-from app.providers import credentials
+from app.models import TV, Item, MediaTypes, Movie, Sources
+from app.providers import credentials, services
+from app.redis_diagnosis import queue_failure_message
+from app.services import metadata_resolution
 from integrations import (
-    audiobookshelf_cover as abs_cover_proxy,
-)
-from integrations import (
+    arr_library,
     exports,
     gpodder_api,
     koito_api,
     lastfm_api,
     pocketcasts_api,
     psn_api,
+    seerr_api,
     stremio_catalog,
     stremio_queue,
     tasks,
     xbox_api,
 )
+from integrations import (
+    audiobookshelf_cover as abs_cover_proxy,
+)
 from integrations import plex as plex_api
 from integrations import plex_cover as plex_cover_proxy
 from integrations.gpodder_api import GPodderAuthError, GPodderClientError
 from integrations.imports import anilist, helpers, mdblist, simkl, stremio, trakt
+from integrations.imports import plex as plex_import
 from integrations.imports.audiobookshelf import (
     AudiobookshelfAuthError,
     AudiobookshelfClient,
 )
+from integrations.imports.kapowarr import KapowarrClient
+from integrations.imports.kavita import KavitaClient
+from integrations.imports.komga import KomgaClient
 from integrations.imports.koreader import (
     KoreaderAuthError,
     KoreaderClient,
     KoreaderClientError,
 )
+from integrations.imports.mylar import MylarClient
 from integrations.imports.radarr import RadarrClient
 from integrations.imports.sonarr import SonarrClient
 from integrations.imports.storyteller import (
@@ -90,24 +105,42 @@ from integrations.lastfm_api import (
     LastFMClientError,
     LastFMRateLimitError,
 )
+from integrations.match_corrections import (
+    InvalidMatchCorrectionError,
+    MissingEpisodeMappingError,
+    StaleCorrectionPreviewError,
+    apply_match_correction,
+    destination_episodes,
+    preview_match_correction,
+    suggest_mapping,
+)
 from integrations.models import (
     AudiobookshelfAccount,
     CollectionSourceState,
+    ExternalReference,
+    ExternalReferenceReviewStatus,
     GPodderAccount,
     JellyfinAccount,
+    KapowarrInstance,
+    KavitaAccount,
     KoitoAccount,
+    KomgaAccount,
     KoreaderAccount,
     KoreaderDocumentLink,
     LastFMAccount,
     MDBListAccount,
+    MylarInstance,
     PlexAccount,
     PlexWebhookShare,
     PocketCastsAccount,
     PSNAccount,
     RadarrInstance,
     SonarrInstance,
+    StateConflict,
+    StateConflictStatus,
     StorytellerAccount,
     StremioAccount,
+    SyncBinding,
     XboxAccount,
 )
 from integrations.plex_watchlist import (
@@ -115,6 +148,17 @@ from integrations.plex_watchlist import (
     WATCHLIST_TASK_NAME,
 )
 from integrations.pocketcasts_api import PocketCastsAuthError
+from integrations.safe_fetch import send_to_self_hosted
+from integrations.source_sync import remove_collection_source_state
+from integrations.state import outbound
+from integrations.upload_staging import (
+    build_staged_zip,
+    discard_staged_upload,
+    enqueue_staged_task,
+    stage_uploaded_file,
+    staged_payload_is_zip,
+    staging_failure_message,
+)
 from integrations.webhooks.plex import extract_plex_webhook_usernames
 
 logger = logging.getLogger(__name__)
@@ -124,17 +168,88 @@ PLEX_LIBRARY_INDEX_TASK_NAME = "Refresh Plex library index"
 RADARR_RECURRING_TASK_NAME = "Import from Radarr (Recurring)"
 JELLYFIN_PLAYBACK_REPORTING_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 SONARR_RECURRING_TASK_NAME = "Import from Sonarr (Recurring)"
+MYLAR_RECURRING_TASK_NAME = "Import from Mylar3 (Recurring)"
+KAPOWARR_RECURRING_TASK_NAME = "Import from Kapowarr (Recurring)"
 GPODDER_RECURRING_TASK_NAME = "Import from GPodder (Recurring)"
-# The upload rides in the Celery message, so bound what a single import can send.
-TRAKT_EXPORT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 TRAKT_DEVICE_SESSION_KEY = "trakt_device_auth"
-YAMTRACK_IMPORT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
-def _read_uploaded_file(file):
-    """Read uploaded file bytes for safe Celery serialization."""
-    file.seek(0)
-    return file.read()
+def _stage_upload_or_message(request, upload, label="upload"):
+    """Stage an upload and report storage failures without returning a 500."""
+    try:
+        return str(stage_uploaded_file(upload))
+    except OSError as error:
+        logger.exception("Could not stage %s for background import", label)
+        messages.error(request, staging_failure_message(error))
+        return None
+
+
+def _stage_uploads_or_message(request, uploads, label="upload"):
+    """Stage multiple uploads and roll back earlier files on failure."""
+    staged = []
+    for upload in uploads:
+        path = _stage_upload_or_message(request, upload, label)
+        if path is None:
+            for staged_path in staged:
+                discard_staged_upload(staged_path)
+            return None
+        staged.append(path)
+    return staged
+
+
+def _queue_staged_task_or_message(
+    request,
+    task,
+    *args,
+    staged_paths=(),
+    **kwargs,
+):
+    """Queue a staged task and turn broker failures into a user message."""
+    try:
+        return enqueue_staged_task(
+            task,
+            *args,
+            staged_paths=staged_paths,
+            **kwargs,
+        )
+    except Exception as error:
+        logger.exception("Could not queue background import task")
+        messages.error(request, _import_queue_failure_message(error))
+        return False
+
+
+def _queue_task_or_message(request, task, *args, **kwargs):
+    """Queue a task and turn broker failures into a user message instead of a 500."""
+    try:
+        return task.delay(*args, **kwargs)
+    except Exception as error:
+        logger.exception("Could not queue background import task")
+        messages.error(request, _import_queue_failure_message(error))
+        return False
+
+
+def _import_queue_failure_message(error):
+    """Name an unreachable Redis broker instead of blaming the worker (#1263)."""
+    return queue_failure_message(
+        error,
+        "The import could not be queued.",
+        "Check the worker and try again.",
+        settings.CELERY_BROKER_URL,
+    )
+
+
+def _queue_task_quietly(task, *args, **kwargs):
+    """Queue a task, logging (not raising) on broker failure.
+
+    For call sites with no `messages` flow to surface the failure through
+    (webhook receivers, JSON polling endpoints).
+    """
+    try:
+        task.delay(*args, **kwargs)
+    except Exception:
+        logger.exception("Could not queue background task")
+        return False
+    return True
 
 
 def _integration_redirect(request, *, connected_slug=None, next_url=None):
@@ -221,6 +336,33 @@ def _periodic_task_filter_for_instance(instance_id):
         | Q(kwargs__contains=f'"instance_id": {instance_id},')
         | Q(kwargs__contains=f'"instance_id": {instance_id}' + "}")
     )
+
+
+def _run_with_lock_retry(operation_name, fn):
+    """Run an integration connect/disconnect DB write with retry on SQLite locks.
+
+    Connect/disconnect views create or delete `django_celery_beat`
+    `PeriodicTask` rows, which fire a signal that writes to a shared
+    singleton row (`PeriodicTasks.changed()`) — a serialization hotspot on
+    SQLite. Wrapping the write in a retried transaction turns a transient
+    lock into a short delay instead of a 503 (see issue #1112).
+
+    `max_retries=1` (2 attempts total) rather than the helper's default of
+    5: each attempt can block for up to `SQLITE_BUSY_TIMEOUT_SECONDS`
+    (30s by default) before raising, and nginx.conf sets no explicit
+    `proxy_read_timeout` (nginx's own default is 60s) — more attempts would
+    risk the proxy returning a gateway timeout to the user while this view
+    keeps retrying underneath it, so the write could still commit after the
+    client has already seen a failure.
+    """
+
+    def _atomic_fn():
+        with transaction.atomic():
+            return fn()
+
+    return run_retryable_db_operation(
+        _atomic_fn, operation_name=operation_name, max_retries=1
+    ).value
 
 
 def _next_arr_sync_start(now=None):
@@ -655,8 +797,9 @@ def trakt_oauth(request):
     }
     state_token = secrets.token_urlsafe(32)
     request.session[state_token] = state
+    client_id = credentials.get("trakt", "client_id")
     return redirect(
-        f"{url}?client_id={credentials.get("trakt", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
 
 
@@ -669,12 +812,15 @@ def _finish_trakt_connection(request, oauth_result, state_data):
     import_time = state_data["time"]
 
     if frequency == "once":
-        tasks.import_trakt.delay(
+        if _queue_task_or_message(request,
+            tasks.import_trakt,
             token=enc_token,
             user_id=request.user.id,
             mode=mode,
             username=oauth_result["username"],
-        )
+            redirect_uri=oauth_result.get("redirect_uri"),
+        ) is False:
+            return
         messages.info(request, "The task to import media from Trakt has been queued.")
     else:
         helpers.create_import_schedule(
@@ -685,6 +831,8 @@ def _finish_trakt_connection(request, oauth_result, state_data):
             import_time,
             "Trakt",
             token=enc_token,
+            extra_kwargs={"redirect_uri": oauth_result.get("redirect_uri")},
+            replace_existing=True,
         )
 
 
@@ -809,11 +957,13 @@ def import_trakt_public(request):
     import_time = request.POST["time"]
 
     if frequency == "once":
-        tasks.import_trakt.delay(
+        if _queue_task_or_message(request,
+            tasks.import_trakt,
             user_id=request.user.id,
             mode=mode,
             username=username,
-        )
+        ) is False:
+            return _integration_redirect(request, connected_slug="trakt")
         messages.info(request, "The task to import media from Trakt has been queued.")
     else:
         helpers.create_import_schedule(
@@ -858,7 +1008,10 @@ def import_mdblist(request):
         return _integration_redirect(request)
 
     if frequency == "once":
-        tasks.import_mdblist.delay(user_id=request.user.id, mode=mode)
+        if _queue_task_or_message(request,
+            tasks.import_mdblist, user_id=request.user.id, mode=mode
+        ) is False:
+            return _integration_redirect(request, connected_slug="mdblist")
         messages.info(request, "The task to import media from MDBList has been queued.")
     else:
         helpers.create_import_schedule(
@@ -973,10 +1126,13 @@ def plex_callback(request):
         defaults["server_name"] = sections[0].get("server_name")
         defaults["machine_identifier"] = sections[0].get("machine_identifier")
 
-    plex_account, _ = PlexAccount.objects.update_or_create(
-        user=request.user,
-        defaults=defaults,
-    )
+    def _connect_plex():
+        return PlexAccount.objects.update_or_create(
+            user=request.user,
+            defaults=defaults,
+        )
+
+    plex_account, _ = _run_with_lock_retry("connect Plex", _connect_plex)
     _ensure_plex_library_index_schedule(request.user, plex_account)
     tasks.refresh_plex_library_index.delay(request.user.id)
 
@@ -986,7 +1142,9 @@ def plex_callback(request):
     if return_to:
         # Arrived from the setup wizard: queue a sensible default import
         # rather than requiring a second visit to pick a library/mode.
-        tasks.import_plex.delay(user_id=request.user.id, mode="new", library=["all"])
+        _queue_task_or_message(request,
+            tasks.import_plex, user_id=request.user.id, mode="new", library=["all"]
+        )
 
     return _integration_redirect(request, connected_slug="plex", next_url=return_to)
 
@@ -994,10 +1152,16 @@ def plex_callback(request):
 @require_POST
 def plex_disconnect(request):
     """Remove stored Plex credentials."""
-    _disable_plex_watchlist_schedule(request.user)
-    _disable_plex_library_index_schedule(request.user)
-    PlexWebhookShare.objects.filter(owner=request.user).delete()
-    PlexAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        _disable_plex_watchlist_schedule(request.user)
+        _disable_plex_library_index_schedule(request.user)
+        account = PlexAccount.objects.filter(user=request.user).first()
+        if account:
+            plex_import.set_mark_watched_sync(account, enabled=False)
+        PlexWebhookShare.objects.filter(owner=request.user).delete()
+        PlexAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Plex", _disconnect)
     messages.info(request, "Disconnected Plex.")
     return redirect("import_data")
 
@@ -1046,17 +1210,18 @@ def import_plex(request):
         _ensure_plex_watchlist_schedule(request.user, plex_account)
         plex_account.watchlist_sync_enabled = True
         plex_account.save(update_fields=["watchlist_sync_enabled"])
-        tasks.sync_plex_watchlist.delay(
+        if _queue_task_or_message(request,
+            tasks.sync_plex_watchlist,
             user_id=request.user.id,
             mode="watchlist",
-        )
-        messages.info(
-            request,
-            (
-                "Plex watchlist sync queued. "
-                f"Recurring syncs will run every {WATCHLIST_SYNC_INTERVAL_MINUTES} minutes."
-            ),
-        )
+        ) is not False:
+            messages.info(
+                request,
+                (
+                    "Plex watchlist sync queued. "
+                    f"Recurring syncs will run every {WATCHLIST_SYNC_INTERVAL_MINUTES} minutes."
+                ),
+            )
         return redirect("import_data")
 
     # Handle "update_collection" mode separately
@@ -1067,14 +1232,17 @@ def import_plex(request):
             )
             return redirect("import_data")
 
-        tasks.update_collection_metadata_from_plex.delay(
+        if _queue_task_or_message(
+            request,
+            tasks.update_collection_metadata_from_plex,
             library=library,
             user_id=request.user.id,
-        )
-        tasks.refresh_plex_library_index.delay(request.user.id)
-        messages.info(
-            request, "The task to update collection metadata from Plex has been queued."
-        )
+        ) is not False:
+            tasks.refresh_plex_library_index.delay(request.user.id)
+            messages.info(
+                request,
+                "The task to update collection metadata from Plex has been queued.",
+            )
         return redirect("import_data")
 
     if frequency != "once":
@@ -1089,12 +1257,13 @@ def import_plex(request):
         )
         return redirect("import_data")
 
-    tasks.import_plex.delay(
+    if _queue_task_or_message(request,
+        tasks.import_plex,
         library=library,
         user_id=request.user.id,
         mode=mode,
-    )
-    messages.info(request, "The task to import media from Plex has been queued.")
+    ) is not False:
+        messages.info(request, "The task to import media from Plex has been queued.")
     return redirect("import_data")
 
 
@@ -1118,12 +1287,18 @@ def plex_disable_watchlist(request):
 @require_POST
 def simkl_oauth(request):
     """View for initiating the SIMKL OAuth2 authorization flow."""
+    if not credentials.is_configured("simkl", request.user):
+        messages.error(
+            request,
+            "SIMKL needs your own Client ID and Client secret. "
+            "Add them in Settings > Metadata, then connect again.",
+        )
+        return _integration_redirect(request)
+
     redirect_uri = app_helpers.build_absolute_app_url(
         request,
         reverse("import_simkl_private"),
     )
-    url = "https://simkl.com/oauth/authorize"
-
     state = {
         "mode": request.POST["mode"],
         "frequency": request.POST["frequency"],
@@ -1132,11 +1307,30 @@ def simkl_oauth(request):
         "return_to": request.POST.get("next"),
     }
     state_token = secrets.token_urlsafe(32)
-    request.session[state_token] = state
-
-    return redirect(
-        f"{url}?client_id={credentials.get("simkl", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+    query = (
+        f"client_id={credentials.get("simkl", "client_id")}&redirect_uri={redirect_uri}"
+        f"&response_type=code&state={state_token}"
     )
+
+    if request.POST.get("auth_version") == "v1":
+        # SIMKL apps made before 2026-09-18; AUTH V1 retires around April 2027
+        url = f"https://simkl.com/oauth/authorize?{query}"
+    else:
+        # AUTH V2 requires PKCE (S256)
+        code_verifier = secrets.token_urlsafe(64)
+        state["code_verifier"] = code_verifier
+        code_challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
+        url = (
+            f"https://simkl.com/oauth2/authorize?{query}"
+            f"&code_challenge={code_challenge}&code_challenge_method=S256"
+        )
+
+    request.session[state_token] = state
+    return redirect(url)
 
 
 @require_GET
@@ -1147,20 +1341,30 @@ def import_simkl_private(request):
         return _integration_redirect(request)
 
     redirect_uri = state_data.get("redirect_uri")
-    oauth_callback = simkl.get_token(request, redirect_uri=redirect_uri)
+    return_to = state_data.get("return_to")
+    try:
+        oauth_callback = simkl.get_token(
+            request,
+            redirect_uri=redirect_uri,
+            code_verifier=state_data.get("code_verifier"),
+        )
+    except helpers.MediaImportError as error:
+        messages.error(request, str(error))
+        return _integration_redirect(request, next_url=return_to)
     enc_token = helpers.encrypt(oauth_callback["access_token"])
 
     frequency = state_data["frequency"]
     mode = state_data["mode"]
     import_time = state_data["time"]
-    return_to = state_data.get("return_to")
 
     if frequency == "once":
-        tasks.import_simkl.delay(
+        if _queue_task_or_message(request,
+            tasks.import_simkl,
             token=enc_token,
             user_id=request.user.id,
             mode=mode,
-        )
+        ) is False:
+            return _integration_redirect(request, connected_slug="simkl", next_url=return_to)
         messages.info(request, "The task to import media from Simkl has been queued.")
     else:
         helpers.create_import_schedule(
@@ -1171,6 +1375,12 @@ def import_simkl_private(request):
             import_time,
             "SIMKL",
             token=enc_token,
+            # AUTH V2 access tokens expire after 7 days; V1 has no refresh token
+            extra_kwargs=(
+                {"refresh_token": helpers.encrypt(oauth_callback["refresh_token"])}
+                if oauth_callback["refresh_token"]
+                else None
+            ),
         )
 
     return _integration_redirect(request, connected_slug="simkl", next_url=return_to)
@@ -1188,7 +1398,10 @@ def import_mal(request):
     frequency = request.POST["frequency"]
 
     if frequency == "once":
-        tasks.import_mal.delay(username=username, user_id=request.user.id, mode=mode)
+        if _queue_task_or_message(request,
+            tasks.import_mal, username=username, user_id=request.user.id, mode=mode
+        ) is False:
+            return _integration_redirect(request, connected_slug="myanimelist")
         messages.info(
             request,
             "The task to import media from MyAnimeList has been queued.",
@@ -1204,6 +1417,35 @@ def import_mal(request):
             "MyAnimeList",
         )
     return _integration_redirect(request, connected_slug="myanimelist")
+
+
+@require_POST
+def import_mangabaka(request):
+    """View for importing a manga library from MangaBaka.
+
+    MangaBaka exposes no public per-user API, so the Personal Access Token is
+    the only credential. That also means there is no username to key a
+    recurring schedule on, which is why this import runs once.
+    """
+    token = (request.POST.get("token") or "").strip()
+    if not token:
+        messages.error(request, "MangaBaka API token is required.")
+        return _integration_redirect(request, connected_slug="mangabaka")
+
+    if request.POST.get("frequency", "once") != "once":
+        messages.error(request, "MangaBaka imports run once only.")
+        return _integration_redirect(request, connected_slug="mangabaka")
+
+    tasks.import_mangabaka.delay(
+        token=helpers.encrypt(token),
+        user_id=request.user.id,
+        mode=request.POST["mode"],
+    )
+    messages.info(
+        request,
+        "The task to import media from MangaBaka has been queued.",
+    )
+    return _integration_redirect(request, connected_slug="mangabaka")
 
 
 @require_POST
@@ -1252,12 +1494,14 @@ def import_anilist_private(request):
     import_time = state_data["time"]
 
     if frequency == "once":
-        tasks.import_anilist.delay(
+        if _queue_task_or_message(request,
+            tasks.import_anilist,
             user_id=request.user.id,
             mode=mode,
             username=username,
             token=enc_token,
-        )
+        ) is False:
+            return _integration_redirect(request, connected_slug="anilist", next_url=return_to)
         messages.info(request, "AniList import queued.")
     else:
         helpers.create_import_schedule(
@@ -1285,11 +1529,13 @@ def import_anilist_public(request):
     import_time = request.POST["time"]
 
     if frequency == "once":
-        tasks.import_anilist.delay(
+        if _queue_task_or_message(request,
+            tasks.import_anilist,
             user_id=request.user.id,
             mode=mode,
             username=username,
-        )
+        ) is False:
+            return redirect("import_data")
         messages.info(request, "AniList import queued.")
     else:
         helpers.create_import_schedule(
@@ -1315,7 +1561,10 @@ def import_kitsu(request):
     frequency = request.POST["frequency"]
 
     if frequency == "once":
-        tasks.import_kitsu.delay(username=kitsu_id, user_id=request.user.id, mode=mode)
+        if _queue_task_or_message(request,
+            tasks.import_kitsu, username=kitsu_id, user_id=request.user.id, mode=mode
+        ) is False:
+            return _integration_redirect(request)
         messages.info(request, "The task to import media from Kitsu has been queued.")
     else:
         import_time = request.POST["time"]
@@ -1339,20 +1588,20 @@ def import_yamtrack(request):
         messages.error(request, "A CSV file is required.")
         return _integration_redirect(request)
 
-    if file.size > YAMTRACK_IMPORT_MAX_UPLOAD_BYTES:
-        messages.error(
-            request,
-            "That backup file is too large to import "
-            f"(limit {YAMTRACK_IMPORT_MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
-        )
+    staged_file = _stage_upload_or_message(request, file, "Floppy CSV")
+    if staged_file is None:
         return _integration_redirect(request)
 
     mode = request.POST["mode"]
-    tasks.import_yamtrack.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_yamtrack,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=mode,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="yamtrack")
     messages.info(
         request,
         "The task to import media from the CSV file has been queued.",
@@ -1369,25 +1618,26 @@ def import_clz(request):
         messages.error(request, "A CLZ CSV or XML export is required.")
         return _integration_redirect(request)
 
-    if file.size > YAMTRACK_IMPORT_MAX_UPLOAD_BYTES:
-        messages.error(
-            request,
-            "That export file is too large to import "
-            f"(limit {YAMTRACK_IMPORT_MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
-        )
+    staged_file = _stage_upload_or_message(request, file, "CLZ export")
+    if staged_file is None:
         return _integration_redirect(request)
 
     media_type = (request.POST.get("clz_media_type") or "").strip() or None
     if media_type and media_type not in MediaTypes.values:
+        discard_staged_upload(staged_file)
         messages.error(request, "Unknown media type for the CLZ import.")
         return _integration_redirect(request)
 
-    tasks.import_clz.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_clz,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=request.POST.get("mode", "new"),
         media_type=media_type,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="clz")
     messages.info(
         request,
         "The task to import your CLZ export has been queued.",
@@ -1400,8 +1650,8 @@ def import_trakt_export_file(request):
     """View for importing a Trakt data export: a .zip, loose .json files, or a .csv.
 
     Trakt now exports a .zip of flat .json files, but the older community CSV
-    format is still accepted. Loose .json uploads are repackaged into an
-    in-memory zip so the Celery task always receives a single blob of bytes.
+    format is still accepted. Loose .json uploads are repackaged into a
+    staged zip so the Celery task always receives a single path.
     """
     uploads = request.FILES.getlist("trakt_export") or request.FILES.getlist(
         "trakt_collection_csv",
@@ -1411,24 +1661,26 @@ def import_trakt_export_file(request):
         messages.error(request, "A Trakt export file is required.")
         return _integration_redirect(request)
 
-    total_size = sum(upload.size for upload in uploads)
-    if total_size > TRAKT_EXPORT_MAX_UPLOAD_BYTES:
-        messages.error(
-            request,
-            "That Trakt export is too large to import "
-            f"(limit {TRAKT_EXPORT_MAX_UPLOAD_BYTES // (1024 * 1024)} MB).",
-        )
+    staged_files = _stage_uploads_or_message(request, uploads, "Trakt export")
+    if staged_files is None:
         return _integration_redirect(request)
 
     mode = request.POST["mode"]
-    payloads = [(upload.name, _read_uploaded_file(upload)) for upload in uploads]
+    payloads = [
+        (upload.name, path)
+        for upload, path in zip(uploads, staged_files, strict=True)
+    ]
 
     if len(payloads) == 1 and not _is_trakt_export_payload(*payloads[0]):
-        tasks.import_trakt_collection_csv.delay(
+        if _queue_staged_task_or_message(
+            request,
+            tasks.import_trakt_collection_csv,
             user_id=request.user.id,
             file=payloads[0][1],
             mode=mode,
-        )
+            staged_paths=tuple(staged_files),
+        ) is False:
+            return _integration_redirect(request, connected_slug="trakt")
         messages.info(
             request,
             "The task to import collection data from the Trakt CSV file has been "
@@ -1436,11 +1688,32 @@ def import_trakt_export_file(request):
         )
         return _integration_redirect(request, connected_slug="trakt")
 
-    tasks.import_trakt_export.delay(
+    if len(payloads) == 1 and staged_payload_is_zip(payloads[0][1]):
+        archive_path = payloads[0][1]
+    else:
+        try:
+            archive_path = str(build_staged_zip(payloads))
+        except OSError:
+            for path in staged_files:
+                discard_staged_upload(path)
+            logger.exception("Could not build staged Trakt export archive")
+            messages.error(
+                request,
+                "The Trakt export could not be prepared. Check available disk space and try again.",
+            )
+            return _integration_redirect(request)
+        for path in staged_files:
+            discard_staged_upload(path)
+
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_trakt_export,
         user_id=request.user.id,
-        file=_build_trakt_export_archive(payloads),
+        file=archive_path,
         mode=mode,
-    )
+        staged_paths=(archive_path,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="trakt")
     messages.info(
         request,
         "The task to import your Trakt data export has been queued.",
@@ -1448,21 +1721,61 @@ def import_trakt_export_file(request):
     return _integration_redirect(request, connected_slug="trakt")
 
 
-def _is_trakt_export_payload(name, content):
+@require_POST
+def import_wetrakr(request):
+    """View for importing a WeTrakr data export: the .zip or its loose .csv files.
+
+    Loose .csv uploads are repackaged into a staged zip so the Celery task
+    always receives a single path.
+    """
+    uploads = request.FILES.getlist("wetrakr_export")
+    if not uploads:
+        messages.error(request, "A WeTrakr export file is required.")
+        return _integration_redirect(request)
+
+    staged_files = _stage_uploads_or_message(request, uploads, "WeTrakr export")
+    if staged_files is None:
+        return _integration_redirect(request)
+
+    if len(staged_files) == 1 and staged_payload_is_zip(staged_files[0]):
+        archive_path = staged_files[0]
+    else:
+        payloads = [
+            (upload.name, path)
+            for upload, path in zip(uploads, staged_files, strict=True)
+        ]
+        try:
+            archive_path = str(build_staged_zip(payloads))
+        except OSError:
+            logger.exception("Could not build staged WeTrakr export archive")
+            messages.error(
+                request,
+                "The WeTrakr export could not be prepared. Check available disk space and try again.",
+            )
+            return _integration_redirect(request)
+        finally:
+            for path in staged_files:
+                discard_staged_upload(path)
+
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_wetrakr_export,
+        user_id=request.user.id,
+        file=archive_path,
+        mode=request.POST["mode"],
+        staged_paths=(archive_path,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="wetrakr")
+    messages.info(
+        request,
+        "The task to import your WeTrakr data export has been queued.",
+    )
+    return _integration_redirect(request, connected_slug="wetrakr")
+
+
+def _is_trakt_export_payload(name, path):
     """Whether an upload is part of the JSON/zip export rather than the legacy CSV."""
-    return name.lower().endswith((".zip", ".json")) or content[:4] == b"PK\x03\x04"
-
-
-def _build_trakt_export_archive(payloads):
-    """Return export bytes: the zip as uploaded, or loose .json files zipped up."""
-    if len(payloads) == 1 and payloads[0][1][:4] == b"PK\x03\x04":
-        return payloads[0][1]
-
-    buffer = BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name, content in payloads:
-            archive.writestr(name.rsplit("/", 1)[-1], content)
-    return buffer.getvalue()
+    return name.lower().endswith((".zip", ".json")) or staged_payload_is_zip(path)
 
 
 @require_POST
@@ -1474,12 +1787,20 @@ def import_hltb(request):
         messages.error(request, "HowLongToBeat CSV file is required.")
         return _integration_redirect(request)
 
+    staged_file = _stage_upload_or_message(request, file, "HowLongToBeat CSV")
+    if staged_file is None:
+        return _integration_redirect(request)
+
     mode = request.POST["mode"]
-    tasks.import_hltb.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_hltb,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=mode,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="hltb")
     messages.info(
         request,
         "The task to import media from HowLongToBeat CSV file has been queued.",
@@ -1496,12 +1817,20 @@ def import_grouvee(request):
         messages.error(request, "A Grouvee export file is required.")
         return _integration_redirect(request)
 
+    staged_file = _stage_upload_or_message(request, file, "Grouvee export")
+    if staged_file is None:
+        return _integration_redirect(request)
+
     mode = request.POST["mode"]
-    tasks.import_grouvee.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_grouvee,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=mode,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="grouvee")
     messages.info(
         request,
         "The task to import media from the Grouvee export has been queued.",
@@ -1521,7 +1850,10 @@ def import_steam(request):
     frequency = request.POST["frequency"]
 
     if frequency == "once":
-        tasks.import_steam.delay(username=steam_id, user_id=request.user.id, mode=mode)
+        if _queue_task_or_message(request,
+            tasks.import_steam, username=steam_id, user_id=request.user.id, mode=mode
+        ) is False:
+            return _integration_redirect(request, connected_slug="steam")
         messages.info(request, "The task to import media from Steam has been queued.")
     else:
         import_time = request.POST["time"]
@@ -1553,13 +1885,15 @@ def radarr_connect(request):
         return _integration_redirect(request)
 
     try:
-        with transaction.atomic():
-            instance = RadarrInstance.objects.create(
+        instance = _run_with_lock_retry(
+            "create Radarr instance",
+            lambda: RadarrInstance.objects.create(
                 user=request.user,
                 name=name,
                 base_url=base_url,
                 api_key=helpers.encrypt(api_key),
-            )
+            ),
+        )
     except IntegrityError:
         messages.error(
             request, "You already have a Radarr instance connected at this URL."
@@ -1567,11 +1901,13 @@ def radarr_connect(request):
         return _integration_redirect(request)
 
     _ensure_arr_schedule(instance, RADARR_RECURRING_TASK_NAME, "Radarr")
-    tasks.import_radarr.delay(user_id=request.user.id, mode="new", instance_id=instance.id)
-    messages.success(
-        request,
-        "Connected Radarr. Initial import queued and recurring sync enabled.",
-    )
+    if _queue_task_or_message(request,
+        tasks.import_radarr, user_id=request.user.id, mode="new", instance_id=instance.id
+    ) is not False:
+        messages.success(
+            request,
+            "Connected Radarr. Initial import queued and recurring sync enabled.",
+        )
     return _integration_redirect(request, connected_slug="radarr")
 
 
@@ -1583,14 +1919,25 @@ def radarr_disconnect(request):
     instance = get_object_or_404(
         RadarrInstance, pk=request.POST.get("instance_id"), user=request.user
     )
-    PeriodicTask.objects.filter(
-        _periodic_task_filter_for_instance(instance.id),
-        task=RADARR_RECURRING_TASK_NAME,
-    ).delete()
-    CollectionSourceState.objects.filter(
-        user=request.user, source="radarr", source_instance_id=instance.id
-    ).delete()
-    instance.delete()
+
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            _periodic_task_filter_for_instance(instance.id),
+            task=RADARR_RECURRING_TASK_NAME,
+        ).delete()
+        states = CollectionSourceState.objects.filter(
+            user=request.user, source="radarr", source_instance_id=instance.id
+        ).select_related("item")
+        for state in states:
+            remove_collection_source_state(
+                user=request.user,
+                item=state.item,
+                source="radarr",
+                source_instance_id=instance.id,
+            )
+        instance.delete()
+
+    _run_with_lock_retry("disconnect Radarr", _disconnect)
     messages.info(request, "Disconnected Radarr.")
     return redirect("import_data")
 
@@ -1602,9 +1949,194 @@ def import_radarr(request):
         RadarrInstance, pk=request.POST.get("instance_id"), user=request.user
     )
 
-    tasks.import_radarr.delay(user_id=request.user.id, mode="new", instance_id=instance.id)
+    queued = _queue_task_or_message(request,
+        tasks.import_radarr, user_id=request.user.id, mode="new", instance_id=instance.id
+    )
     _ensure_arr_schedule(instance, RADARR_RECURRING_TASK_NAME, "Radarr")
-    messages.info(request, "Radarr import queued.")
+    if queued is not False:
+        messages.info(request, "Radarr import queued.")
+    return redirect("import_data")
+
+
+@require_POST
+def mylar_connect(request):
+    """Connect a new Mylar3 instance using base URL + API key."""
+    base_url = request.POST.get("base_url", "").strip()
+    api_key = request.POST.get("api_key", "").strip()
+    name = request.POST.get("name", "").strip()
+    if not base_url or not api_key:
+        messages.error(request, "Mylar3 base URL and API key are required.")
+        return _integration_redirect(request)
+
+    try:
+        MylarClient(base_url, api_key).healthcheck()
+    except helpers.MediaImportError as exc:
+        messages.error(request, f"Failed to connect to Mylar3: {exc}")
+        return _integration_redirect(request)
+
+    try:
+        instance = _run_with_lock_retry(
+            "create Mylar3 instance",
+            lambda: MylarInstance.objects.create(
+                user=request.user,
+                name=name,
+                base_url=base_url,
+                api_key=helpers.encrypt(api_key),
+            ),
+        )
+    except IntegrityError:
+        messages.error(
+            request, "You already have a Mylar3 instance connected at this URL."
+        )
+        return _integration_redirect(request)
+
+    _ensure_arr_schedule(instance, MYLAR_RECURRING_TASK_NAME, "Mylar3")
+    if _queue_task_or_message(request,
+        tasks.import_mylar, user_id=request.user.id, mode="new", instance_id=instance.id
+    ) is not False:
+        messages.success(
+            request,
+            "Connected Mylar3. Initial import queued and recurring sync enabled.",
+        )
+    return _integration_redirect(request, connected_slug="mylar")
+
+
+@require_POST
+def mylar_disconnect(request):
+    """Disconnect one Mylar3 instance."""
+    from django_celery_beat.models import PeriodicTask
+
+    instance = get_object_or_404(
+        MylarInstance, pk=request.POST.get("instance_id"), user=request.user
+    )
+
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            _periodic_task_filter_for_instance(instance.id),
+            task=MYLAR_RECURRING_TASK_NAME,
+        ).delete()
+        # Through the reconciling helper, so copies only Mylar3 created go too.
+        states = CollectionSourceState.objects.filter(
+            user=request.user, source="mylar", source_instance_id=instance.id
+        ).select_related("item")
+        for state in states:
+            remove_collection_source_state(
+                user=request.user,
+                item=state.item,
+                source="mylar",
+                source_instance_id=instance.id,
+            )
+        instance.delete()
+
+    _run_with_lock_retry("disconnect Mylar3", _disconnect)
+    messages.info(request, "Disconnected Mylar3.")
+    return redirect("import_data")
+
+
+@require_POST
+def import_mylar(request):
+    """Queue Mylar3 import and ensure recurring schedule exists."""
+    instance = get_object_or_404(
+        MylarInstance, pk=request.POST.get("instance_id"), user=request.user
+    )
+
+    queued = _queue_task_or_message(request,
+        tasks.import_mylar, user_id=request.user.id, mode="new", instance_id=instance.id
+    )
+    _ensure_arr_schedule(instance, MYLAR_RECURRING_TASK_NAME, "Mylar3")
+    if queued is not False:
+        messages.info(request, "Mylar3 import queued.")
+    return redirect("import_data")
+
+
+@require_POST
+def kapowarr_connect(request):
+    """Connect a new Kapowarr instance using base URL + API key."""
+    base_url = request.POST.get("base_url", "").strip()
+    api_key = request.POST.get("api_key", "").strip()
+    name = request.POST.get("name", "").strip()
+    if not base_url or not api_key:
+        messages.error(request, "Kapowarr base URL and API key are required.")
+        return _integration_redirect(request)
+
+    try:
+        KapowarrClient(base_url, api_key).healthcheck()
+    except helpers.MediaImportError as exc:
+        messages.error(request, f"Failed to connect to Kapowarr: {exc}")
+        return _integration_redirect(request)
+
+    try:
+        instance = _run_with_lock_retry(
+            "create Kapowarr instance",
+            lambda: KapowarrInstance.objects.create(
+                user=request.user,
+                name=name,
+                base_url=base_url,
+                api_key=helpers.encrypt(api_key),
+            ),
+        )
+    except IntegrityError:
+        messages.error(
+            request, "You already have a Kapowarr instance connected at this URL."
+        )
+        return _integration_redirect(request)
+
+    _ensure_arr_schedule(instance, KAPOWARR_RECURRING_TASK_NAME, "Kapowarr")
+    if _queue_task_or_message(request,
+        tasks.import_kapowarr, user_id=request.user.id, mode="new", instance_id=instance.id
+    ) is not False:
+        messages.success(
+            request,
+            "Connected Kapowarr. Initial import queued and recurring sync enabled.",
+        )
+    return _integration_redirect(request, connected_slug="kapowarr")
+
+
+@require_POST
+def kapowarr_disconnect(request):
+    """Disconnect one Kapowarr instance."""
+    from django_celery_beat.models import PeriodicTask
+
+    instance = get_object_or_404(
+        KapowarrInstance, pk=request.POST.get("instance_id"), user=request.user
+    )
+
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            _periodic_task_filter_for_instance(instance.id),
+            task=KAPOWARR_RECURRING_TASK_NAME,
+        ).delete()
+        # Through the reconciling helper, so copies only Kapowarr created go too.
+        states = CollectionSourceState.objects.filter(
+            user=request.user, source="kapowarr", source_instance_id=instance.id
+        ).select_related("item")
+        for state in states:
+            remove_collection_source_state(
+                user=request.user,
+                item=state.item,
+                source="kapowarr",
+                source_instance_id=instance.id,
+            )
+        instance.delete()
+
+    _run_with_lock_retry("disconnect Kapowarr", _disconnect)
+    messages.info(request, "Disconnected Kapowarr.")
+    return redirect("import_data")
+
+
+@require_POST
+def import_kapowarr(request):
+    """Queue Kapowarr import and ensure recurring schedule exists."""
+    instance = get_object_or_404(
+        KapowarrInstance, pk=request.POST.get("instance_id"), user=request.user
+    )
+
+    queued = _queue_task_or_message(request,
+        tasks.import_kapowarr, user_id=request.user.id, mode="new", instance_id=instance.id
+    )
+    _ensure_arr_schedule(instance, KAPOWARR_RECURRING_TASK_NAME, "Kapowarr")
+    if queued is not False:
+        messages.info(request, "Kapowarr import queued.")
     return redirect("import_data")
 
 
@@ -1625,13 +2157,15 @@ def sonarr_connect(request):
         return _integration_redirect(request)
 
     try:
-        with transaction.atomic():
-            instance = SonarrInstance.objects.create(
+        instance = _run_with_lock_retry(
+            "create Sonarr instance",
+            lambda: SonarrInstance.objects.create(
                 user=request.user,
                 name=name,
                 base_url=base_url,
                 api_key=helpers.encrypt(api_key),
-            )
+            ),
+        )
     except IntegrityError:
         messages.error(
             request, "You already have a Sonarr instance connected at this URL."
@@ -1639,11 +2173,13 @@ def sonarr_connect(request):
         return _integration_redirect(request)
 
     _ensure_arr_schedule(instance, SONARR_RECURRING_TASK_NAME, "Sonarr")
-    tasks.import_sonarr.delay(user_id=request.user.id, mode="new", instance_id=instance.id)
-    messages.success(
-        request,
-        "Connected Sonarr. Initial import queued and recurring sync enabled.",
-    )
+    if _queue_task_or_message(request,
+        tasks.import_sonarr, user_id=request.user.id, mode="new", instance_id=instance.id
+    ) is not False:
+        messages.success(
+            request,
+            "Connected Sonarr. Initial import queued and recurring sync enabled.",
+        )
     return _integration_redirect(request, connected_slug="sonarr")
 
 
@@ -1655,14 +2191,25 @@ def sonarr_disconnect(request):
     instance = get_object_or_404(
         SonarrInstance, pk=request.POST.get("instance_id"), user=request.user
     )
-    PeriodicTask.objects.filter(
-        _periodic_task_filter_for_instance(instance.id),
-        task=SONARR_RECURRING_TASK_NAME,
-    ).delete()
-    CollectionSourceState.objects.filter(
-        user=request.user, source="sonarr", source_instance_id=instance.id
-    ).delete()
-    instance.delete()
+
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            _periodic_task_filter_for_instance(instance.id),
+            task=SONARR_RECURRING_TASK_NAME,
+        ).delete()
+        states = CollectionSourceState.objects.filter(
+            user=request.user, source="sonarr", source_instance_id=instance.id
+        ).select_related("item")
+        for state in states:
+            remove_collection_source_state(
+                user=request.user,
+                item=state.item,
+                source="sonarr",
+                source_instance_id=instance.id,
+            )
+        instance.delete()
+
+    _run_with_lock_retry("disconnect Sonarr", _disconnect)
     messages.info(request, "Disconnected Sonarr.")
     return redirect("import_data")
 
@@ -1674,9 +2221,12 @@ def import_sonarr(request):
         SonarrInstance, pk=request.POST.get("instance_id"), user=request.user
     )
 
-    tasks.import_sonarr.delay(user_id=request.user.id, mode="new", instance_id=instance.id)
+    queued = _queue_task_or_message(request,
+        tasks.import_sonarr, user_id=request.user.id, mode="new", instance_id=instance.id
+    )
     _ensure_arr_schedule(instance, SONARR_RECURRING_TASK_NAME, "Sonarr")
-    messages.info(request, "Sonarr import queued.")
+    if queued is not False:
+        messages.info(request, "Sonarr import queued.")
     return redirect("import_data")
 
 
@@ -1722,6 +2272,7 @@ def jellyfin_connect(request):
         "jellyfin_username": current_user.get("Name", ""),
         "connection_broken": False,
         "last_error_message": "",
+        "last_pull_error_message": "",
     }
     if existing_account is None or identity_changed:
         # A different server/user invalidates any cached pull state: a
@@ -1735,31 +2286,38 @@ def jellyfin_connect(request):
             },
         )
 
-    account, _ = JellyfinAccount.objects.update_or_create(
-        user=request.user,
-        defaults=defaults,
-    )
+    def _connect():
+        account, _ = JellyfinAccount.objects.update_or_create(
+            user=request.user,
+            defaults=defaults,
+        )
+        if account.pull_history_enabled:
+            _ensure_jellyfin_pull_schedule(request.user, account)
+        return account
+
+    _run_with_lock_retry("connect Jellyfin", _connect)
 
     # Seamless by default: queue an automatic history pull right away so a
     # newly connected user sees their watch history without any manual
     # export/upload step, and keep it running on a schedule going forward.
-    tasks.pull_jellyfin_history.delay(user_id=request.user.id)
-    if account.pull_history_enabled:
-        _ensure_jellyfin_pull_schedule(request.user, account)
-
-    messages.success(
-        request,
-        "Connected Jellyfin. Importing your watch history now.",
-    )
+    if _queue_task_or_message(request, tasks.pull_jellyfin_history, user_id=request.user.id) is not False:
+        messages.success(
+            request,
+            "Connected Jellyfin. Importing your watch history now.",
+        )
     return redirect("integrations")
 
 
 @require_POST
 def jellyfin_disconnect(request):
     """Disconnect the Jellyfin integration."""
-    _disable_jellyfin_push_schedule(request.user)
-    _disable_jellyfin_pull_schedule(request.user)
-    JellyfinAccount.objects.filter(user=request.user).delete()
+
+    def _disconnect():
+        _disable_jellyfin_push_schedule(request.user)
+        _disable_jellyfin_pull_schedule(request.user)
+        JellyfinAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Jellyfin", _disconnect)
     messages.info(request, "Disconnected Jellyfin.")
     return redirect("integrations")
 
@@ -1809,8 +2367,8 @@ def jellyfin_push_now(request):
         messages.error(request, "Connect Jellyfin before syncing.")
         return redirect("integrations")
 
-    tasks.push_jellyfin_watched.delay(user_id=request.user.id)
-    messages.info(request, "Jellyfin sync queued.")
+    if _queue_task_or_message(request, tasks.push_jellyfin_watched, user_id=request.user.id) is not False:
+        messages.info(request, "Jellyfin sync queued.")
     return redirect("integrations")
 
 
@@ -1818,12 +2376,14 @@ def jellyfin_push_now(request):
 def jellyfin_pull_now(request):
     """Queue an immediate automatic Jellyfin history pull."""
     account = getattr(request.user, "jellyfin_account", None)
-    if not account or not account.is_connected:
+    # A broken account is still queued: the pull re-probes the key and clears
+    # the flag when it works again.
+    if not account or not account.base_url or not account.api_key:
         messages.error(request, "Connect Jellyfin before importing history.")
         return redirect("integrations")
 
-    tasks.pull_jellyfin_history.delay(user_id=request.user.id)
-    messages.info(request, "Jellyfin history import queued.")
+    if _queue_task_or_message(request, tasks.pull_jellyfin_history, user_id=request.user.id) is not False:
+        messages.info(request, "Jellyfin history import queued.")
     return redirect("integrations")
 
 
@@ -1844,38 +2404,47 @@ def jellyfin_playback_reporting_import(request):
         messages.error(request, "The Playback Reporting export is larger than 50 MB.")
         return redirect("integrations")
 
-    payload = uploaded_file.read()
-    if not payload:
+    if uploaded_file.size == 0:
         messages.error(request, "The Playback Reporting export is empty.")
         return redirect("integrations")
 
-    tasks.import_jellyfin_playback_reporting.delay(
-        payload,
+    staged_file = _stage_upload_or_message(
+        request,
+        uploaded_file,
+        "Jellyfin Playback Reporting export",
+    )
+    if staged_file is None:
+        return redirect("integrations")
+
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_jellyfin_playback_reporting,
+        staged_file,
         request.user.id,
         "new",
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return redirect("integrations")
     messages.info(request, "Jellyfin Playback Reporting import queued.")
     return redirect("integrations")
 
 
-def _ensure_audiobookshelf_schedule(user):
-    """Create or update the recurring Audiobookshelf import schedule for a user."""
+def _ensure_recurring_import_schedule(user, label, poll_interval_minutes):
+    """Create or update a user's recurring "Import from <label>" schedule."""
     from django_celery_beat.models import IntervalSchedule, PeriodicTask
 
-    poll_interval_minutes = getattr(
-        settings, "AUDIOBOOKSHELF_POLL_INTERVAL_MINUTES", 15
-    )
     interval, _ = IntervalSchedule.objects.get_or_create(
         every=poll_interval_minutes,
         period=IntervalSchedule.MINUTES,
     )
     task_name = (
-        f"Import from Audiobookshelf for {user.username} "
+        f"Import from {label} for {user.username} "
         f"(every {poll_interval_minutes} minutes)"
     )
+    task = f"Import from {label} (Recurring)"
     existing_task = PeriodicTask.objects.filter(
-        task="Import from Audiobookshelf (Recurring)",
-        kwargs__contains=f'"user_id": {user.id}',
+        task=task,
+        **helpers.periodic_task_user_kwargs(user.id),
     ).first()
 
     if existing_task:
@@ -1898,11 +2467,20 @@ def _ensure_audiobookshelf_schedule(user):
 
     return PeriodicTask.objects.create(
         name=task_name,
-        task="Import from Audiobookshelf (Recurring)",
+        task=task,
         interval=interval,
         kwargs=json.dumps({"user_id": user.id}),
         start_time=timezone.now(),
         enabled=True,
+    )
+
+
+def _ensure_audiobookshelf_schedule(user):
+    """Create or update the recurring Audiobookshelf import schedule for a user."""
+    return _ensure_recurring_import_schedule(
+        user,
+        "Audiobookshelf",
+        getattr(settings, "AUDIOBOOKSHELF_POLL_INTERVAL_MINUTES", 15),
     )
 
 
@@ -1926,19 +2504,23 @@ def audiobookshelf_connect(request):
         messages.error(request, f"Failed to connect to Audiobookshelf: {exc}")
         return _integration_redirect(request)
 
-    AudiobookshelfAccount.objects.update_or_create(
-        user=request.user,
-        defaults={
-            "base_url": base_url,
-            "api_token": helpers.encrypt(api_token),
-            "connection_broken": False,
-            "last_error_message": "",
-        },
-    )
+    def _connect():
+        AudiobookshelfAccount.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "base_url": base_url,
+                "api_token": helpers.encrypt(api_token),
+                "connection_broken": False,
+                "last_error_message": "",
+            },
+        )
+        _ensure_audiobookshelf_schedule(request.user)
 
-    _ensure_audiobookshelf_schedule(request.user)
-    tasks.import_audiobookshelf.delay(user_id=request.user.id, mode="new")
-    messages.success(request, "Connected Audiobookshelf. Initial import queued.")
+    _run_with_lock_retry("connect Audiobookshelf", _connect)
+    if _queue_task_or_message(request,
+        tasks.import_audiobookshelf, user_id=request.user.id, mode="new"
+    ) is not False:
+        messages.success(request, "Connected Audiobookshelf. Initial import queued.")
     return _integration_redirect(request, connected_slug="audiobookshelf")
 
 
@@ -1947,11 +2529,14 @@ def audiobookshelf_disconnect(request):
     """Disconnect Audiobookshelf integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        task="Import from Audiobookshelf (Recurring)",
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
-    AudiobookshelfAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task="Import from Audiobookshelf (Recurring)",
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        AudiobookshelfAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Audiobookshelf", _disconnect)
     messages.info(request, "Disconnected Audiobookshelf.")
     return redirect("import_data")
 
@@ -1964,14 +2549,149 @@ def import_audiobookshelf(request):
         messages.error(request, "Connect Audiobookshelf before importing.")
         return redirect("import_data")
 
-    tasks.import_audiobookshelf.delay(user_id=request.user.id, mode="new")
+    queued = _queue_task_or_message(request,
+        tasks.import_audiobookshelf, user_id=request.user.id, mode="new"
+    )
     _ensure_audiobookshelf_schedule(request.user)
 
-    messages.info(request, "Audiobookshelf import queued.")
+    if queued is not False:
+        messages.info(request, "Audiobookshelf import queued.")
     return redirect("import_data")
 
 
+def _sync_interval(request, account_model, default=15):
+    """Return the sync interval chosen in a reading server form, or ``default``."""
+    try:
+        minutes = int(request.POST.get("sync_interval_minutes", default))
+    except ValueError:
+        return default
+    return minutes if minutes in account_model.SYNC_INTERVAL_CHOICES else default
+
+
+def _reading_server_connect(
+    request, service, account_model, client_class, import_task, related_name
+):
+    """Connect a reading server (Komga, Kavita) using its URL and an API key."""
+    base_url = request.POST.get("base_url", "").strip()
+    api_key = request.POST.get("api_key", "").strip()
+
+    if not base_url or not api_key:
+        messages.error(request, f"{service} server URL and API key are required.")
+        return _integration_redirect(request)
+
+    try:
+        client_class(base_url, api_key).healthcheck()
+    except Exception as exc:
+        messages.error(request, f"Failed to connect to {service}: {exc}")
+        return _integration_redirect(request)
+
+    interval = _sync_interval(request, account_model)
+
+    def _connect():
+        account_model.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "base_url": base_url,
+                "api_key": helpers.encrypt(api_key),
+                "sync_interval_minutes": interval,
+                "connection_broken": False,
+                "last_error_message": "",
+            },
+        )
+        _ensure_recurring_import_schedule(request.user, service, interval)
+
+    _run_with_lock_retry(f"connect {service}", _connect)
+    if _queue_task_or_message(
+        request, import_task, user_id=request.user.id, mode="new"
+    ) is not False:
+        messages.success(request, f"Connected {service}. Initial import queued.")
+    return _integration_redirect(request, connected_slug=related_name)
+
+
+def _reading_server_disconnect(request, service, account_model):
+    """Disconnect a reading server and remove its recurring schedule."""
+    from django_celery_beat.models import PeriodicTask
+
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task=f"Import from {service} (Recurring)",
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        account_model.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry(f"disconnect {service}", _disconnect)
+    messages.info(request, f"Disconnected {service}.")
+    return redirect("import_data")
+
+
+def _reading_server_sync_now(request, service, account_attr, import_task):
+    """Queue a sync now and keep the recurring schedule in place."""
+    account = getattr(request.user, account_attr, None)
+    if not account:
+        messages.error(request, f"Connect {service} before importing.")
+        return redirect("import_data")
+
+    queued = _queue_task_or_message(
+        request, import_task, user_id=request.user.id, mode="new"
+    )
+    _ensure_recurring_import_schedule(
+        request.user, service, account.sync_interval_minutes
+    )
+
+    if queued is not False:
+        messages.info(request, f"{service} sync queued.")
+    return redirect("import_data")
+
+
+@require_POST
+def komga_connect(request):
+    """Connect Komga using its server URL and an API key."""
+    return _reading_server_connect(
+        request, "Komga", KomgaAccount, KomgaClient, tasks.import_komga, "komga"
+    )
+
+
+@require_POST
+def komga_disconnect(request):
+    """Disconnect Komga."""
+    return _reading_server_disconnect(request, "Komga", KomgaAccount)
+
+
+@require_POST
+def import_komga(request):
+    """Queue a Komga sync now."""
+    return _reading_server_sync_now(
+        request, "Komga", "komga_account", tasks.import_komga
+    )
+
+
+@require_POST
+def kavita_connect(request):
+    """Connect Kavita using its server URL and an API key."""
+    return _reading_server_connect(
+        request, "Kavita", KavitaAccount, KavitaClient, tasks.import_kavita, "kavita"
+    )
+
+
+@require_POST
+def kavita_disconnect(request):
+    """Disconnect Kavita."""
+    return _reading_server_disconnect(request, "Kavita", KavitaAccount)
+
+
+@require_POST
+def import_kavita(request):
+    """Queue a Kavita sync now."""
+    return _reading_server_sync_now(
+        request, "Kavita", "kavita_account", tasks.import_kavita
+    )
+
+
 AUDIOBOOKSHELF_COVER_TIMEOUT = 15
+# After one failed cover fetch, the account's remaining covers skip ABS for this
+# long. Otherwise every poster on a page holds a web worker for the full
+# timeout while the server is down (#1307).
+AUDIOBOOKSHELF_COVER_BACKOFF_SECONDS = 60
 # Plain raster types only - an upstream ABS server (attacker-controlled, or
 # just compromised) returning e.g. text/html or image/svg+xml would have it
 # served as active content from Floppy's own origin to anyone holding the
@@ -2116,6 +2836,18 @@ def audiobookshelf_cover(request, token):
         )
         return _placeholder_image_response()
 
+    # The last good copy is served while fresh, and whenever ABS cannot answer
+    # (#1307), so a slow server no longer blanks every poster.
+    stored_key = f"abs-cover:{account_id}:{library_item_id}"
+    stored = image_cache.load_stored_cover(stored_key)
+    if stored is not None and stored[2]:
+        return image_cache.stored_cover_response(stored)
+
+    def fallback():
+        if stored is not None:
+            return image_cache.stored_cover_response(stored)
+        return _placeholder_image_response()
+
     try:
         api_token = helpers.decrypt(account.api_token)
     except Exception as error:
@@ -2126,17 +2858,29 @@ def audiobookshelf_cover(request, token):
             library_item_id,
             exception_summary(error),
         )
-        return _placeholder_image_response()
+        return fallback()
+
+    backoff_key = f"abs_cover_backoff:{account_id}"
+    if cache.get(backoff_key):
+        logger.debug(
+            "Audiobookshelf cover skipped: server recently unreachable "
+            "account=%s item=%s",
+            account_id,
+            library_item_id,
+        )
+        return fallback()
 
     cover_url = f"{account.base_url.rstrip('/')}/api/items/{library_item_id}/cover"
     try:
-        upstream = requests.get(
+        upstream = send_to_self_hosted(
+            requests.get,
             cover_url,
             headers={"Authorization": f"Bearer {api_token}"},
             timeout=AUDIOBOOKSHELF_COVER_TIMEOUT,
             stream=True,
         )
     except requests.RequestException as error:
+        cache.set(backoff_key, 1, AUDIOBOOKSHELF_COVER_BACKOFF_SECONDS)
         logger.warning(
             "Audiobookshelf cover unavailable: request failed "
             "account=%s item=%s error=%s",
@@ -2144,7 +2888,7 @@ def audiobookshelf_cover(request, token):
             library_item_id,
             exception_summary(error),
         )
-        return _placeholder_image_response()
+        return fallback()
 
     try:
         if upstream.status_code != HTTPStatus.OK:
@@ -2155,7 +2899,7 @@ def audiobookshelf_cover(request, token):
                 account_id,
                 library_item_id,
             )
-            return _placeholder_image_response()
+            return fallback()
 
         content_type = (
             upstream.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
@@ -2171,7 +2915,7 @@ def audiobookshelf_cover(request, token):
                 account_id,
                 library_item_id,
             )
-            return _placeholder_image_response()
+            return fallback()
 
         try:
             content_length = int(upstream.headers.get("Content-Length", "0"))
@@ -2185,17 +2929,30 @@ def audiobookshelf_cover(request, token):
                 account_id,
                 library_item_id,
             )
-            return _placeholder_image_response()
+            return fallback()
 
         body = bytearray()
         oversized = False
-        for chunk in upstream.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            body.extend(chunk)
-            if len(body) > image_cache.MAX_IMAGE_BYTES:
-                oversized = True
-                break
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                body.extend(chunk)
+                if len(body) > image_cache.MAX_IMAGE_BYTES:
+                    oversized = True
+                    break
+        except requests.RequestException as error:
+            # With stream=True a server that stalls after the headers fails
+            # here rather than at send time, so it gets the same backoff.
+            cache.set(backoff_key, 1, AUDIOBOOKSHELF_COVER_BACKOFF_SECONDS)
+            logger.warning(
+                "Audiobookshelf cover unavailable: body read failed "
+                "account=%s item=%s error=%s",
+                account_id,
+                library_item_id,
+                exception_summary(error),
+            )
+            return fallback()
     finally:
         upstream.close()
 
@@ -2207,7 +2964,7 @@ def audiobookshelf_cover(request, token):
             account_id,
             library_item_id,
         )
-        return _placeholder_image_response()
+        return fallback()
 
     body = bytes(body)
     # An upstream that declares nothing useful still has to prove it sent a
@@ -2222,9 +2979,10 @@ def audiobookshelf_cover(request, token):
                 account_id,
                 library_item_id,
             )
-            return _placeholder_image_response()
+            return fallback()
         content_type = sniffed
 
+    image_cache.store_cover(stored_key, body, content_type)
     response = HttpResponse(body, content_type=content_type)
     response["Cache-Control"] = "private, max-age=3600"
     response["X-Content-Type-Options"] = "nosniff"
@@ -2260,13 +3018,24 @@ def plex_cover(request, token):
     if account is None:
         return HttpResponseNotFound()
 
+    # Same last-good-copy rule as the Audiobookshelf proxy (#1307).
+    stored_key = f"plex-cover:{account_id}:{machine_identifier}:{thumb_path}"
+    stored = image_cache.load_stored_cover(stored_key)
+    if stored is not None and stored[2]:
+        return image_cache.stored_cover_response(stored)
+
+    def fallback():
+        if stored is not None:
+            return image_cache.stored_cover_response(stored)
+        return HttpResponseNotFound()
+
     uri, plex_token = plex_api.connection_for_machine(
         account.sections,
         machine_identifier,
         account.plex_token,
     )
     if not uri or not plex_token:
-        return HttpResponseNotFound()
+        return fallback()
 
     try:
         upstream = requests.get(
@@ -2277,24 +3046,24 @@ def plex_cover(request, token):
             verify=settings.PLEX_SSL_VERIFY,
         )
     except requests.RequestException:
-        return HttpResponseNotFound()
+        return fallback()
 
     try:
         if upstream.status_code != HTTPStatus.OK:
-            return HttpResponseNotFound()
+            return fallback()
 
         content_type = (
             upstream.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         )
         if content_type not in PLEX_COVER_CONTENT_TYPES:
-            return HttpResponseNotFound()
+            return fallback()
 
         try:
             content_length = int(upstream.headers.get("Content-Length", "0"))
         except ValueError:
             content_length = 0
         if content_length > image_cache.MAX_IMAGE_BYTES:
-            return HttpResponseNotFound()
+            return fallback()
 
         body = bytearray()
         for chunk in upstream.iter_content(chunk_size=64 * 1024):
@@ -2302,11 +3071,13 @@ def plex_cover(request, token):
                 continue
             body.extend(chunk)
             if len(body) > image_cache.MAX_IMAGE_BYTES:
-                return HttpResponseNotFound()
+                return fallback()
     finally:
         upstream.close()
 
-    response = HttpResponse(bytes(body), content_type=content_type)
+    body = bytes(body)
+    image_cache.store_cover(stored_key, body, content_type)
+    response = HttpResponse(body, content_type=content_type)
     response["Cache-Control"] = "private, max-age=3600"
     return response
 
@@ -2335,7 +3106,7 @@ def _ensure_storyteller_schedule(user):
 
     existing_task = PeriodicTask.objects.filter(
         task=STORYTELLER_RECURRING_TASK_NAME,
-        kwargs__contains=f'"user_id": {user.id}',
+        **helpers.periodic_task_user_kwargs(user.id),
         enabled=True,
     ).first()
     if existing_task:
@@ -2423,18 +3194,25 @@ def storyteller_poll(request):
 
     access_token = data.get("access_token") if isinstance(data, dict) else None
     if access_token:
-        StorytellerAccount.objects.update_or_create(
-            user=request.user,
-            defaults={
-                "server_url": pending["server_url"],
-                "auth_token": helpers.encrypt(access_token),
-                "connection_broken": False,
-                "last_error_message": "",
-            },
-        )
+
+        def _connect():
+            StorytellerAccount.objects.update_or_create(
+                user=request.user,
+                defaults={
+                    "server_url": pending["server_url"],
+                    "auth_token": helpers.encrypt(access_token),
+                    "connection_broken": False,
+                    "last_error_message": "",
+                },
+            )
+            _ensure_storyteller_schedule(request.user)
+
+        _run_with_lock_retry("connect Storyteller", _connect)
         request.session.pop(STORYTELLER_PENDING_SESSION_KEY, None)
-        tasks.import_storyteller.delay(user_id=request.user.id, mode="new")
-        _ensure_storyteller_schedule(request.user)
+        if not _queue_task_quietly(
+            tasks.import_storyteller, user_id=request.user.id, mode="new"
+        ):
+            return JsonResponse({"status": "connected", "import_queued": False})
         return JsonResponse({"status": "connected"})
 
     error = data.get("error") if isinstance(data, dict) else None
@@ -2461,11 +3239,14 @@ def storyteller_disconnect(request):
     """Disconnect the Storyteller integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        task=STORYTELLER_RECURRING_TASK_NAME,
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
-    StorytellerAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task=STORYTELLER_RECURRING_TASK_NAME,
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        StorytellerAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Storyteller", _disconnect)
     messages.info(request, "Disconnected Storyteller.")
     return redirect("import_data")
 
@@ -2478,9 +3259,10 @@ def import_storyteller(request):
         messages.error(request, "Connect Storyteller before importing.")
         return redirect("import_data")
 
-    tasks.import_storyteller.delay(user_id=request.user.id, mode="new")
+    queued = _queue_task_or_message(request, tasks.import_storyteller, user_id=request.user.id, mode="new")
     _ensure_storyteller_schedule(request.user)
-    messages.info(request, "Storyteller import queued.")
+    if queued is not False:
+        messages.info(request, "Storyteller import queued.")
     return redirect("import_data")
 
 
@@ -2557,21 +3339,26 @@ def koreader_connect(request):
         messages.error(request, f"Could not reach KOReader sync server: {exc}")
         return redirect("import_data")
 
-    KoreaderAccount.objects.update_or_create(
-        user=request.user,
-        defaults={
-            "server_url": server_url,
-            "username": username,
-            "auth_key": helpers.encrypt(auth_key),
-            **options,
-            "connection_broken": False,
-            "last_error_message": "",
-        },
+    _run_with_lock_retry(
+        "connect KOReader",
+        lambda: KoreaderAccount.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "server_url": server_url,
+                "username": username,
+                "auth_key": helpers.encrypt(auth_key),
+                **options,
+                "connection_broken": False,
+                "last_error_message": "",
+            },
+        ),
     )
 
     if frequency == "once":
-        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
-        messages.success(request, "Connected to KOReader. Import queued.")
+        if _queue_task_or_message(request,
+            tasks.import_koreader, user_id=request.user.id, mode=mode
+        ) is not False:
+            messages.success(request, "Connected to KOReader. Import queued.")
     else:
         helpers.create_import_schedule(
             username=username,
@@ -2582,8 +3369,10 @@ def koreader_connect(request):
             source="KOReader",
             extra_kwargs={"user_id": request.user.id},
         )
-        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
-        messages.success(request, "Connected to KOReader. Import scheduled.")
+        if _queue_task_or_message(request,
+            tasks.import_koreader, user_id=request.user.id, mode=mode
+        ) is not False:
+            messages.success(request, "Connected to KOReader. Import scheduled.")
     return redirect("import_data")
 
 
@@ -2666,12 +3455,15 @@ def koreader_disconnect(request):
     """Disconnect the KOReader integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        task=KOREADER_IMPORT_TASK_NAME,
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
-    KoreaderDocumentLink.objects.filter(user=request.user).delete()
-    KoreaderAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task=KOREADER_IMPORT_TASK_NAME,
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        KoreaderDocumentLink.objects.filter(user=request.user).delete()
+        KoreaderAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect KOReader", _disconnect)
     messages.info(request, "Disconnected KOReader.")
     return redirect("import_data")
 
@@ -2689,8 +3481,10 @@ def import_koreader(request):
     import_time = request.POST["time"]
 
     if frequency == "once":
-        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
-        messages.info(request, "KOReader import queued.")
+        if _queue_task_or_message(request,
+            tasks.import_koreader, user_id=request.user.id, mode=mode
+        ) is not False:
+            messages.info(request, "KOReader import queued.")
     else:
         helpers.create_import_schedule(
             username=account.username,
@@ -2713,7 +3507,7 @@ def _ensure_stremio_schedule(user):
 
     existing_task = PeriodicTask.objects.filter(
         task=STREMIO_RECURRING_TASK_NAME,
-        kwargs__contains=f'"user_id": {user.id}',
+        **helpers.periodic_task_user_kwargs(user.id),
         enabled=True,
     ).first()
     if existing_task:
@@ -2770,21 +3564,26 @@ def stremio_connect(request):
         messages.error(request, f"Failed to connect to Stremio: {error}")
         return _integration_redirect(request)
 
-    StremioAccount.objects.update_or_create(
-        user=request.user,
-        defaults={
-            "auth_key": helpers.encrypt(auth_key),
-            "email": helpers.encrypt(email) if email else "",
-            "connection_broken": False,
-            "last_error_message": "",
-        },
-    )
-    tasks.import_stremio.delay(user_id=request.user.id, mode="new")
-    _ensure_stremio_schedule(request.user)
-    messages.success(
-        request,
-        "Connected to Stremio. Initial import queued; your library will sync every 2 hours.",
-    )
+    def _connect():
+        StremioAccount.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "auth_key": helpers.encrypt(auth_key),
+                "email": helpers.encrypt(email) if email else "",
+                "connection_broken": False,
+                "last_error_message": "",
+            },
+        )
+        _ensure_stremio_schedule(request.user)
+
+    _run_with_lock_retry("connect Stremio", _connect)
+    if _queue_task_or_message(request,
+        tasks.import_stremio, user_id=request.user.id, mode="new"
+    ) is not False:
+        messages.success(
+            request,
+            "Connected to Stremio. Initial import queued; your library will sync every 2 hours.",
+        )
     return _integration_redirect(request, connected_slug="stremio")
 
 
@@ -2793,11 +3592,14 @@ def stremio_disconnect(request):
     """Disconnect the Stremio integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        task=STREMIO_RECURRING_TASK_NAME,
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
-    StremioAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task=STREMIO_RECURRING_TASK_NAME,
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        StremioAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Stremio", _disconnect)
     messages.info(request, "Disconnected Stremio.")
     return redirect("import_data")
 
@@ -2810,9 +3612,10 @@ def import_stremio(request):
         messages.error(request, "Connect Stremio before importing.")
         return redirect("import_data")
 
-    tasks.import_stremio.delay(user_id=request.user.id, mode="new")
+    queued = _queue_task_or_message(request, tasks.import_stremio, user_id=request.user.id, mode="new")
     _ensure_stremio_schedule(request.user)
-    messages.info(request, "Stremio import queued.")
+    if queued is not False:
+        messages.info(request, "Stremio import queued.")
     return redirect("import_data")
 
 
@@ -2968,7 +3771,8 @@ def _start_console_import(request, source, task, recurring_task_name):
     import_time = request.POST.get("time") or CONSOLE_DEFAULT_IMPORT_TIME
 
     if frequency not in CONSOLE_RECURRING_FREQUENCIES:
-        task.delay(user_id=request.user.id, mode=mode)
+        if _queue_task_or_message(request, task, user_id=request.user.id, mode=mode) is False:
+            return
         messages.info(
             request,
             f"The task to import media from {source} has been queued.",
@@ -3007,18 +3811,26 @@ def xbox_connect(request):
         )
         return redirect("import_data")
 
-    XboxAccount.objects.update_or_create(
-        user=request.user,
-        defaults={
-            "api_key": helpers.encrypt(api_key),
-            "xuid": xuid,
-            "gamertag": gamertag,
-            "connection_broken": False,
-            "last_error_message": "",
-        },
+    _run_with_lock_retry(
+        "connect Xbox",
+        lambda: XboxAccount.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "api_key": helpers.encrypt(api_key),
+                "xuid": xuid,
+                "gamertag": gamertag,
+                "connection_broken": False,
+                "last_error_message": "",
+            },
+        ),
     )
     messages.success(request, f"Connected to Xbox as {gamertag or xuid}.")
-    _start_console_import(request, "Xbox", tasks.import_xbox, XBOX_RECURRING_TASK_NAME)
+    _run_with_lock_retry(
+        "schedule Xbox import",
+        lambda: _start_console_import(
+            request, "Xbox", tasks.import_xbox, XBOX_RECURRING_TASK_NAME
+        ),
+    )
     return redirect("import_data")
 
 
@@ -3027,11 +3839,14 @@ def xbox_disconnect(request):
     """Disconnect the Xbox integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        _periodic_task_filter_for_user(request.user.id),
-        task=XBOX_RECURRING_TASK_NAME,
-    ).delete()
-    XboxAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            _periodic_task_filter_for_user(request.user.id),
+            task=XBOX_RECURRING_TASK_NAME,
+        ).delete()
+        XboxAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Xbox", _disconnect)
     messages.info(request, "Disconnected Xbox.")
     return redirect("import_data")
 
@@ -3073,21 +3888,29 @@ def psn_connect(request):
         )
         return redirect("import_data")
 
-    PSNAccount.objects.update_or_create(
-        user=request.user,
-        defaults={
-            "npsso": helpers.encrypt(npsso),
-            "account_id": account_id,
-            "online_id": online_id,
-            "connection_broken": False,
-            "last_error_message": "",
-        },
+    _run_with_lock_retry(
+        "connect PSN",
+        lambda: PSNAccount.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "npsso": helpers.encrypt(npsso),
+                "account_id": account_id,
+                "online_id": online_id,
+                "connection_broken": False,
+                "last_error_message": "",
+            },
+        ),
     )
     messages.success(
         request,
         f"Connected to PlayStation Network as {online_id or account_id}.",
     )
-    _start_console_import(request, "PSN", tasks.import_psn, PSN_RECURRING_TASK_NAME)
+    _run_with_lock_retry(
+        "schedule PSN import",
+        lambda: _start_console_import(
+            request, "PSN", tasks.import_psn, PSN_RECURRING_TASK_NAME
+        ),
+    )
     return redirect("import_data")
 
 
@@ -3096,11 +3919,14 @@ def psn_disconnect(request):
     """Disconnect the PlayStation Network integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        _periodic_task_filter_for_user(request.user.id),
-        task=PSN_RECURRING_TASK_NAME,
-    ).delete()
-    PSNAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            _periodic_task_filter_for_user(request.user.id),
+            task=PSN_RECURRING_TASK_NAME,
+        ).delete()
+        PSNAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect PSN", _disconnect)
     messages.info(request, "Disconnected PlayStation Network.")
     return redirect("import_data")
 
@@ -3164,28 +3990,31 @@ def pocketcasts_connect(request):
         # Parse expiration from JWT
         token_expires_at = pocketcasts_api.parse_token_expiration(access_token)
 
-        PocketCastsAccount.objects.update_or_create(
-            user=request.user,
-            defaults={
-                "email": encrypted_email,
-                "password": encrypted_password,
-                "access_token": encrypted_access,
-                "refresh_token": encrypted_refresh,
-                "token_expires_at": token_expires_at,
-                "connection_broken": False,  # Clear broken flag on successful connection
-            },
-        )
-
-        # Set up 2-hour recurring import if it doesn't exist
         from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
-        existing_task = PeriodicTask.objects.filter(
-            task="Import from Pocket Casts (Recurring)",
-            kwargs__contains=f'"user_id": {request.user.id}',
-            enabled=True,
-        ).first()
+        def _connect():
+            PocketCastsAccount.objects.update_or_create(
+                user=request.user,
+                defaults={
+                    "email": encrypted_email,
+                    "password": encrypted_password,
+                    "access_token": encrypted_access,
+                    "refresh_token": encrypted_refresh,
+                    "token_expires_at": token_expires_at,
+                    "connection_broken": False,  # Clear broken flag on successful connection
+                },
+            )
 
-        if not existing_task:
+            # Set up 2-hour recurring import if it doesn't exist
+            existing_task = PeriodicTask.objects.filter(
+                task="Import from Pocket Casts (Recurring)",
+                **helpers.periodic_task_user_kwargs(request.user.id),
+                enabled=True,
+            ).first()
+
+            if existing_task:
+                return False
+
             # Create crontab for every 2 hours (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22)
             crontab, _ = CrontabSchedule.objects.get_or_create(
                 minute=0,
@@ -3211,16 +4040,21 @@ def pocketcasts_connect(request):
                 start_time=timezone.now(),
                 enabled=True,
             )
+            return True
 
+        newly_scheduled = _run_with_lock_retry("connect Pocket Casts", _connect)
+
+        if newly_scheduled:
             # Run initial import
-            tasks.import_pocketcasts.delay(
+            if _queue_task_or_message(request,
+                tasks.import_pocketcasts,
                 user_id=request.user.id,
                 mode="new",
-            )
-            messages.success(
-                request,
-                "Connected to Pocket Casts successfully. Initial import queued. Recurring imports will run every 2 hours.",
-            )
+            ) is not False:
+                messages.success(
+                    request,
+                    "Connected to Pocket Casts successfully. Initial import queued. Recurring imports will run every 2 hours.",
+                )
         else:
             messages.success(request, "Connected to Pocket Casts successfully.")
     except Exception as e:
@@ -3236,14 +4070,17 @@ def pocketcasts_disconnect(request):
     """Remove stored Pocket Casts credentials and delete periodic import task."""
     from django_celery_beat.models import PeriodicTask
 
-    # Delete periodic import task if it exists
-    PeriodicTask.objects.filter(
-        task="Import from Pocket Casts (Recurring)",
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
+    def _disconnect():
+        # Delete periodic import task if it exists
+        PeriodicTask.objects.filter(
+            task="Import from Pocket Casts (Recurring)",
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
 
-    # Clear all credentials (full disconnect)
-    PocketCastsAccount.objects.filter(user=request.user).delete()
+        # Clear all credentials (full disconnect)
+        PocketCastsAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Pocket Casts", _disconnect)
     messages.info(request, "Disconnected Pocket Casts and removed scheduled imports.")
     return redirect("import_data")
 
@@ -3283,27 +4120,30 @@ def gpodder_connect(request):
     device_id = f"yamtrack-{request.user.id}"
 
     try:
-        GPodderAccount.objects.update_or_create(
-            user=request.user,
-            defaults={
-                "server_url": helpers.encrypt(server_url),
-                "username": helpers.encrypt(username),
-                "password": helpers.encrypt(password),
-                "device_id": device_id,
-                "device_filter": device_filter,
-                "connection_broken": False,
-                "last_error_message": "",
-            },
-        )
-
         from django_celery_beat.models import CrontabSchedule, PeriodicTask
 
-        existing_task = PeriodicTask.objects.filter(
-            task=GPODDER_RECURRING_TASK_NAME,
-            kwargs__contains=f'"user_id": {request.user.id}',
-            enabled=True,
-        ).first()
-        if not existing_task:
+        def _connect():
+            GPodderAccount.objects.update_or_create(
+                user=request.user,
+                defaults={
+                    "server_url": helpers.encrypt(server_url),
+                    "username": helpers.encrypt(username),
+                    "password": helpers.encrypt(password),
+                    "device_id": device_id,
+                    "device_filter": device_filter,
+                    "connection_broken": False,
+                    "last_error_message": "",
+                },
+            )
+
+            existing_task = PeriodicTask.objects.filter(
+                task=GPODDER_RECURRING_TASK_NAME,
+                **helpers.periodic_task_user_kwargs(request.user.id),
+                enabled=True,
+            ).first()
+            if existing_task:
+                return False
+
             crontab, _ = CrontabSchedule.objects.get_or_create(
                 minute=0,
                 hour="*/2",
@@ -3320,11 +4160,18 @@ def gpodder_connect(request):
                 start_time=timezone.now(),
                 enabled=True,
             )
-            tasks.import_gpodder.delay(user_id=request.user.id, mode="new")
-            messages.success(
-                request,
-                "Connected to GPodder successfully. Initial sync queued. Recurring syncs will run every 2 hours.",
-            )
+            return True
+
+        newly_scheduled = _run_with_lock_retry("connect GPodder", _connect)
+
+        if newly_scheduled:
+            if _queue_task_or_message(request,
+                tasks.import_gpodder, user_id=request.user.id, mode="new"
+            ) is not False:
+                messages.success(
+                    request,
+                    "Connected to GPodder successfully. Initial sync queued. Recurring syncs will run every 2 hours.",
+                )
         else:
             messages.success(request, "Connected to GPodder successfully.")
     except Exception as exc:
@@ -3340,11 +4187,14 @@ def gpodder_disconnect(request):
     """Remove stored GPodder credentials and scheduled imports."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        task=GPODDER_RECURRING_TASK_NAME,
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
-    GPodderAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task=GPODDER_RECURRING_TASK_NAME,
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        GPodderAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect GPodder", _disconnect)
     messages.info(request, "Disconnected GPodder and removed scheduled imports.")
     return redirect("import_data")
 
@@ -3393,31 +4243,36 @@ def lastfm_connect(request):
 
         current_timestamp = int(time.time())
 
-        lastfm_account, _ = LastFMAccount.objects.update_or_create(
-            user=request.user,
-            defaults={
-                "lastfm_username": username,
-                "last_fetch_timestamp_uts": current_timestamp,
-                "connection_broken": False,
-                "failure_count": 0,
-                "last_error_code": "",
-                "last_error_message": "",
-                "last_failed_at": None,
-            },
-        )
-        _save_lastfm_history_reset(lastfm_account, current_timestamp - 1)
+        def _connect():
+            lastfm_account, _ = LastFMAccount.objects.update_or_create(
+                user=request.user,
+                defaults={
+                    "lastfm_username": username,
+                    "last_fetch_timestamp_uts": current_timestamp,
+                    "connection_broken": False,
+                    "failure_count": 0,
+                    "last_error_code": "",
+                    "last_error_message": "",
+                    "last_failed_at": None,
+                },
+            )
+            _save_lastfm_history_reset(lastfm_account, current_timestamp - 1)
+            _ensure_lastfm_poll_schedule()
 
-        _ensure_lastfm_poll_schedule()
+        _run_with_lock_retry("connect Last.fm", _connect)
         poll_interval_minutes = getattr(settings, "LASTFM_POLL_INTERVAL_MINUTES", 15)
-        tasks.poll_lastfm_for_user.delay(user_id=request.user.id)
-        tasks.import_lastfm_history.delay(user_id=request.user.id, reset=False)
-        messages.success(
-            request,
-            (
-                "Connected to Last.fm successfully. Recurring syncs will run every "
-                f"{poll_interval_minutes} minutes. Initial sync and full history import queued."
-            ),
+        poll_queued = _queue_task_or_message(request, tasks.poll_lastfm_for_user, user_id=request.user.id)
+        history_queued = _queue_task_or_message(request,
+            tasks.import_lastfm_history, user_id=request.user.id, reset=False
         )
+        if poll_queued is not False and history_queued is not False:
+            messages.success(
+                request,
+                (
+                    "Connected to Last.fm successfully. Recurring syncs will run every "
+                    f"{poll_interval_minutes} minutes. Initial sync and full history import queued."
+                ),
+            )
     except Exception as e:
         logger.exception("Failed to store Last.fm connection")
         messages.error(request, f"Failed to save Last.fm connection: {e}")
@@ -3462,8 +4317,8 @@ def poll_lastfm_manual(request):
         messages.error(request, "Last.fm connection is broken. Please reconnect.")
         return redirect("import_data")
 
-    tasks.poll_lastfm_for_user.delay(user_id=request.user.id)
-    messages.info(request, "Last.fm sync queued. Scrobbles will be imported shortly.")
+    if _queue_task_or_message(request, tasks.poll_lastfm_for_user, user_id=request.user.id) is not False:
+        messages.info(request, "Last.fm sync queued. Scrobbles will be imported shortly.")
     return redirect("import_data")
 
 
@@ -3488,8 +4343,10 @@ def import_lastfm_history_manual(request):
 
     cutoff_uts = (lastfm_account.last_fetch_timestamp_uts or int(time.time())) - 1
     _save_lastfm_history_reset(lastfm_account, cutoff_uts)
-    tasks.import_lastfm_history.delay(user_id=request.user.id, reset=False)
-    messages.info(request, "Full Last.fm history import queued.")
+    if _queue_task_or_message(request,
+        tasks.import_lastfm_history, user_id=request.user.id, reset=False
+    ) is not False:
+        messages.info(request, "Full Last.fm history import queued.")
     return redirect("import_data")
 
 
@@ -3499,7 +4356,7 @@ def _ensure_koito_poll_schedule(user):
 
     existing_task = PeriodicTask.objects.filter(
         task=tasks.KOITO_POLL_TASK_NAME,
-        kwargs__contains=f'"user_id": {user.id}',
+        **helpers.periodic_task_user_kwargs(user.id),
         enabled=True,
     ).first()
     if existing_task:
@@ -3542,23 +4399,28 @@ def koito_connect(request):
         messages.error(request, f"Failed to connect to Koito: {exc}")
         return _integration_redirect(request)
 
-    KoitoAccount.objects.update_or_create(
-        user=request.user,
-        defaults={
-            "base_url": base_url,
-            "api_key": helpers.encrypt(api_key),
-            "last_fetch_timestamp_uts": int(timezone.now().timestamp()),
-            "connection_broken": False,
-            "failure_count": 0,
-            "last_error_message": "",
-            "last_failed_at": None,
-        },
-    )
+    def _connect():
+        KoitoAccount.objects.update_or_create(
+            user=request.user,
+            defaults={
+                "base_url": base_url,
+                "api_key": helpers.encrypt(api_key),
+                "last_fetch_timestamp_uts": int(timezone.now().timestamp()),
+                "connection_broken": False,
+                "failure_count": 0,
+                "last_error_message": "",
+                "last_failed_at": None,
+            },
+        )
+        _ensure_koito_poll_schedule(request.user)
 
-    _ensure_koito_poll_schedule(request.user)
-    tasks.poll_koito_for_user.delay(user_id=request.user.id)
-    tasks.import_koito_history.delay(user_id=request.user.id, reset=True)
-    messages.success(request, "Connected Koito. Full history import queued.")
+    _run_with_lock_retry("connect Koito", _connect)
+    poll_queued = _queue_task_or_message(request, tasks.poll_koito_for_user, user_id=request.user.id)
+    history_queued = _queue_task_or_message(request,
+        tasks.import_koito_history, user_id=request.user.id, reset=True
+    )
+    if poll_queued is not False and history_queued is not False:
+        messages.success(request, "Connected Koito. Full history import queued.")
     return _integration_redirect(request, connected_slug="koito")
 
 
@@ -3567,11 +4429,14 @@ def koito_disconnect(request):
     """Disconnect the Koito integration."""
     from django_celery_beat.models import PeriodicTask
 
-    PeriodicTask.objects.filter(
-        task=tasks.KOITO_POLL_TASK_NAME,
-        kwargs__contains=f'"user_id": {request.user.id}',
-    ).delete()
-    KoitoAccount.objects.filter(user=request.user).delete()
+    def _disconnect():
+        PeriodicTask.objects.filter(
+            task=tasks.KOITO_POLL_TASK_NAME,
+            **helpers.periodic_task_user_kwargs(request.user.id),
+        ).delete()
+        KoitoAccount.objects.filter(user=request.user).delete()
+
+    _run_with_lock_retry("disconnect Koito", _disconnect)
     messages.info(request, "Disconnected Koito.")
     return redirect("import_data")
 
@@ -3589,8 +4454,8 @@ def poll_koito_manual(request):
         messages.error(request, "Koito connection is broken. Please reconnect.")
         return redirect("import_data")
 
-    tasks.poll_koito_for_user.delay(user_id=request.user.id)
-    messages.info(request, "Koito sync queued. Listens will be imported shortly.")
+    if _queue_task_or_message(request, tasks.poll_koito_for_user, user_id=request.user.id) is not False:
+        messages.info(request, "Koito sync queued. Listens will be imported shortly.")
     return redirect("import_data")
 
 
@@ -3611,8 +4476,10 @@ def import_koito_history_manual(request):
         messages.info(request, "Full Koito history import already running.")
         return redirect("import_data")
 
-    tasks.import_koito_history.delay(user_id=request.user.id, reset=True)
-    messages.info(request, "Full Koito history import queued.")
+    if _queue_task_or_message(request,
+        tasks.import_koito_history, user_id=request.user.id, reset=True
+    ) is not False:
+        messages.info(request, "Full Koito history import queued.")
     return redirect("import_data")
 
 
@@ -3638,7 +4505,7 @@ def import_pocketcasts(request):
 
     existing_task = PeriodicTask.objects.filter(
         task="Import from Pocket Casts (Recurring)",
-        kwargs__contains=f'"user_id": {request.user.id}',
+        **helpers.periodic_task_user_kwargs(request.user.id),
         enabled=True,
     ).first()
 
@@ -3647,14 +4514,16 @@ def import_pocketcasts(request):
 
     if not existing_task:
         # First import - run immediately, then set up 2-hour schedule
-        tasks.import_pocketcasts.delay(
+        queued = _queue_task_or_message(request,
+            tasks.import_pocketcasts,
             user_id=request.user.id,
             mode=mode,
         )
-        messages.info(
-            request,
-            "The task to import media from Pocket Casts has been queued. Recurring imports will run every 2 hours.",
-        )
+        if queued is not False:
+            messages.info(
+                request,
+                "The task to import media from Pocket Casts has been queued. Recurring imports will run every 2 hours.",
+            )
 
         # Set up 2-hour recurring schedule
         from django.utils import timezone as tz
@@ -3685,12 +4554,12 @@ def import_pocketcasts(request):
             start_time=tz.now(),
             enabled=True,
         )
-    else:
-        # Just run a manual import
-        tasks.import_pocketcasts.delay(
-            user_id=request.user.id,
-            mode=mode,
-        )
+    # Just run a manual import
+    elif _queue_task_or_message(request,
+        tasks.import_pocketcasts,
+        user_id=request.user.id,
+        mode=mode,
+    ) is not False:
         messages.info(
             request, "The task to import media from Pocket Casts has been queued."
         )
@@ -3712,7 +4581,7 @@ def import_gpodder(request):
 
     existing_task = PeriodicTask.objects.filter(
         task=GPODDER_RECURRING_TASK_NAME,
-        kwargs__contains=f'"user_id": {request.user.id}',
+        **helpers.periodic_task_user_kwargs(request.user.id),
         enabled=True,
     ).first()
 
@@ -3733,14 +4602,17 @@ def import_gpodder(request):
             start_time=timezone.now(),
             enabled=True,
         )
-        messages.info(
-            request,
-            "The task to import media from GPodder has been queued. Recurring syncs will run every 2 hours.",
-        )
-    else:
+        queued = _queue_task_or_message(request, tasks.import_gpodder, user_id=request.user.id, mode="new")
+        if queued is not False:
+            messages.info(
+                request,
+                "The task to import media from GPodder has been queued. Recurring syncs will run every 2 hours.",
+            )
+    elif _queue_task_or_message(request,
+        tasks.import_gpodder, user_id=request.user.id, mode="new"
+    ) is not False:
         messages.info(request, "The task to import media from GPodder has been queued.")
 
-    tasks.import_gpodder.delay(user_id=request.user.id, mode="new")
     return redirect("import_data")
 
 
@@ -3752,12 +4624,20 @@ def import_imdb(request):
         messages.error(request, "IMDB CSV file is required.")
         return _integration_redirect(request)
 
+    staged_file = _stage_upload_or_message(request, file, "IMDB CSV")
+    if staged_file is None:
+        return _integration_redirect(request)
+
     mode = request.POST["mode"]
-    tasks.import_imdb.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_imdb,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=mode,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="imdb")
     messages.info(
         request,
         "The task to import media from IMDB CSV file has been queued.",
@@ -3774,12 +4654,20 @@ def import_goodreads(request):
         messages.error(request, "Goodreads CSV file is required.")
         return _integration_redirect(request)
 
+    staged_file = _stage_upload_or_message(request, file, "Goodreads CSV")
+    if staged_file is None:
+        return _integration_redirect(request)
+
     mode = request.POST["mode"]
-    tasks.import_goodreads.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_goodreads,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=mode,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="goodreads")
     messages.info(
         request,
         "The task to import media from Goodreads CSV file has been queued.",
@@ -3802,17 +4690,55 @@ def import_hardcover(request):
         messages.success(request, "Hardcover API key saved.")
 
     if file:
+        staged_file = _stage_upload_or_message(request, file, "Hardcover CSV")
+        if staged_file is None:
+            return _integration_redirect(request, connected_slug="hardcover")
+
         mode = request.POST["mode"]
-        tasks.import_hardcover.delay(
+        if _queue_staged_task_or_message(
+            request,
+            tasks.import_hardcover,
             user_id=request.user.id,
-            file=_read_uploaded_file(file),
+            file=staged_file,
             mode=mode,
-        )
+            staged_paths=(staged_file,),
+        ) is False:
+            return _integration_redirect(request, connected_slug="hardcover")
         messages.info(
             request,
             "The task to import media from Hardcover CSV file has been queued.",
         )
 
+    return _integration_redirect(request, connected_slug="hardcover")
+
+
+@require_POST
+def hardcover_sync(request):
+    """Sync the user's Hardcover library now, or on the chosen import schedule."""
+    if not credentials.has_user_value("hardcover", request.user):
+        messages.error(request, "Save your Hardcover API key before syncing.")
+        return _integration_redirect(request)
+
+    mode = request.POST["mode"]
+    frequency = request.POST["frequency"]
+    if frequency == "once":
+        if _queue_task_or_message(
+            request,
+            tasks.import_hardcover_account,
+            user_id=request.user.id,
+            mode=mode,
+        ) is not False:
+            messages.info(request, "Hardcover sync queued.")
+    else:
+        helpers.create_import_schedule(
+            username=request.user.username,
+            request=request,
+            mode=mode,
+            frequency=frequency,
+            import_time=request.POST["time"],
+            source="Hardcover Account",
+            extra_kwargs={"user_id": request.user.id},
+        )
     return _integration_redirect(request, connected_slug="hardcover")
 
 
@@ -3825,12 +4751,20 @@ def import_storygraph(request):
         messages.error(request, "StoryGraph CSV file is required.")
         return _integration_redirect(request)
 
+    staged_file = _stage_upload_or_message(request, file, "StoryGraph CSV")
+    if staged_file is None:
+        return _integration_redirect(request)
+
     mode = request.POST["mode"]
-    tasks.import_storygraph.delay(
+    if _queue_staged_task_or_message(
+        request,
+        tasks.import_storygraph,
         user_id=request.user.id,
-        file=_read_uploaded_file(file),
+        file=staged_file,
         mode=mode,
-    )
+        staged_paths=(staged_file,),
+    ) is False:
+        return _integration_redirect(request, connected_slug="storygraph")
     messages.info(
         request,
         "The task to import media from StoryGraph CSV file has been queued.",
@@ -3851,19 +4785,38 @@ def import_tvtime(request):
         )
         return _integration_redirect(request)
 
+    uploads = [upload for upload in (shows_file, movies_file) if upload]
+    staged_files = _stage_uploads_or_message(request, uploads, "TV Time CSV")
+    if staged_files is None:
+        return _integration_redirect(request)
+
     mode = request.POST["mode"]
+    staged_index = 0
     if shows_file:
-        tasks.import_tvtime_shows.delay(
+        staged_file = staged_files[staged_index]
+        staged_index += 1
+        if _queue_staged_task_or_message(
+            request,
+            tasks.import_tvtime_shows,
             user_id=request.user.id,
-            file=_read_uploaded_file(shows_file),
+            file=staged_file,
             mode=mode,
-        )
+            staged_paths=(staged_file,),
+        ) is False:
+            for path in staged_files[staged_index:]:
+                discard_staged_upload(path)
+            return _integration_redirect(request, connected_slug="tvtime")
     if movies_file:
-        tasks.import_tvtime_movies.delay(
+        staged_file = staged_files[staged_index]
+        if _queue_staged_task_or_message(
+            request,
+            tasks.import_tvtime_movies,
             user_id=request.user.id,
-            file=_read_uploaded_file(movies_file),
+            file=staged_file,
             mode=mode,
-        )
+            staged_paths=(staged_file,),
+        ) is False:
+            return _integration_redirect(request, connected_slug="tvtime")
     messages.info(
         request,
         "The task to import media from TV Time CSV file(s) has been queued.",
@@ -3934,7 +4887,7 @@ def export_csv_letterboxd(request):
 def jellyfin_webhook(request, token):
     """Handle Jellyfin webhook notifications for media playback."""
     try:
-        user = users.models.User.objects.get(token=token)
+        user = users.models.User.objects.get(token=token, is_active=True)
     except ObjectDoesNotExist:
         logger.warning(
             "Could not process Jellyfin webhook: Invalid token: %s",
@@ -3947,8 +4900,14 @@ def jellyfin_webhook(request, token):
         logger.warning("Missing payload in Jellyfin webhook request")
         return HttpResponse("Missing payload", status=400)
 
-    payload = json.loads(data)
-    tasks.process_webhook.delay("jellyfin", payload, user.id)
+    try:
+        payload = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return HttpResponse("Invalid JSON", status=400)
+    if not isinstance(payload, dict):
+        return HttpResponse("Invalid payload", status=400)
+    if not _queue_task_quietly(tasks.process_webhook, "jellyfin", payload, user.id):
+        return HttpResponse(status=503)
     return HttpResponse(status=200)
 
 
@@ -3958,7 +4917,7 @@ def jellyfin_webhook(request, token):
 def plex_webhook(request, token):
     """Handle Plex webhook notifications for media playback."""
     try:
-        user = users.models.User.objects.get(token=token)
+        user = users.models.User.objects.get(token=token, is_active=True)
     except ObjectDoesNotExist:
         logger.warning(
             "Could not process Plex webhook: Invalid token: %s",
@@ -3989,7 +4948,7 @@ def plex_webhook(request, token):
         "Received Plex webhook request - Event: %s, User: %s", event_type, user.username
     )
 
-    tasks.process_webhook.delay("plex", payload, user.id)
+    queued = _queue_task_quietly(tasks.process_webhook, "plex", payload, user.id)
     payload_usernames = extract_plex_webhook_usernames(payload)
     for share in PlexWebhookShare.objects.filter(
         owner=user,
@@ -3997,12 +4956,15 @@ def plex_webhook(request, token):
         recipient__is_active=True,
     ).only("id", "recipient_id", "plex_username"):
         if share.plex_username.strip().casefold() in payload_usernames:
-            tasks.process_webhook.delay(
+            queued &= _queue_task_quietly(
+                tasks.process_webhook,
                 "plex",
                 payload,
                 share.recipient_id,
                 share_id=share.id,
             )
+    if not queued:
+        return HttpResponse(status=503)
     return HttpResponse(status=200)
 
 
@@ -4012,7 +4974,7 @@ def plex_webhook(request, token):
 def emby_webhook(request, token):
     """Handle Emby webhook notifications for media playback."""
     try:
-        user = users.models.User.objects.get(token=token)
+        user = users.models.User.objects.get(token=token, is_active=True)
     except ObjectDoesNotExist:
         logger.warning(
             "Could not process Emby webhook: Invalid token: %s",
@@ -4028,8 +4990,14 @@ def emby_webhook(request, token):
         logger.warning("Missing payload in Emby webhook request")
         return HttpResponse("Missing payload", status=400)
 
-    payload = json.loads(data)
-    tasks.process_webhook.delay("emby", payload, user.id)
+    try:
+        payload = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return HttpResponse("Invalid JSON", status=400)
+    if not isinstance(payload, dict):
+        return HttpResponse("Invalid payload", status=400)
+    if not _queue_task_quietly(tasks.process_webhook, "emby", payload, user.id):
+        return HttpResponse(status=503)
     return HttpResponse(status=200)
 
 
@@ -4040,7 +5008,7 @@ def emby_webhook(request, token):
 def jellyseerr_webhook(request, token):
     """Handle Seerr webhook notifications for requested/approved media."""
     try:
-        user = users.models.User.objects.get(token=token)
+        user = users.models.User.objects.get(token=token, is_active=True)
     except ObjectDoesNotExist:
         logger.warning(
             "Could not process Seerr webhook: Invalid token: %s",
@@ -4059,7 +5027,8 @@ def jellyseerr_webhook(request, token):
         logger.warning("Invalid JSON payload in Seerr webhook request")
         return HttpResponse("Invalid JSON", status=400)
 
-    tasks.process_webhook.delay("seerr", payload, user.id)
+    if not _queue_task_quietly(tasks.process_webhook, "seerr", payload, user.id):
+        return HttpResponse(status=503)
     return HttpResponse(status=200)
 
 
@@ -4102,8 +5071,10 @@ def seerr_global_webhook(request):
         return HttpResponse("Missing requester", status=400)
 
     matched = False
+    queued = True
     for user in users.models.User.objects.filter(
         jellyseerr_enabled=True,
+        is_active=True,
     ).exclude(jellyseerr_allowed_usernames=""):
         allowed = {
             username.strip().lower()
@@ -4112,7 +5083,7 @@ def seerr_global_webhook(request):
         }
         if requester.lower() in allowed:
             matched = True
-            tasks.process_webhook.delay("seerr", payload, user.id)
+            queued &= _queue_task_quietly(tasks.process_webhook, "seerr", payload, user.id)
 
     if not matched:
         logger.info(
@@ -4120,6 +5091,8 @@ def seerr_global_webhook(request):
             requester,
         )
 
+    if not queued:
+        return HttpResponse(status=503)
     return HttpResponse(status=200)
 
 
@@ -4129,7 +5102,7 @@ def seerr_global_webhook(request):
 def kodi_webhook(request, token):
     """Handle Kodi webhook notifications for media playback."""
     try:
-        user = users.models.User.objects.get(token=token)
+        user = users.models.User.objects.get(token=token, is_active=True)
     except ObjectDoesNotExist:
         logger.warning(
             "Could not process Kodi webhook: Invalid token: %s",
@@ -4148,7 +5121,8 @@ def kodi_webhook(request, token):
         logger.warning("Invalid JSON payload in Kodi webhook request")
         return HttpResponse("Invalid JSON", status=400)
 
-    tasks.process_webhook.delay("kodi", payload, user.id)
+    if not _queue_task_quietly(tasks.process_webhook, "kodi", payload, user.id):
+        return HttpResponse(status=503)
     return HttpResponse(status=200)
 
 
@@ -4160,7 +5134,7 @@ STREMIO_ADDON_MANIFEST = {
     "description": (
         "Floppy Watchlist catalogs and playback scrobbling for Stremio."
     ),
-    "resources": ["catalog", "subtitles"],
+    "resources": ["catalog", "meta", "subtitles"],
     "types": ["movie", "series"],
     "idPrefixes": ["tt"],
     "catalogs": [],
@@ -4192,9 +5166,8 @@ def stremio_addon_catalog(
     config=None,
 ):
     """Serve a Floppy Watchlist catalog to Stremio."""
-    try:
-        user = users.models.User.objects.get(token=token)
-    except ObjectDoesNotExist:
+    user, grant = stremio_catalog.resolve_addon_credential(token)
+    if user is None:
         logger.warning("Invalid token on Stremio addon catalog request")
         return _stremio_addon_response(
             {"error": "Invalid token"},
@@ -4204,6 +5177,17 @@ def stremio_addon_catalog(
     spec = stremio_catalog.get_catalog_spec(media_type, catalog_id)
     if spec is None:
         return _stremio_addon_response({"metas": []})
+
+    if grant is not None:
+        if not grant.allows_catalog(catalog_id):
+            # Not 403: the add-on protocol has no way to show one, and an empty
+            # catalog is the honest answer for something this install may not see.
+            logger.info(
+                "stremio_catalog grant_scope_excluded catalog_id=%s",
+                catalog_id,
+            )
+            return _stremio_addon_response({"metas": []})
+        stremio_catalog.touch_grant(grant)
 
     try:
         skip = stremio_catalog.parse_skip(extra)
@@ -4226,7 +5210,7 @@ def stremio_addon_catalog(
 def stremio_addon_configure(request, token, config=None):
     """Serve the addon configuration page for a user's install URL."""
     try:
-        user = users.models.User.objects.get(token=token)
+        user = users.models.User.objects.get(token=token, is_active=True)
     except ObjectDoesNotExist:
         logger.warning("Invalid token on Stremio addon configure request")
         return HttpResponse("Invalid token", status=401)
@@ -4246,20 +5230,57 @@ def stremio_addon_configure(request, token, config=None):
 @require_GET
 def stremio_addon_manifest(request, token, config=None):
     """Serve the Stremio addon manifest for a user's install URL."""
-    try:
-        user = users.models.User.objects.get(token=token)
-    except ObjectDoesNotExist:
+    user, grant = stremio_catalog.resolve_addon_credential(token)
+    if user is None:
         logger.warning("Invalid token on Stremio addon manifest request")
         return _stremio_addon_response({"error": "Invalid token"}, status=401)
+
+    if grant is not None:
+        stremio_catalog.touch_grant(grant)
 
     selected = stremio_catalog.parse_catalog_config(config)
     manifest = STREMIO_ADDON_MANIFEST | {
         "logo": request.build_absolute_uri(
             static("favicon/apple-touch-icon.png"),
         ),
-        "catalogs": stremio_catalog.manifest_catalogs(user, selected),
+        # Both gates: the install URL picks the catalogs, the grant bounds them.
+        "catalogs": stremio_catalog.manifest_catalogs_for_grant(
+            user,
+            grant,
+            selected,
+        ),
     }
     return _stremio_addon_response(manifest)
+
+
+@login_not_required
+@csrf_exempt
+@require_GET
+def stremio_addon_meta(request, token, media_type, media_id):
+    """Serve metadata for one item the user tracks."""
+    user, grant = stremio_catalog.resolve_addon_credential(token)
+    if user is None:
+        logger.warning("Invalid token on Stremio addon meta request")
+        return _stremio_addon_response({"error": "Invalid token"}, status=401)
+
+    media_id = unquote(media_id)
+    if (
+        media_type not in {"movie", "series"}
+        or len(media_id) > STREMIO_MAX_MEDIA_ID_LENGTH
+        or not STREMIO_MEDIA_ID_PATTERN.fullmatch(media_id)
+    ):
+        return _stremio_addon_response({"meta": {}}, status=400)
+
+    if grant is not None:
+        stremio_catalog.touch_grant(grant)
+
+    meta = stremio_catalog.project_meta(user, media_type, media_id, grant=grant)
+    if meta is None:
+        # Empty rather than 404: the item is simply not in this library, and
+        # Stremio treats a 404 as the add-on being broken.
+        return _stremio_addon_response({"meta": {}})
+
+    return _stremio_addon_response({"meta": meta})
 
 
 @login_not_required
@@ -4269,11 +5290,15 @@ def stremio_addon_subtitles(request, token, media_type, media_id, config=None):
     """Record a playback-start scrobble from a Stremio subtitles request."""
     from django.core.cache import cache
 
-    try:
-        user = users.models.User.objects.get(token=token)
-    except ObjectDoesNotExist:
+    user, grant = stremio_catalog.resolve_addon_credential(token)
+    if user is None:
         logger.warning("Invalid token on Stremio addon subtitles request")
         return _stremio_addon_response({"error": "Invalid token"}, status=401)
+    if grant is not None and not grant.allow_playback_start:
+        # This route records a playback start, which is a write. A grant minted
+        # without that permission serves catalogs and nothing else.
+        logger.info("stremio_subtitles rejected reason=grant_excludes_playback_start")
+        return _stremio_addon_response({"subtitles": []})
 
     media_id = unquote(media_id)
     if (
@@ -4339,3 +5364,567 @@ def stremio_addon_subtitles(request, token, media_type, media_id, config=None):
             )
 
     return _stremio_addon_response({"subtitles": []})
+
+
+@require_POST
+def sync_direction_settings(request):
+    """Set which way watched state may travel for one connection.
+
+    The chosen direction is intersected with what the provider's adapter can
+    actually do, so picking "Both" on a read-only connection grants the reads
+    and grants no writes — rather than recording an approval that would never
+    be honoured and reporting it as if it had been.
+    """
+    from integrations.state import identity, settings_view
+
+    binding = SyncBinding.objects.filter(
+        pk=request.POST.get("binding_id"),
+        user=request.user,
+    ).first()
+    if binding is None:
+        messages.error(request, "That connection no longer exists.")
+        return redirect("integrations")
+
+    direction = request.POST.get("direction", settings_view.DIRECTION_OFF)
+    if direction not in settings_view.DIRECTION_LABELS:
+        messages.error(request, "Unknown synchronization direction.")
+        return redirect("integrations")
+
+    if direction == settings_view.DIRECTION_OFF:
+        identity.deactivate_binding(binding)
+        messages.success(
+            request,
+            f"Turned off watched-state sync for {binding.get_client_kind_display()}.",
+        )
+        return redirect("integrations")
+
+    adapter = outbound.get_adapter(binding)
+    supported = set(adapter.CAPABILITIES) if adapter is not None else set()
+    capabilities = settings_view.capabilities_for_direction(direction, supported)
+
+    if not capabilities:
+        messages.error(
+            request,
+            (
+                f"{binding.get_client_kind_display()} cannot do that yet. "
+                "Its adapter reports no matching capability."
+            ),
+        )
+        return redirect("integrations")
+
+    identity.activate_binding(
+        binding,
+        capabilities=capabilities,
+        directions=settings_view.directions_for_choice(direction, capabilities),
+    )
+
+    granted = settings_view.capabilities_for_direction(direction, supported)
+    requested = settings_view.capabilities_for_direction(
+        direction,
+        set(settings_view.CAPABILITY_LABELS),
+    )
+    if len(granted) < len(requested):
+        messages.warning(
+            request,
+            (
+                f"Enabled what {binding.get_client_kind_display()} supports. "
+                "The rest is listed as unavailable until its adapter is verified."
+            ),
+        )
+    else:
+        messages.success(
+            request,
+            f"Updated watched-state sync for {binding.get_client_kind_display()}.",
+        )
+    return redirect("integrations")
+
+
+@require_POST
+def sync_kill_switch(request):
+    """Stop or resume one connection without discarding its approvals."""
+    binding = SyncBinding.objects.filter(
+        pk=request.POST.get("binding_id"),
+        user=request.user,
+    ).first()
+    if binding is None:
+        messages.error(request, "That connection no longer exists.")
+        return redirect("integrations")
+
+    binding.kill_switch = request.POST.get("kill_switch") == "on"
+    binding.save(update_fields=["kill_switch", "updated_at"])
+
+    if binding.kill_switch:
+        messages.info(
+            request,
+            f"Paused {binding.get_client_kind_display()}. Your settings are kept.",
+        )
+    else:
+        messages.success(request, f"Resumed {binding.get_client_kind_display()}.")
+    return redirect("integrations")
+
+
+@require_POST
+def sync_resolve_conflict(request):
+    """Settle one held disagreement with the state the user chose."""
+    from integrations.state.apply import resolve_conflict
+
+    conflict = StateConflict.objects.filter(
+        pk=request.POST.get("conflict_id"),
+        user=request.user,
+        status=StateConflictStatus.OPEN.value,
+    ).first()
+    if conflict is None:
+        messages.error(request, "That conflict is no longer open.")
+        return redirect("integrations")
+
+    watched = request.POST.get("watched") == "true"
+    resolve_conflict(conflict, watched=watched)
+    messages.success(
+        request,
+        f"Resolved. {conflict.item} is now marked "
+        f"{'watched' if watched else 'unwatched'}.",
+    )
+    return redirect("integrations")
+
+
+def _match_source_for_user(request, item_id):
+    """Return a movie/TV source item that this user actually tracks."""
+    item = get_object_or_404(
+        Item,
+        pk=item_id,
+        media_type__in=(MediaTypes.MOVIE.value, MediaTypes.TV.value),
+    )
+    tracked = (
+        Movie.objects.filter(user=request.user, item=item).exists()
+        if item.media_type == MediaTypes.MOVIE.value
+        else TV.objects.filter(user=request.user, item=item).exists()
+    )
+    if not tracked:
+        from django.http import Http404
+
+        raise Http404
+    return item
+
+
+def _match_destination_from_result(result, media_type, source):
+    """Materialize a same-type search result for preview/apply."""
+    media_id = result.get("media_id") or result.get("id")
+    title = result.get("title") or result.get("name")
+    if not media_id or not title:
+        return None
+    defaults = {
+        "title": title,
+        "original_title": result.get("original_title") or result.get("original_name"),
+        "localized_title": result.get("localized_title"),
+        "image": result.get("image") or result.get("poster_path") or "",
+    }
+    destination, _created = Item.objects.get_or_create(
+        media_id=str(media_id),
+        source=source,
+        media_type=media_type,
+        defaults=defaults,
+    )
+    return destination
+
+
+def _match_providers(user, source_item):
+    """Return the providers this show can be matched on, TMDB first."""
+    providers = [Sources.TMDB.value]
+    if source_item.media_type == MediaTypes.TV.value and (
+        metadata_resolution.provider_is_enabled(Sources.TVDB.value, user)
+    ):
+        providers.append(Sources.TVDB.value)
+    return providers
+
+
+def _match_candidate_rows(results):
+    """Return renderable destination rows without persisting any Item.
+
+    Rendering used to hand the template an Item pk per result, which meant a
+    search wrote one Item (and its later metadata fan-out) for every hit.
+    """
+    rows = []
+    for result in results:
+        media_id = result.get("media_id") or result.get("id")
+        title = result.get("title") or result.get("name")
+        if not media_id or not title:
+            continue
+        rows.append({"media_id": str(media_id), "title": title, "result": result})
+    return rows
+
+
+def _match_reference_ids(user, source_item):
+    """Return only this user's source references affected by the correction."""
+    item_ids = [source_item.pk]
+    if source_item.media_type == MediaTypes.TV.value:
+        item_ids.extend(
+            Item.objects.filter(
+                media_id=source_item.media_id,
+                source=source_item.source,
+                media_type=MediaTypes.EPISODE.value,
+            ).values_list("pk", flat=True),
+        )
+    return list(
+        ExternalReference.objects.filter(
+            user=user,
+        ).filter(
+            Q(matched_item_id__in=item_ids) | Q(corrected_item_id__in=item_ids),
+        ).values_list("id", flat=True),
+    )
+
+
+def _match_review(source_item, preview):
+    """Return the numbering rows and destination episodes for a TV correction."""
+    catalogue = destination_episodes(preview["destination"])
+    if not catalogue:
+        raise InvalidMatchCorrectionError(
+            gettext("The destination has no episodes to map your viewings onto."),
+        )
+    seen = {}
+    for row in preview["episodes"]:
+        seen.setdefault(row["key"], row)
+    source_rows = sorted(seen.values(), key=lambda row: (row["season"], row["episode"]))
+    proposals = suggest_mapping(source_rows, catalogue)
+    rows = {}
+    for row in source_rows:
+        selected, kind = proposals.get(row["key"], ("", ""))
+        row_id = f"{row['season']}_{row['episode']}"
+        rows[row_id] = {
+            "id": row_id,
+            "key": row["key"],
+            "season": row["season"],
+            "code": f"S{row['season']}E{row['episode']}",
+            "title": row["title"],
+            "selected": selected,
+            "kind": kind,
+        }
+    return {"rows": rows, "episodes": catalogue}
+
+
+def _match_posted_mapping(post, catalogue_ids):
+    """Read the numbering the user chose; every value must be a destination episode."""
+    mapping = {}
+    for name, value in post.items():
+        if not name.startswith("map_"):
+            continue
+        season, _, episode = name.removeprefix("map_").partition("_")
+        if value not in catalogue_ids:
+            raise InvalidMatchCorrectionError(
+                gettext("Choose an episode for every viewing."),
+            )
+        destination_season, _, destination_episode = value.partition(":")
+        mapping[f"{season}:{episode}"] = {
+            "season": int(destination_season),
+            "episode": int(destination_episode),
+        }
+    return mapping
+
+
+@login_required
+def match_fix(request, item_id):
+    """Search, preview, and apply a same-type match correction."""
+    source_item = _match_source_for_user(request, item_id)
+    providers = _match_providers(request.user, source_item)
+    provider = request.POST.get("provider") or request.GET.get("provider")
+    if provider not in providers:
+        provider = Sources.TMDB.value
+    provider_label = metadata_resolution.metadata_provider_label(provider)
+    query = request.GET.get("q", "").strip()
+    candidates = []
+    if query:
+        try:
+            candidates = services.search(
+                source_item.media_type,
+                query,
+                1,
+                source=provider,
+                user=request.user,
+            ).get("results", [])
+        except services.ProviderAPIError as error:
+            messages.error(
+                request,
+                gettext("Could not search %(provider)s: %(error)s")
+                % {"provider": provider_label, "error": error},
+            )
+
+    candidate_rows = _match_candidate_rows(candidates)
+
+    destination = None
+    apply_requested = False
+    stored = {}
+    if request.method == "POST":
+        action = request.POST.get("action")
+        if action == "preview":
+            chosen = next(
+                (
+                    row
+                    for row in candidate_rows
+                    if row["media_id"] == request.POST.get("destination_media_id")
+                ),
+                None,
+            )
+            destination = (
+                _match_destination_from_result(
+                    chosen["result"],
+                    source_item.media_type,
+                    provider,
+                )
+                if chosen
+                else None
+            )
+            if destination is None:
+                messages.error(
+                    request,
+                    gettext("Choose a valid same-type destination."),
+                )
+        elif action == "apply":
+            stored = request.session.get("match_correction_preview") or {}
+            if stored.get("source_item_id") != source_item.pk:
+                messages.error(
+                    request,
+                    gettext("Refresh the correction preview before applying."),
+                )
+            else:
+                apply_requested = True
+                destination = Item.objects.filter(
+                    pk=stored["destination_item_id"],
+                ).first()
+
+    preview = None
+    review = None
+    if destination is not None:
+        try:
+            preview = preview_match_correction(request.user, source_item, destination)
+            if source_item.media_type == MediaTypes.TV.value:
+                review = _match_review(source_item, preview)
+            if apply_requested:
+                mapping = (
+                    _match_posted_mapping(
+                        request.POST,
+                        {row["id"] for row in review["episodes"]},
+                    )
+                    if review
+                    else None
+                )
+                decisions = {
+                    key.removeprefix("decision_"): value
+                    for key, value in request.POST.items()
+                    if key.startswith("decision_") and value
+                }
+                destination_item = apply_match_correction(
+                    request.user,
+                    source_item.pk,
+                    destination.pk,
+                    request.session["match_correction_preview"]["token"],
+                    episode_mapping=mapping,
+                    decisions=decisions,
+                    reference_ids=stored.get("reference_ids", []),
+                    note=request.POST.get("note", ""),
+                )
+            else:
+                request.session["match_correction_preview"] = {
+                    "source_item_id": source_item.pk,
+                    "destination_item_id": destination.pk,
+                    "token": preview["token"],
+                    "reference_ids": _match_reference_ids(request.user, source_item),
+                }
+        except (
+            InvalidMatchCorrectionError,
+            MissingEpisodeMappingError,
+            StaleCorrectionPreviewError,
+            services.ProviderAPIError,
+        ) as error:
+            messages.error(request, str(error))
+            if apply_requested and preview is not None and review is not None:
+                # Keep the review on screen with the user's choices, and let the
+                # next apply use the state the refreshed review now shows.
+                for row_id, row in review["rows"].items():
+                    row["selected"] = request.POST.get(f"map_{row_id}", row["selected"])
+                request.session["match_correction_preview"] = {
+                    **stored,
+                    "token": preview["token"],
+                }
+            else:
+                preview = review = None
+        else:
+            if apply_requested:
+                request.session.pop("match_correction_preview", None)
+                messages.success(
+                    request,
+                    gettext("Match corrected and future imports mapped."),
+                )
+                return redirect(
+                    "media_details",
+                    source=destination_item.source,
+                    media_type=source_item.media_type,
+                    media_id=destination_item.media_id,
+                    title=destination_item.title,
+                )
+
+    context = {
+        "source_item": source_item,
+        "candidates": candidate_rows,
+        "providers": [
+            (key, metadata_resolution.metadata_provider_label(key))
+            for key in providers
+        ],
+        "provider": provider,
+        "provider_label": provider_label,
+        "preview": preview,
+        "review": review,
+        "review_rows": list(review["rows"].values()) if review else [],
+        "reference_count": len(_match_reference_ids(request.user, source_item)),
+    }
+    return render(request, "integrations/match_fix.html", context)
+
+
+@login_required
+@require_POST
+def match_reference_status(request, reference_id, status):
+    """Ignore or restore one user-scoped external reference."""
+    reference = get_object_or_404(
+        ExternalReference,
+        pk=reference_id,
+        user=request.user,
+    )
+    if status == ExternalReferenceReviewStatus.IGNORED.value:
+        reference.review_status = status
+        reference.save(update_fields=["review_status", "updated_at"])
+        messages.success(request, "Future imports will ignore this source identity.")
+    elif status == "remove":
+        reference.review_status = ExternalReferenceReviewStatus.RESOLVED.value
+        reference.corrected_item = None
+        reference.episode_mapping = {}
+        reference.decision_note = ""
+        reference.save(
+            update_fields=[
+                "review_status",
+                "corrected_item",
+                "episode_mapping",
+                "decision_note",
+                "updated_at",
+            ],
+        )
+        messages.success(request, "The saved correction was removed.")
+    else:
+        messages.error(request, "Unknown match decision.")
+    return redirect("integrations")
+
+
+@require_http_methods(["GET", "POST"])
+def seerr_request(request, media_type, media_id):
+    """Show a title's Seerr state, and request it (or some seasons) on POST."""
+    user = request.user
+    if (
+        media_type not in (MediaTypes.MOVIE.value, MediaTypes.TV.value)
+        or not user.seerr_url
+        or not user.seerr_api_key
+        or not user.seerr_user_id
+    ):
+        return HttpResponseNotFound()
+
+    error = None
+    summary = None
+    try:
+        client = seerr_api.SeerrClient.for_user(user)
+        if request.method == "POST":
+            seasons = [
+                int(number)
+                for number in request.POST.getlist("season")
+                if number.isdigit()
+            ]
+            client.request(
+                media_type,
+                media_id,
+                user.seerr_user_id,
+                seasons=seasons or None,
+            )
+        summary = seerr_api.summarize(media_type, client.media(media_type, media_id))
+    except (seerr_api.SeerrError, helpers.MediaImportError) as exc:
+        error = str(exc)
+
+    return render(
+        request,
+        "integrations/seerr_request.html",
+        {
+            "media_type": media_type,
+            "media_id": media_id,
+            "summary": summary,
+            "error": error,
+            "seerr_page_url": f"{user.seerr_url}/{media_type}/{media_id}",
+        },
+    )
+
+
+def _int_or_none(value):
+    """Return `value` as an int, or None when it is blank or not a number."""
+    return int(value) if str(value or "").isdigit() else None
+
+
+@require_http_methods(["GET", "POST"])
+def library_panel(request, source, media_type, media_id):
+    """Show Radarr/Sonarr details and Seerr requests for a title; POST searches."""
+    user = request.user
+    params = request.POST if request.method == "POST" else request.GET
+    season = _int_or_none(params.get("season_number"))
+    episode = _int_or_none(params.get("episode_number"))
+
+    message = error = ""
+    if request.method == "POST":
+        error = arr_library.start_search(
+            user,
+            params.get("app"),
+            _int_or_none(params.get("instance_id")),
+            params.get("kind"),
+            _int_or_none(params.get("arr_id")),
+            _int_or_none(params.get("season")),
+        )
+        message = "" if error else f"Search started in {params.get('app')}."
+
+    panels = arr_library.library_panels(
+        user, source, media_type, media_id, season, episode
+    )
+
+    seerr_requests = None
+    seerr_error = ""
+    if (
+        user.seerr_url
+        and user.seerr_api_key
+        and source == Sources.TMDB.value
+        and media_type
+        in (
+            MediaTypes.MOVIE.value,
+            MediaTypes.TV.value,
+            MediaTypes.SEASON.value,
+            MediaTypes.EPISODE.value,
+        )
+    ):
+        seerr_type = (
+            MediaTypes.MOVIE.value
+            if media_type == MediaTypes.MOVIE.value
+            else MediaTypes.TV.value
+        )
+        try:
+            seerr_requests = seerr_api.requests_for(
+                seerr_api.SeerrClient.for_user(user).media(seerr_type, media_id),
+                season_number=(
+                    None if media_type == MediaTypes.TV.value else season
+                ),
+            )
+        except (seerr_api.SeerrError, helpers.MediaImportError) as exc:
+            seerr_error = str(exc)
+
+    return render(
+        request,
+        "integrations/library_panel.html",
+        {
+            "panels": panels,
+            "message": message,
+            "error": error,
+            "seerr_requests": seerr_requests,
+            "seerr_error": seerr_error,
+            "panel_url": request.path,
+            "season_number": season,
+            "episode_number": episode,
+        },
+    )

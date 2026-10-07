@@ -9,7 +9,6 @@ from django.utils.dateparse import parse_date
 from django.utils.timezone import localdate
 from rest_framework.response import Response
 
-from app import history_cache
 from app.helpers import parse_completion_datetime
 from app.models import (
     TV,
@@ -31,6 +30,7 @@ from app.services.episode_coordinates import (
     cleanup_episode_history_for_route,
     resolve_episode_coordinate,
 )
+from app.services.episode_scores import rate_episode
 from lists.models import CustomListItem
 from users.models import MediaStatusChoices
 
@@ -72,10 +72,12 @@ def resolve_episode_coordinate_for_request(
     return coordinate, None
 
 MEDIA_MODIFIABLE_FIELDS = {
-    MediaTypes.MOVIE.value: {"score", "status", "start_date", "end_date", "notes"},
-    MediaTypes.TV.value: {"score", "status", "notes"},
-    MediaTypes.SEASON.value: {"score", "status", "notes"},
-    MediaTypes.EPISODE.value: {"end_date"},
+    MediaTypes.MOVIE.value: {
+        "score", "status", "start_date", "end_date", "notes", "entry_source",
+    },
+    MediaTypes.TV.value: {"score", "status", "notes", "entry_source"},
+    MediaTypes.SEASON.value: {"score", "status", "notes", "entry_source"},
+    MediaTypes.EPISODE.value: {"end_date", "entry_source"},
     MediaTypes.ANIME.value: {
         "score",
         "status",
@@ -83,6 +85,7 @@ MEDIA_MODIFIABLE_FIELDS = {
         "start_date",
         "end_date",
         "notes",
+        "entry_source",
     },
     MediaTypes.MANGA.value: {
         "score",
@@ -91,6 +94,7 @@ MEDIA_MODIFIABLE_FIELDS = {
         "start_date",
         "end_date",
         "notes",
+        "entry_source",
     },
     MediaTypes.GAME.value: {
         "score",
@@ -99,6 +103,7 @@ MEDIA_MODIFIABLE_FIELDS = {
         "start_date",
         "end_date",
         "notes",
+        "entry_source",
     },
     MediaTypes.BOOK.value: {
         "score",
@@ -107,6 +112,7 @@ MEDIA_MODIFIABLE_FIELDS = {
         "start_date",
         "end_date",
         "notes",
+        "entry_source",
     },
     MediaTypes.COMIC.value: {
         "score",
@@ -115,6 +121,7 @@ MEDIA_MODIFIABLE_FIELDS = {
         "start_date",
         "end_date",
         "notes",
+        "entry_source",
     },
     MediaTypes.BOARDGAME.value: {
         "score",
@@ -123,6 +130,7 @@ MEDIA_MODIFIABLE_FIELDS = {
         "start_date",
         "end_date",
         "notes",
+        "entry_source",
     },
 }
 
@@ -198,10 +206,10 @@ VALID_SOURCES = {
     MediaTypes.EPISODE.value: ["tmdb", "manual"],
     MediaTypes.MOVIE.value: ["tmdb", "manual"],
     MediaTypes.ANIME.value: ["mal", "manual"],
-    MediaTypes.MANGA.value: ["mal", "mangaupdates", "manual"],
+    MediaTypes.MANGA.value: ["mal", "mangaupdates", "mangabaka", "manual"],
     MediaTypes.GAME.value: ["igdb", "manual"],
     MediaTypes.BOOK.value: ["openlibrary", "hardcover", "googlebooks", "manual"],
-    MediaTypes.COMIC.value: ["comicvine", "manual"],
+    MediaTypes.COMIC.value: ["comicvine", "gcd", "manual"],
     MediaTypes.BOARDGAME.value: ["bgg", "manual"],
 }
 
@@ -268,6 +276,38 @@ def check_source_type(media_type, source):
     if media_type in VALID_SOURCES:
         return source in VALID_SOURCES[media_type]
     return False
+
+
+# Pairs of media types that can represent the same underlying show/library
+# (e.g. a TV series tracked under the "anime" bucket instead of "tv").
+_ALTERNATE_LIBRARY_TYPE = {"anime": "tv", "tv": "anime"}
+
+
+def get_media_type_availability(user, media_type):
+    """Report whether media_type is enabled for user, with a redirect hint.
+
+    Lets callers (notably automated agents) see, at the point they're about
+    to act, whether the media type they're browsing is disabled for this
+    user -- and if so, whether the same content is likely tracked under a
+    different, enabled media type instead.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return {"media_type": media_type, "enabled": True, "message": None}
+
+    enabled = getattr(user, f"{media_type}_enabled", True)
+    message = None
+    if not enabled:
+        message = (
+            f"{media_type.capitalize()} tracking is disabled in your account "
+            "settings."
+        )
+        alt = _ALTERNATE_LIBRARY_TYPE.get(media_type)
+        if alt and getattr(user, f"{alt}_enabled", True):
+            message += (
+                f" This title may also be available under '{alt}' -- "
+                f"consider searching or logging it there instead."
+            )
+    return {"media_type": media_type, "enabled": enabled, "message": message}
 
 
 def fetch_media_list(user, media_type, status, sort_filter, search):
@@ -495,6 +535,86 @@ def paginate_data(request, results, limit, offset, *, total=None, already_sliced
         "previous": prev_url,
     }
     return {"pagination": pagination, "results": paginated}
+
+
+def paginate_list_items(request, user, user_list):
+    """Return one page of a custom list's items as media, and any error.
+
+    Returns ``(paginated_data, error_response)``; exactly one is not None.
+
+    Only the requested page is hydrated when the caller has not asked for an
+    aggregated sort, because the database ordering is then already the response
+    ordering. Hydrating the whole list first meant one media lookup per item to
+    return twenty of them - on a 4,683-item list, 4,683 queries and 4,683
+    hydrated objects per request.
+
+    An aggregated sort still has to rank every item before it can say which
+    ones are on the page, so that path is unchanged.
+    """
+    items = user_list.items.order_by(
+        "customlistitem__date_added",
+        "customlistitem__pk",
+    )
+
+    search_query = request.GET.get("search", "")
+    if search_query:
+        items = items.filter(title__icontains=search_query)
+
+    limit, offset, err = parse_limit_offset(request)
+    if err:
+        return None, err
+
+    sort = sort_order = None
+    sort_filter = request.GET.get("sort", "")
+    if sort_filter:
+        sort, sort_order = parse_sort_filter(sort_filter)
+        if sort not in get_sorts(None, sort_type="all"):
+            return None, Response(
+                {"detail": "Invalid sorting"},
+                status=HTTP.NOT_FOUND,
+            )
+
+    total = None
+    if sort is None:
+        total = items.count()
+        items = items[offset : offset + limit]
+
+    media_objects = []
+    for item in items:
+        # Shows info about the last consumption of the media if it's tracked
+        media = BasicMedia.objects.filter_media_prefetch(
+            user,
+            item.media_id,
+            item.media_type,
+            item.source,
+            season_number=item.season_number,
+            episode_number=item.episode_number,
+            annotate_progress=False,
+        ).first()
+
+        media_objects.append(media if media is not None else item)
+
+    BasicMedia.objects.annotate_episode_progress(
+        [media for media in media_objects if getattr(media, "item", None) is not None],
+    )
+
+    if sort is None:
+        return paginate_data(
+            request,
+            media_objects,
+            limit,
+            offset,
+            total=total,
+            already_sliced=True,
+        ), None
+
+    media_objects = apply_aggregated_sort(media_objects, sort)
+    if isinstance(media_objects, Response):
+        return None, media_objects
+    if sort_order == "desc":
+        media_objects.reverse()
+
+    return paginate_data(request, media_objects, limit, offset), None
 
 
 def parse_excluded_items(request):
@@ -929,31 +1049,9 @@ def validate_episode_score(raw_score):
 
 
 def apply_episode_score(season, episode_number, score):
-    """Set `score` on all plays of a tracked episode within `season`.
+    """Set `score` on a tracked episode within `season`.
 
-    Returns True if the episode was found and updated, False otherwise.
-    Uses queryset.update(), which skips post_save, so the affected
-    history-cache days are invalidated explicitly like the web view does.
+    An episode with no play gets a rating-only row (not a watch). Returns True
+    if a rating was stored or changed, False when there was nothing to clear.
     """
-    episodes = Episode.objects.filter(
-        related_season=season,
-        item__episode_number=int(episode_number),
-    )
-    if not episodes.exists():
-        return False
-
-    episodes.update(score=score)
-
-    day_keys = [
-        history_cache.history_day_key(end_date)
-        for end_date in episodes.values_list("end_date", flat=True)
-    ]
-    day_keys = [day_key for day_key in day_keys if day_key]
-    if day_keys:
-        history_cache.invalidate_history_days(
-            season.user_id,
-            day_keys=day_keys,
-            logging_styles=("sessions", "repeats"),
-            reason="episode_score_change",
-        )
-    return True
+    return rate_episode(season, episode_number, score)

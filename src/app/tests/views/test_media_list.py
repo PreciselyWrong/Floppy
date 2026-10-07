@@ -33,6 +33,7 @@ from app.models import (
     Season,
     Sources,
     Status,
+    Video,
 )
 from app.templatetags import app_tags
 from events.models import Event
@@ -503,6 +504,43 @@ class MediaListViewTests(TestCase):
             app_tags.media_type_readable_plural(MediaTypes.MOVIE.value).lower(),
         )
 
+    def test_video_media_list_shows_channel_and_length(self):
+        """The Videos list renders and each card shows its channel and length."""
+        item = Item.objects.create(
+            media_id="dQw4w9WgXcQ",
+            source=Sources.YOUTUBE.value,
+            media_type=MediaTypes.VIDEO.value,
+            title="Never Gonna Give You Up",
+            image=settings.IMG_NONE,
+        )
+        Video.objects.create(
+            item=item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+            channel="Rick Astley",
+            length_seconds=213,
+        )
+
+        response = self.client.get(reverse("medialist", args=[MediaTypes.VIDEO.value]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["media_list"].paginator.count, 1)
+        self.assertContains(response, "Rick Astley · 3:33")
+
+    def test_season_media_list_with_status_filter_does_not_500(self):
+        """Season rows derive end_date from episodes, so the SQL latest-status
+        subquery must not be used for them (#1222).
+        """
+        self._create_tv_runtime_entry("season-status-filter", "Season Status TV", [24])
+
+        response = self.client.get(
+            reverse("medialist", args=[MediaTypes.SEASON.value]),
+            {"status": Status.IN_PROGRESS.value, "sort": "title"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Season Status TV Season 1")
+
     def test_default_media_list_excludes_untracked_collection_entries(self):
         item = Item.objects.create(
             media_id="untracked-manga-default",
@@ -806,6 +844,21 @@ class MediaListViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "My private note")
+
+    def test_table_layout_shows_capitalized_entry_source(self):
+        """The Source column shows each entry's source with display casing (issue #1258)."""
+        movie = Movie.objects.get(item__title="Test Movie 1", user=self.user)
+        movie.entry_source = "plex"
+        movie.save(update_fields=["entry_source"])
+
+        response = self.client.get(
+            reverse("medialist", args=[MediaTypes.MOVIE.value]) + "?layout=table",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("entry_source", [c.key for c in response.context["resolved_columns"]])
+        self.assertContains(response, ">Plex</div>")
+        self.assertNotContains(response, ">plex</div>")
 
     def test_movie_grid_counts_completed_plays_when_progress_is_zero(self):
         """Completed movie duplicates should count as plays even when progress is zero."""
@@ -1472,6 +1525,51 @@ class MediaListViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-status-label="no-status"')
         self.assertContains(response, "No Status")
+
+    def test_no_status_card_add_to_tracker_opens_modal(self):
+        """Regression for #1376: the card sent instance_id="None" and the modal 500ed."""
+        untracked_item = Item.objects.create(
+            media_id="21510",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Grid No Status Modal",
+            image="http://example.com/grid-no-status-modal.jpg",
+        )
+        CollectionEntry.objects.create(
+            user=self.user,
+            item=untracked_item,
+            media_type="digital",
+        )
+
+        response = self.client.get(
+            reverse("medialist", args=[MediaTypes.MOVIE.value]),
+            {"search": "Grid No Status Modal", "layout": "grid", "status": "no_status"},
+        )
+        self.assertContains(response, "Grid No Status Modal")
+        self.assertNotContains(response, '"instance_id": "None"')
+
+        with (
+            mock.patch(
+                "app.providers.services.get_media_metadata",
+                return_value={
+                    "media_id": "21510",
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "title": "Grid No Status Modal",
+                    "image": "http://example.com/grid-no-status-modal.jpg",
+                    "max_progress": 1,
+                },
+            ),
+            mock.patch("app.models.Item.fetch_releases"),
+        ):
+            modal = self.client.get(
+                reverse(
+                    "track_modal",
+                    args=[Sources.TMDB.value, MediaTypes.MOVIE.value, "21510"],
+                ),
+                {"return_url": "/medialist/movie"},
+            )
+        self.assertEqual(modal.status_code, 200)
 
     def test_not_rated_filter_excludes_collected_untracked_items(self):
         rated_item = Item.objects.create(
@@ -3243,6 +3341,7 @@ class MediaListViewTests(TestCase):
                     "date_added",
                     "start_date",
                     "end_date",
+                    "entry_source",
                     "notes",
                     "synopsis",
                 ],
@@ -3313,6 +3412,7 @@ class MediaListViewTests(TestCase):
                 "release_date",
                 "date_added",
                 "end_date",
+                "entry_source",
                 "notes",
                 "synopsis",
             ],
@@ -3339,6 +3439,7 @@ class MediaListViewTests(TestCase):
                 "release_date",
                 "date_added",
                 "end_date",
+                "entry_source",
                 "notes",
                 "synopsis",
             ],
@@ -3405,6 +3506,7 @@ class MediaListViewTests(TestCase):
                 "Tags",
                 "Release Date",
                 "Date Added",
+                "Source",
                 "Notes",
                 "Description",
             ],
@@ -3447,6 +3549,7 @@ class MediaListViewTests(TestCase):
                 "Tags",
                 "Release Date",
                 "Date Added",
+                "Source",
                 "Notes",
                 "Description",
             ],
@@ -3482,6 +3585,7 @@ class MediaListViewTests(TestCase):
                     "tags",
                     "release_date",
                     "date_added",
+                    "entry_source",
                     "notes",
                     "synopsis",
                 ],
@@ -3505,6 +3609,7 @@ class MediaListViewTests(TestCase):
                 "tags",
                 "release_date",
                 "date_added",
+                "entry_source",
                 "notes",
                 "synopsis",
             ],
@@ -3667,3 +3772,93 @@ class MediaListViewTests(TestCase):
             ],
             ["Grouped Anime High Critic", "Grouped Anime Low Critic"],
         )
+
+
+class MediaListRelativeCompletedDateTests(TestCase):
+    """"Completed in the last N units" on the library filter toolbar."""
+
+    def setUp(self):
+        """Log in with two movies completed at known distances from today."""
+        cache.clear()
+        self.credentials = {"username": "relative", "password": "12345"}
+        self.user = get_user_model().objects.create_user(**self.credentials)
+        self.client.login(**self.credentials)
+
+        self.recent = Item.objects.create(
+            media_id="rel-recent",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Recent Movie",
+            image="http://example.com/image.jpg",
+        )
+        self.old = Item.objects.create(
+            media_id="rel-old",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Old Movie",
+            image="http://example.com/image.jpg",
+        )
+        Movie.objects.create(
+            item=self.recent,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            end_date=timezone.now() - timedelta(days=3),
+        )
+        Movie.objects.create(
+            item=self.old,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            end_date=timezone.now() - timedelta(days=200),
+        )
+
+    def _titles(self, **params):
+        response = self.client.get(
+            reverse("medialist", kwargs={"media_type": MediaTypes.MOVIE.value}),
+            params,
+        )
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        return [
+            title for title in ("Recent Movie", "Old Movie") if title in content
+        ]
+
+    def test_window_narrows_the_list(self):
+        """A 7-day window keeps only the recently completed movie."""
+        self.assertEqual(sorted(self._titles()), ["Old Movie", "Recent Movie"])
+
+        self.assertEqual(
+            self._titles(completed_date_within="7", completed_date_within_unit="days"),
+            ["Recent Movie"],
+        )
+
+    def test_wider_window_keeps_both(self):
+        """A one-year window covers both."""
+        self.assertEqual(
+            sorted(
+                self._titles(
+                    completed_date_within="1",
+                    completed_date_within_unit="years",
+                ),
+            ),
+            ["Old Movie", "Recent Movie"],
+        )
+
+    def test_filter_form_carries_the_window_fields(self):
+        """The toolbar must post the window, or the choice never reaches here.
+
+        The form is included separately from the toolbar on this page, so a
+        missing flag silently drops these inputs (and the multi-select platform
+        fields) without breaking any other assertion.
+        """
+        response = self.client.get(
+            reverse("medialist", kwargs={"media_type": MediaTypes.MOVIE.value}),
+        )
+        content = response.content.decode()
+
+        for name in (
+            "completed_date_from",
+            "completed_date_within",
+            "completed_date_within_unit",
+            "platform_mode",
+        ):
+            self.assertIn(f'name="{name}"', content, name)

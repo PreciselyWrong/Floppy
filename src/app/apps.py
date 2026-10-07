@@ -70,6 +70,16 @@ class AppConfig(AppConfig):
         """Import signals when the app is ready."""
         import_module("app.signals")
         import_module("app.signals_watch_state")
+        from app.signals_music import load_music_listen_hooks
+
+        load_music_listen_hooks()
+        # Task-boundary memory sampling. Connected from ready() rather than
+        # at module import so the handlers exist exactly once per process,
+        # before any task can run, and are skipped entirely when the
+        # instrumentation is switched off.
+        from app.memory_envelope import connect_celery_signals
+
+        connect_celery_signals()
         if _is_management_command_process():
             # One-off manage.py commands (migrate, shell, check, ...) must
             # not enqueue startup tasks or consume the once-per-day startup

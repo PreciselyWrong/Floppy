@@ -19,8 +19,36 @@ from app import providers
 from app.models.choices import MediaTypes, Sources, Status
 from app.models.item import Item
 from app.models.manager import MediaManager
+from integrations.import_scope import ImportScopedManager, ImportScopedQuerySet
 
 logger = logging.getLogger(__name__)
+
+
+class ScoreMonitorField(MonitorField):
+    """When ``score`` was last set, changed or cleared (issue #1280).
+
+    Unlike a plain MonitorField it stays null until the entry has a score, and
+    a row inserted with a score (``save()`` or ``bulk_create``) is stamped.
+    ``queryset.update(score=...)`` bypasses it, so those callers set
+    ``scored_at`` themselves.
+    """
+
+    def pre_save(self, model_instance, add):
+        """Stamp a scored insert or a score change; keep a timestamp already set."""
+        if add:
+            # An insert keeps a caller-supplied timestamp (a copied rating).
+            if (
+                model_instance.score is not None
+                and getattr(model_instance, self.attname) is None
+            ):
+                setattr(model_instance, self.attname, timezone.now())
+            self._save_initial(model_instance.__class__, model_instance)
+            return models.DateTimeField.pre_save(self, model_instance, add)
+        if not hasattr(model_instance, self.monitor_attname):
+            # The score was deferred when the row was loaded, so there is no
+            # initial value to compare against: leave the timestamp alone.
+            return models.DateTimeField.pre_save(self, model_instance, add)
+        return super().pre_save(model_instance, add)
 
 # Sentinel values on Item.runtime_minutes: 999998 means "aired but runtime
 # unknown", 999999 means "runtime completely unknown / failed lookup"
@@ -38,6 +66,7 @@ class Media(models.Model):
         excluded_fields=[
             "item",
             "progressed_at",
+            "scored_at",
             "user",
             "related_tv",
             "created_at",
@@ -66,6 +95,7 @@ class Media(models.Model):
             MaxValueValidator(10),
         ],
     )
+    scored_at = ScoreMonitorField(monitor="score", null=True, blank=True)
     progress = models.PositiveIntegerField(default=0)
     progressed_at = MonitorField(monitor="progress")
     status = models.CharField(
@@ -81,6 +111,14 @@ class Media(models.Model):
     start_date = models.DateTimeField(null=True, blank=True)
     end_date = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, default="")
+    # How this row was created: a short free-text label. Built-in writers use
+    # conventional values ("plex", "jellyfin", "trakt", "manual", …); the user
+    # can override it with any text (e.g. "Theatre") from the edit UI. Named
+    # distinctly from `Item.source` (the metadata provider) to avoid colliding
+    # with it in the generic CSV export/import column mapping (both would
+    # otherwise share the header name "source").
+    entry_source = models.CharField(max_length=50, blank=True, default="")
+    objects = ImportScopedManager()
 
     class Meta:
         """Meta options for the model."""
@@ -112,6 +150,10 @@ class Media(models.Model):
         if self.tracker.has_changed("status"):
             self.process_status()
 
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "score" in update_fields:
+            kwargs["update_fields"] = (*update_fields, "scored_at")
+
         planning_entries, merged_fields = prepare_completed_entry(self)
         if merged_fields and kwargs.get("update_fields") is not None:
             kwargs["update_fields"] = tuple(
@@ -126,9 +168,13 @@ class Media(models.Model):
             super().save(*args, **kwargs)
 
     def _get_local_max_progress(self):
-        """Return locally-derived runtime minutes for music/podcast without provider calls."""
+        """Return locally-derived length for music, podcasts, and videos without provider calls."""
         if self.item.media_type == MediaTypes.PODCAST.value:
             return self.item.runtime_minutes
+
+        if self.item.media_type == MediaTypes.VIDEO.value:
+            length_seconds = getattr(self, "length_seconds", None)
+            return length_seconds or None
 
         # Audiobooks track progress in minutes, so their total is the runtime.
         if (
@@ -171,6 +217,7 @@ class Media(models.Model):
                 MediaTypes.PODCAST.value,
                 MediaTypes.MUSIC.value,
                 MediaTypes.BOARDGAME.value,
+                MediaTypes.VIDEO.value,
             ) or (
                 self.item.media_type == MediaTypes.BOOK.value
                 and self.item.format == "audiobook"
@@ -219,8 +266,11 @@ class Media(models.Model):
                 MediaTypes.BOARDGAME.value,
             ):
                 max_progress = None
-            # For podcasts, use runtime_minutes from Item instead of external metadata.
-            elif self.item.media_type == MediaTypes.PODCAST.value:
+            # Podcasts and videos already know their length. Don't ask a provider.
+            elif self.item.media_type in (
+                MediaTypes.PODCAST.value,
+                MediaTypes.VIDEO.value,
+            ):
                 max_progress = self._get_local_max_progress()
             else:
                 try:
@@ -248,6 +298,7 @@ class Media(models.Model):
         if self.item.media_type not in (
             MediaTypes.MUSIC.value,
             MediaTypes.PODCAST.value,
+            MediaTypes.VIDEO.value,
         ):
             self.item.fetch_releases(delay=True)
 
@@ -724,7 +775,7 @@ class Manga(Media):
         _percentage_decrease_progress(self)
 
 
-class ActiveAnimeQuerySet(models.QuerySet):
+class ActiveAnimeQuerySet(ImportScopedQuerySet):
     """Anime rows that have not been migrated into grouped series."""
 
     def active(self):
@@ -754,7 +805,7 @@ class Anime(Media):
 
     tracker = FieldTracker()
     objects = ActiveAnimeManager()
-    all_objects = models.Manager()  # noqa: DJ012  # manager order is significant; objects must stay the default
+    all_objects = ImportScopedManager()  # manager order is significant; objects must stay the default
 
     def save(self, *args, **kwargs):
         """Save, then auto-migrate a completed flat MAL anime to episode tracking.
@@ -858,7 +909,7 @@ class Movie(Media):
 
     tracker = FieldTracker()
 
-    def watch(self, end_date, external_id=None):
+    def watch(self, end_date, external_id=None, entry_source=""):
         """Create a play of the movie, returning (play, created)."""
         if external_id:
             existing = self.plays.filter(external_id=external_id).first()
@@ -873,12 +924,21 @@ class Movie(Media):
             movie=self,
             end_date=end_date,
             external_id=external_id or None,
+            entry_source=entry_source,
         )
 
+        update_fields = []
         if self.end_date is None or end_date > self.end_date:
             self.end_date = end_date
             self.status = Status.COMPLETED.value
-            self.save(update_fields=["end_date", "status"])
+            update_fields += ["end_date", "status"]
+
+        if entry_source and self.entry_source != entry_source:
+            self.entry_source = entry_source
+            update_fields.append("entry_source")
+
+        if update_fields:
+            self.save(update_fields=update_fields)
 
         return play, True
 
@@ -910,6 +970,8 @@ class MoviePlay(models.Model):
     movie = models.ForeignKey(Movie, on_delete=models.CASCADE, related_name="plays")
     end_date = models.DateTimeField(null=True, blank=True)
     external_id = models.CharField(max_length=255, null=True, blank=True)
+    entry_source = models.CharField(max_length=50, blank=True, default="")
+    objects = ImportScopedManager()
 
     class Meta:
         """Meta options for MoviePlay."""

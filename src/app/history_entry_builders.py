@@ -163,6 +163,7 @@ def _get_episode_display_title(episode, episode_title_map=None):
             getattr(episode_item, "source", None),
             getattr(episode_item, "season_number", None),
             getattr(episode_item, "episode_number", None),
+            getattr(episode_item, "library_media_type", None),
         )
 
     if episode_title_map and key in episode_title_map:
@@ -178,7 +179,9 @@ def _get_episode_display_title(episode, episode_title_map=None):
 
 
 def _build_episode_entry(episode, episode_title_map=None):
-    played_at_local = _localize_datetime(episode.end_date or episode.created_at)
+    played_at_local = _localize_datetime(
+        episode.end_date or episode.start_date or episode.created_at
+    )
     if not played_at_local:
         return None
 
@@ -235,6 +238,7 @@ def _build_episode_entry(episode, episode_title_map=None):
         # arbitrary order the query happened to return them in.
         "season_number": episode_item.season_number if episode_item else None,
         "episode_number": episode_item.episode_number if episode_item else None,
+        "status": episode.status,
         "played_at_local": played_at_local,
         "runtime_minutes": runtime_minutes,
         "runtime_display": helpers.minutes_to_hhmm(runtime_minutes)
@@ -242,6 +246,7 @@ def _build_episode_entry(episode, episode_title_map=None):
         else None,
         "instance_id": episode.id,
         "entry_key": str(episode.id),
+        "entry_source": episode.entry_source,
     }
     _attach_entry_score(entry, episode)
     if genres:
@@ -367,6 +372,7 @@ def _build_movie_entry(movie):
         else None,
         "instance_id": movie.id,
         "entry_key": str(movie.id),
+        "entry_source": movie.entry_source,
     }
     _attach_entry_score(entry, movie)
     if genres:
@@ -374,6 +380,36 @@ def _build_movie_entry(movie):
     if implied_genres:
         entry["implied_genres"] = implied_genres
     return entry
+
+
+def _build_video_play_entry(play):
+    """One history row per video play.
+
+    @param play - VideoPlay with video and item selected.
+    @returns Entry dict, or None when the play has no timestamp.
+    """
+    video = play.video
+    played_at_local = _localize_datetime(play.end_date or video.created_at)
+    if not played_at_local:
+        return None
+    runtime_minutes = video.length_seconds // 60 if video.length_seconds else None
+    return {
+        "media_type": MediaTypes.VIDEO.value,
+        "item": _serialize_item(video.item),
+        "poster": video.item.image or settings.IMG_NONE,
+        "title": video.item.title,
+        "display_title": video.item.title,
+        "status": video.status,
+        "play_count": 1,
+        "episode_label": video.channel or None,
+        "episode_code": None,
+        "played_at_local": played_at_local,
+        "runtime_minutes": runtime_minutes,
+        "runtime_display": helpers.minutes_to_hhmm(runtime_minutes) if runtime_minutes else None,
+        "instance_id": play.id,
+        "entry_key": f"video:{play.id}",
+        "entry_source": "youtube",
+    }
 
 
 # ── Music builders ────────────────────────────────────────────────────────────

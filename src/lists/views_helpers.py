@@ -5,15 +5,25 @@ Nothing in this module handles HTTP requests directly — all symbols are
 pure helpers called by views in views.py (and its submodules).
 """
 
-import datetime
 import logging
 
 from django.apps import apps
 from django.conf import settings
-from django.db.models import Count, F, Q
+from django.core.paginator import Paginator
+from django.db.models import Count, F, Max, Q
 from django.urls import reverse
+from django.utils.text import slugify
+from django.utils.translation import ngettext
 
-from app.models import CollectionEntry, Item, MediaManager, MediaTypes, Status
+from app.models import (
+    CollectionEntry,
+    Item,
+    ItemProviderLink,
+    MediaManager,
+    MediaTypes,
+    Sources,
+    Status,
+)
 from app.providers import services
 from integrations.imports import helpers as import_helpers
 from integrations.models import TraktAccount
@@ -51,7 +61,16 @@ ASCENDING_LIST_SORTS = {
     ListDetailSortChoices.RELEASE_DATE,
     ListDetailSortChoices.START_DATE,
     ListDetailSortChoices.PLATFORM,
+    ListDetailSortChoices.TIER,
 }
+
+
+def _build_list_count_trigger(count: int) -> dict:
+    """Return the HTMX payload for an updated list item count."""
+    label = ngettext("%(count)s item", "%(count)s items", count) % {
+        "count": count,
+    }
+    return {"listCountUpdated": {"count": count, "label": label}}
 
 
 # ---------------------------------------------------------------------------
@@ -208,33 +227,81 @@ def _get_item_last_watched_dates(user, item_ids):
     return item_last_watched
 
 
+def _get_list_completed_counts(user, list_ids):
+    """Count completed memberships in SQL without loading the list contents."""
+    completed = Q(pk__in=[])
+    for media_type in MediaTypes.values:
+        if media_type == MediaTypes.EPISODE.value:
+            continue
+        try:
+            model = apps.get_model("app", media_type)
+        except LookupError:
+            continue
+        completed |= Q(
+            item_id__in=model.objects.filter(
+                user=user,
+                status=Status.COMPLETED.value,
+            ).values("item_id"),
+        )
+    return dict(
+        CustomListItem.objects.filter(completed, custom_list_id__in=list_ids)
+        .order_by()
+        .values("custom_list_id")
+        .annotate(completed_count=Count("item_id", distinct=True))
+        .values_list("custom_list_id", "completed_count"),
+    )
+
+
 def _get_list_last_watched_dates(user, list_ids):
-    """Return the latest watched timestamp for each list ID."""
+    """Aggregate watch dates per list in SQL, retaining only one date per list."""
     if not list_ids:
         return {}
 
-    item_ids_by_list = {}
-    all_item_ids = set()
-    for list_id, item_id in CustomListItem.objects.filter(
-        custom_list_id__in=list_ids,
-    ).values_list("custom_list_id", "item_id"):
-        item_ids_by_list.setdefault(list_id, set()).add(item_id)
-        all_item_ids.add(item_id)
-
-    item_last_watched = _get_item_last_watched_dates(user, all_item_ids)
-
-    list_last_watched = {}
-    for list_id, item_ids in item_ids_by_list.items():
-        latest_watch = None
-        for item_id in item_ids:
-            watched_at = item_last_watched.get(item_id)
-            if watched_at is not None and (
-                latest_watch is None or watched_at > latest_watch
+    latest_by_list = {}
+    for media_type in MediaTypes.values:
+        try:
+            model = apps.get_model("app", media_type)
+        except LookupError:
+            continue
+        if media_type in {
+            MediaTypes.TV.value,
+            MediaTypes.SEASON.value,
+            MediaTypes.EPISODE.value,
+        }:
+            model = apps.get_model("app", MediaTypes.EPISODE.value)
+            item_path = {
+                MediaTypes.TV.value: "related_season__related_tv__item",
+                MediaTypes.SEASON.value: "related_season__item",
+                MediaTypes.EPISODE.value: "item",
+            }[media_type]
+            user_path = "related_season__user"
+        else:
+            if not {"item", "user", "end_date"}.issubset(
+                field.name for field in model._meta.fields
             ):
-                latest_watch = watched_at
-        list_last_watched[list_id] = latest_watch
-
-    return list_last_watched
+                continue
+            item_path = "item"
+            user_path = "user"
+        list_path = f"{item_path}__customlistitem__custom_list_id"
+        rows = (
+            model.objects.filter(
+                **{
+                    user_path: user,
+                    f"{item_path}__media_type": media_type,
+                    f"{list_path}__in": list_ids,
+                    "end_date__isnull": False,
+                },
+            )
+            .order_by()
+            .values(list_path)
+            .annotate(latest=Max("end_date"))
+            .values_list(list_path, "latest")
+        )
+        for list_id, watched_at in rows.iterator(chunk_size=500):
+            previous = latest_by_list.get(list_id)
+            if previous is None or watched_at > previous:
+                latest_by_list[list_id] = watched_at
+    return latest_by_list
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +637,108 @@ def _get_trakt_credentials(user):
 # ---------------------------------------------------------------------------
 
 
+# List sort choices, expressed as library-query sort keys.
+LIST_SORT_KEYS = {
+    ListDetailSortChoices.DATE_ADDED: "list_added",
+    ListDetailSortChoices.CUSTOM: "list_added",
+    ListDetailSortChoices.TITLE: "title",
+    ListDetailSortChoices.MEDIA_TYPE: "type",
+    ListDetailSortChoices.RATING: "score",
+    ListDetailSortChoices.PROGRESS: "progress",
+    ListDetailSortChoices.STATUS: "status",
+    ListDetailSortChoices.RELEASE_DATE: "release_date",
+    ListDetailSortChoices.START_DATE: "start_date",
+    ListDetailSortChoices.END_DATE: "end_date",
+    ListDetailSortChoices.PLATFORM: "platform",
+    ListDetailSortChoices.TIER: "list_tier",
+}
+
+
+def paginate_list_items(
+    *,
+    custom_list,
+    media_user,
+    candidates,
+    filters,
+    sort_by,
+    direction,
+    page,
+    page_size=16,
+):
+    """Order and paginate a list's items with the library-query engine.
+
+    ``candidates`` are the items the list shows (its members, or a smart
+    list's live matches) as an ``Item`` id queryset or ids. Tracking values -
+    status, rating, progress - are read for ``media_user``. Only the requested
+    page is loaded and decorated. Returns ``(items_page, filtered_count)``.
+    """
+    from app.library_query import LibraryQuery, LibraryQueryExecutor, SortSpec
+    from app.library_query.spec import ROUTING_MODEL
+
+    media_types = tuple(
+        Item.objects.filter(pk__in=candidates)
+        .order_by()
+        .values_list("media_type", flat=True)
+        .distinct(),
+    )
+    if sort_by == ListDetailSortChoices.CUSTOM:
+        direction = "asc"  # The list's own order has no direction.
+    query = LibraryQuery(
+        media_types=media_types,
+        filters=filters,
+        sort=SortSpec(key=LIST_SORT_KEYS.get(sort_by, "list_added"), direction=direction),
+        within=candidates,
+        sort_list_id=custom_list.id,
+        routing=ROUTING_MODEL,
+        dedupe_cross_provider=False,
+        provider_region=str(getattr(media_user, "watch_provider_region", "") or ""),
+        pinned_providers=tuple(getattr(media_user, "pinned_watch_providers", None) or ()),
+    )
+    executor = LibraryQueryExecutor(media_user, query)
+    total = executor.count()
+    items_page = Paginator(range(total), page_size).get_page(page)
+    offset = (items_page.number - 1) * page_size
+    items = executor.page(offset, page_size, total=total).items
+    added = dict(
+        CustomListItem.objects.filter(
+            custom_list=custom_list,
+            item_id__in=[item.pk for item in items],
+        ).values_list("item_id", "date_added"),
+    )
+    for item in items:
+        item.list_date_added = added.get(item.pk)
+    items_page.object_list = items
+    _attach_media_with_aggregation(items_page, media_user)
+    return items_page, total
+
+
+def build_tier_columns(custom_list, items):
+    """Group one page of list items by tier.
+
+    Returns ``(columns, unranked)``: one ``{"tier", "items"}`` per tier in the
+    list's tier order, then the items with no (or an unknown) tier. Each group
+    keeps the order of ``items``.
+    """
+    from lists.tiers import ink_for, resolve_tiers
+
+    tier_by_item = dict(
+        CustomListItem.objects.filter(
+            custom_list=custom_list,
+            item_id__in=[item.pk for item in items],
+        ).values_list("item_id", "tier"),
+    )
+    columns = [
+        {"tier": {**tier, "ink": ink_for(tier["color"])}, "items": []}
+        for tier in resolve_tiers(custom_list)
+    ]
+    column_by_id = {column["tier"]["id"]: column for column in columns}
+    unranked = []
+    for item in items:
+        column = column_by_id.get(tier_by_item.get(item.pk, ""))
+        (column["items"] if column else unranked).append(item)
+    return columns, unranked
+
+
 def _attach_media_with_aggregation(item_list, media_user):
     """Attach `.media` to each item in item_list using the given user's library data.
 
@@ -642,42 +811,102 @@ def _attach_media_with_aggregation(item_list, media_user):
     _attach_list_card_overrides(item_list)
 
 
-def _rating_value(media):
-    if not media:
-        return -1
-    aggregated_score = getattr(media, "aggregated_score", None)
-    if aggregated_score is not None:
-        return aggregated_score
-    score = getattr(media, "score", None)
-    if score is not None:
-        return score
-    return -1
+def _attach_kometa_episode_urls(items_page):
+    """Attach TVDB-shaped episode links for Kometa list-page discovery.
+
+    Kometa's Floppy/Yamtrack builder extracts IDs from detail-page anchors. Its
+    episode-aware parser recognises TVDB paths, while a TMDB episode path is
+    reduced to the parent show. Keep Floppy's normal link as the visible target
+    and add a parser-compatible link only when the local library already knows
+    the show's numeric TVDB ID.
+    """
+    items = list(getattr(items_page, "object_list", items_page) or [])
+    episode_items = [
+        item for item in items if item.media_type == MediaTypes.EPISODE.value
+    ]
+    if not episode_items:
+        return
+
+    parent_keys = {(item.source, item.media_id) for item in episode_items}
+    parent_items = Item.objects.filter(
+        source__in={source for source, _media_id in parent_keys},
+        media_id__in={media_id for _source, media_id in parent_keys},
+        media_type__in=(MediaTypes.TV.value, MediaTypes.ANIME.value),
+        season_number__isnull=True,
+        episode_number__isnull=True,
+    ).only("id", "source", "media_id", "title", "provider_external_ids")
+
+    tvdb_by_parent_key = {}
+    parent_item_ids = []
+    parent_key_by_id = {}
+    parent_id_by_key = {}
+    parent_title_by_key = {}
+    for parent in parent_items:
+        parent_item_ids.append(parent.id)
+        parent_key = (parent.source, parent.media_id)
+        parent_key_by_id[parent.id] = parent_key
+        parent_id_by_key[parent_key] = parent.id
+        parent_title_by_key[parent_key] = parent.title
+        tvdb_id = (parent.provider_external_ids or {}).get("tvdb_id")
+        if str(tvdb_id or "").isdigit():
+            tvdb_by_parent_key.setdefault(parent_key, (str(tvdb_id), parent.title))
+
+    if parent_item_ids:
+        provider_links = ItemProviderLink.objects.filter(
+            item_id__in=parent_item_ids,
+            provider=Sources.TVDB.value,
+            provider_media_type=MediaTypes.TV.value,
+            season_number__isnull=True,
+        ).values_list("item_id", "provider_media_id")
+        for parent_id, provider_media_id in provider_links:
+            parent_key = parent_key_by_id.get(parent_id)
+            if parent_key and str(provider_media_id or "").isdigit():
+                tvdb_by_parent_key.setdefault(
+                    parent_key,
+                    (str(provider_media_id), parent_title_by_key.get(parent_key)),
+                )
+
+    missing_tvdb_parent_ids = set()
+    for item in episode_items:
+        parent_key = (item.source, item.media_id)
+        tvdb_id, parent_title = tvdb_by_parent_key.get(parent_key, ("", None))
+        if not tvdb_id.isdigit():
+            parent_id = parent_id_by_key.get(parent_key)
+            if parent_id is not None:
+                missing_tvdb_parent_ids.add(parent_id)
+            continue
+
+        item.kometa_episode_url = reverse(
+            "episode_details",
+            kwargs={
+                "source": Sources.TVDB.value,
+                "media_id": tvdb_id,
+                "title": slugify(parent_title or "") or tvdb_id,
+                "season_number": item.season_number,
+                "episode_number": item.episode_number,
+            },
+        )
+
+    if missing_tvdb_parent_ids:
+        _enqueue_tvdb_id_backfill(missing_tvdb_parent_ids)
 
 
-def _progress_value(media):
-    if not media:
-        return -1
-    aggregated_progress = getattr(media, "aggregated_progress", None)
-    if aggregated_progress is not None:
-        return aggregated_progress
-    progress = getattr(media, "progress", None)
-    if progress is not None:
-        return progress
-    return -1
+def _enqueue_tvdb_id_backfill(item_ids):
+    """Best-effort queue a metadata refresh for shows missing a TVDB id.
+
+    Reuses the existing external-IDs backfill sweep (which fetches provider
+    metadata and persists tvdb_id as a side effect) so future page loads can
+    resolve the Kometa episode anchor. Failures here must never break list
+    rendering.
+    """
+    try:
+        from app.tasks_external_ids import enqueue_external_ids_backfill_items
+
+        enqueue_external_ids_backfill_items(list(item_ids))
+    except Exception:
+        logger.exception("Failed to enqueue TVDB id backfill for items")
 
 
-_STATUS_SORT_ORDER = {
-    Status.PLANNING: 0,
-    Status.IN_PROGRESS: 1,
-    Status.COMPLETED: 2,
-    Status.PAUSED: 3,
-    Status.DROPPED: 4,
-}
-
-
-def _status_value(media):
-    status = getattr(media, "status", None) if media else None
-    return _STATUS_SORT_ORDER.get(status, len(_STATUS_SORT_ORDER))
 
 
 def _extract_display_platform(item, collection_platforms_by_item_id=None):
@@ -697,27 +926,3 @@ def _extract_display_platform(item, collection_platforms_by_item_id=None):
         normalized = [str(p).strip() for p in platforms if str(p).strip()]
         return normalized[0] if len(normalized) == 1 else ""
     return ""
-
-
-def _platform_sort_value(item, collection_platforms_by_item_id=None):
-    platform = _extract_display_platform(item, collection_platforms_by_item_id)
-    return platform.lower() if platform else "￿"
-
-
-def _media_date_value(media, attr_name):
-    if not media:
-        return None
-    aggregated_value = getattr(media, f"aggregated_{attr_name}", None)
-    if aggregated_value is not None:
-        return aggregated_value
-    return getattr(media, attr_name, None)
-
-
-def _date_sort_value(value, direction):
-    if value is None:
-        return float("inf") if direction == "asc" else float("-inf")
-    if isinstance(value, datetime.datetime):
-        return value.timestamp()
-    if isinstance(value, datetime.date):
-        return datetime.datetime.combine(value, datetime.time.min).timestamp()
-    return float("inf") if direction == "asc" else float("-inf")

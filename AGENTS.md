@@ -61,13 +61,17 @@ docker compose up -d
 - `src/app/log_safety.py`, installé par `src/config/__init__.py`, filtre les secrets avant tout handler.
 - `LoginRequiredMiddleware` protège toutes les vues; une route publique doit porter explicitement `@login_not_required`.
 - Les changements de thème doivent respecter les six états décrits dans `docs/architecture/theming.md`.
-- Les logos personnalisés sont réencodés en WebP, sans métadonnées, et restent sous les limites définies dans `users.branding`.
+- Toute nouvelle présentation, section ou option d’affichage doit mettre à jour les réglages de thème concernés et leurs six états; tout comportement ou seuil qui peut varier doit être exposé dans les settings plutôt que codé en dur.
+- Chaque feature doit inscrire dans `TODO.md` les tests à rédiger, les vérifications à exécuter et leur résultat avant de passer dans `Done`.
 - La baseline tests/Ruff/lint est zéro : confirmer puis corriger toute régression observée, même préexistante, sauf risque disproportionné explicité.
 
 ## ⛔ Interdits
 
 - ⛔ Créer une PR sans validation et accord explicite de Nicolas — le fork doit d'abord être testé sur son serveur.
-- ⛔ Demander une confirmation pour committer ou intégrer dans `custom` après un milestone validé sans secret — Nicolas autorise ces deux étapes automatiquement.
+- ⛔ Committer sans demande explicite — les changements locaux peuvent appartenir à Nicolas.
+- ⛔ Oublier de créer ou mettre à jour la ligne `CONTRIBUTIONS.md` d’une feature — ce registre est la source unique de son état de livraison.
+- ⛔ Marquer une feature `Done` sans tests prévus et vérifiés dans `TODO.md` — les régressions doivent être visibles avant la livraison.
+- ⛔ Tenir la feuille de route canonique dans `.worktrees/**` — elle vit dans le `TODO.md` à la racine du dépôt pour rester visible depuis le projet principal.
 - ⛔ Amender un commit que Nicolas n'a pas vu — corriger avec un nouveau commit.
 - ⛔ Modifier `.github/workflows/**` dans une PR ordinaire — les gardes CI rejettent ces changements.
 - ⛔ Inclure `TODO.md` dans une PR upstream — la feuille de route est interne au fork et doit toujours rester hors du diff proposé au projet source.
@@ -76,44 +80,37 @@ docker compose up -d
 - ⛔ Ajouter `celery` aux queues du worker `interactive` — les tâches longues bloqueraient les actions utilisateur.
 - ⛔ Déplacer l'installation du filtre de logs ou élargir son `except` — une panne peut alors exposer des secrets silencieusement.
 - ⛔ Utiliser une classe Tailwind `dark:` — elle suit l'OS et contredit le choix de thème explicite de l'utilisateur.
-- ⛔ Ajouter une animation sans variante `prefers-reduced-motion` — l'interface doit rester confortable et utilisable sans mouvement.
-- ⛔ Placer les réglages des avis publics dans les préférences générales — ils appartiennent au configurateur « Detail pages » d’Appearance, avec une visibilité et un ordre par famille.
-- ⛔ Afficher les balises `[spoiler]` BetaSeries brutes ou leur contenu sans action — les avis doivent masquer chaque passage et permettre sa révélation volontaire au clavier comme au clic.
-- ⛔ Créer une liste horizontale de cartes sans le geste partagé `data-horizontal-scroll` — le doigt, la souris, le stylet et le clavier doivent tous pouvoir la parcourir.
-- ⛔ Laisser un effet de survol dépasser du scrollport sans réserver sa marge — le haut des affiches ne doit jamais être découpé au hover.
-- ⛔ Décaler horizontalement une rangée pour compenser son hover — la première carte doit rester alignée avec le titre.
-- ⛔ Dessiner le liseré hover d’une carte hors de ses limites — il doit rester interne pour ne rogner ni le bord gauche ni la progression.
-- ⛔ Laisser un `transform` final sur un conteneur animé qui contient une modale fixe — la modale doit rester liée au viewport.
-- ⛔ Laisser un overlay plein écran imbriqué dans son déclencheur — le porter sous `<body>` et valider sa géométrie réelle dans le navigateur.
-- ⛔ Porter un overlay sans conserver son scope Alpine — les actions internes, notamment la croix de fermeture, doivent encore piloter l’état du déclencheur.
-- ⛔ Laisser un long titre forcer la navigation d’épisode sur plusieurs lignes — le tronquer dans une zone flexible entre les flèches.
-- ⛔ Garder les contrôles d’une rangée de réglages sur une ligne rigide — ils doivent revenir à la ligne sans sortir du panneau.
-- ⛔ Mettre en cache les pages, fragments ou données authentifiés dans la PWA — le service worker reste limité aux fichiers statiques publics.
-- ⛔ Supposer que toutes les fiches exposent le même champ de titre — épisodes, numéros et autres variantes doivent conserver leurs replis propres.
-- ⛔ Exclure les fiches épisode des disponibilités Sonarr — vérifier l’épisode exact pour éviter une absence ou un faux positif venant d’un épisode voisin.
-- ⛔ Déduire une absence Plex de la seule collection suivie dans Floppy — une fiche non suivie doit consulter l’index complet; sans scan complet et récent, afficher que l’index est indisponible.
-- ⛔ Accepter un SVG comme logo personnalisé — son contenu actif et sa complexité ne doivent jamais entrer dans les préférences.
-- ⛔ Placer les réglages du logo hors de `Settings > Appearance` ou laisser le logo de la sidebar se contracter — l'identité visuelle doit rester trouvable et lisible.
-- ⛔ Aligner le logo ou le mot-symbole sur un bord du bandeau de sidebar — toutes les variantes restent centrées dans la colonne.
-- ⛔ Présenter une prévisualisation non enregistrée comme une capture de résultat — sauvegarder, recharger et vérifier la barre avant d’illustrer le branding.
-- ⛔ Supposer que le branding privé apparaît avant connexion — la page publique exige une publication explicite, puis une vérification déconnectée.
-- ⛔ Tronquer le nom de démonstration dans le logo texte — vérifier sa largeur réelle sur la barre latérale et dans les captures.
-- ⛔ Laisser un nom de logo libre occuper la navigation — borner les nouvelles saisies côté formulaire et serveur, sans effacer les noms déjà sauvegardés.
-- ⛔ Faire dépendre la publication du branding d’un formulaire caché ciblé par `form=` — le clic peut enregistrer Appearance sans publier; le bouton visible doit envoyer `public_branding_action` et un test navigateur doit vérifier le message et la connexion déconnectée.
-- ⛔ Laisser `prefers-color-scheme` cibler un thème explicite — seul `System default` peut suivre l'OS.
-- ⛔ Afficher le switcher soleil/lune avec un thème autre que `System`, `Light` ou `Dark` — il écraserait le thème choisi.
-- ⛔ Passer une chaîne JSON à `json_script` — le filtre sérialise déjà les objets et l'éditeur recevrait du texte inutilisable.
 - ⛔ Lire, afficher ou committer `.env`, clés, jetons ou données de production — ce sont des secrets hors périmètre.
 - ⛔ Prioriser l'i18n ou la traduction française sans réactivation explicite — la parité Home avec Floppy Companion reste prioritaire.
 - ⛔ Ajouter du texte d'interface ou des valeurs par défaut en français — l'interface et les défauts restent en anglais.
 - ⛔ Déployer une branche autre que `custom` sur Unraid — la recette personnelle doit rester distincte des branches proposées au projet source.
 - ⛔ Accumuler les anciennes images Floppy sur Unraid — conserver uniquement l'image active et une image de retour arrière, l'espace Docker est limité.
-- ⛔ Faire travailler deux features dans le même worktree ou faire dépendre leur migration l'une de l'autre — elles doivent rester extractibles en PR indépendantes.
+- ⛔ Regrouper plusieurs changements révisables dans une PR ou partager leur worktree — chaque PR doit être la plus petite tranche indépendante, testable et extractible possible; empiler des PR seulement si une dépendance est inévitable.
+- ⛔ Interpréter « finir les TODO du worktree » comme toute la roadmap racine — ne traiter que la feature portée par la branche active afin de préserver l'isolation des contributions.
 - ⛔ Coder une rangée Home hors de la configuration existante — chaque rangée doit rester ajoutable, supprimable et ordonnable.
+- ⛔ Afficher globalement une option propre à une rangée Home — la placer dans le menu de cette rangée pour garder son contexte clair.
+- ⛔ Inventer la signature d’un cache ou la couvrir uniquement par un mock — vérifier l’appel réel et tester le GET Home avec la rangée configurée pour éviter un 500.
+- ⛔ Chaîner `default` avec une clé facultative de dictionnaire dans un template Django — résoudre les replis sans argument manquant pour éviter un 500 au rendu.
+- ⛔ Classer une série rattrapée dans `Stale` — exiger un épisode régulier déjà diffusé et non vu; les spéciaux ne comptent pas.
 - ⛔ Remplacer le besoin « In progress » transversal par une rangée par média — un seul endroit doit couvrir toutes les familles activées.
 - ⛔ Remplacer l’identité d’un prochain épisode par sa seule date — conserver `SxxExx` quand les numéros sont connus.
+- ⛔ Laisser une série rattrapée dans `All media / In progress` — les séries sans épisode diffusé restant à voir doivent être exclues, contrairement aux autres médias réellement en cours.
 - ⛔ Réduire un groupe d’épisodes en cache à son seul total — Activity Journal et History doivent conserver les épisodes membres pour afficher le compteur, le chevron et le détail dépliable.
-- ⛔ Ajouter un menu dans une rangée configurable sans promouvoir la rangée ouverte au-dessus de ses sœurs — leurs bordures et contrôles peuvent recouvrir la liste déroulante.
+- ⛔ Tester le regroupement d’épisodes uniquement avec des objets Django — le journal Home consomme les dictionnaires sérialisés du cache.
+- ⛔ Faire entrer une lecture non terminée dans History — exiger à la fois le statut `Completed` et une date de fin, car une ancienne date peut survivre à un retour vers `In progress`.
+- ⛔ Donner à `/history` une identité visuelle distincte de l’application — la page doit hériter de la couleur principale, de la police et des autres tokens du thème général.
+- ⛔ Remplir les contrôles History avec une couleur personnalisable — utiliser les surfaces et textes du thème, avec la couleur principale seulement en bordure ou focus, pour garantir la lisibilité.
+- ⛔ Rendre History obligatoire dans la navigation — son entrée doit rester configurable dans les réglages Sidebar.
+- ⛔ Forcer l’ouverture d’un épisode depuis une rangée `In Progress` — chaque rangée épisodique doit exposer l’option dans son propre menu, activée par défaut.
+- ⛔ Afficher les balises `[spoiler]` BetaSeries brutes ou leur contenu sans action — les avis doivent masquer chaque passage et permettre sa révélation volontaire au clavier comme au clic.
+- ⛔ Superposer l’enrichissement des crédits aux portraits ou le limiter aux films — les photos restent intactes et les mêmes cartes enrichies servent films, séries, saisons et épisodes.
+- ⛔ Présenter une prévisualisation non enregistrée comme une capture de résultat — sauvegarder, recharger et vérifier la barre avant d’illustrer le branding.
+- ⛔ Supposer que le branding privé apparaît avant connexion — la page publique exige une publication explicite, puis une vérification déconnectée.
+- ⛔ Tronquer le nom de démonstration dans le logo texte — vérifier sa largeur réelle sur la barre latérale et dans les captures.
+- ⛔ Laisser un nom de logo libre occuper la navigation — borner les nouvelles saisies côté formulaire et serveur, sans effacer les noms déjà sauvegardés.
+- ⛔ Publier un instantané avant d’enregistrer les valeurs envoyées par le formulaire Appearance — « Publish saved branding » doit sauvegarder puis publier le même branding, vérifié déconnecté.
+- ⛔ Limiter la publication de la page de connexion au seul logo — le thème et sa palette personnalisée doivent être publiés avec le branding et vérifiés déconnecté.
+- ⛔ Exiger une seconde action de publication après « Save appearance » pour le propriétaire de l’instance — son enregistrement doit mettre à jour en une fois l’interface privée et la connexion publique.
 
 ## Pièges
 
@@ -129,5 +126,5 @@ docker compose up -d
 
 ## État
 
-- Coordination active sur `custom`; les features Home et Appearance vivent dans des worktrees indépendants.
-- Le branding personnalisé corrigé est déployé sur `unraid-server` avec l'image `sha-9e6011fbdd50123c947d39c330b50ba7ea99ac46`; attendre le test visuel et l'accord de Nicolas avant toute proposition de PR.
+- Branche active : `feat/home-all-media-in-progress`; le worktree contient des changements Home/Apparence non commités à préserver.
+- Prochaine étape : committer sur demande, intégrer dans `custom`, déployer sur `unraid-server`, puis laisser Nicolas tester avant toute proposition de PR.

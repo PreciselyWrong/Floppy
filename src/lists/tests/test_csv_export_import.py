@@ -1,11 +1,14 @@
 import csv
 from io import BytesIO, StringIO
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
+from kombu.exceptions import OperationalError as KombuOperationalError
 
 from app.models import Item, MediaTypes, Sources
+from integrations.upload_staging import discard_staged_upload
 from lists.models import CustomList, CustomListItem
 
 
@@ -138,6 +141,39 @@ class ImportListCsvViewTests(TestCase):
         self.assertIsNotNone(custom_list)
         item_count = CustomListItem.objects.filter(custom_list=custom_list).count()
         self.assertEqual(item_count, 1)
+
+    @patch("lists.views_list_actions.list_tasks.import_list_csv_task.delay")
+    def test_csv_import_queues_staged_path(self, mock_delay):
+        """The list task receives a filesystem path instead of CSV bytes."""
+        response = self.client.post(
+            reverse("list_import_csv"),
+            {"csv_file": self._csv_bytes()},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        queued = mock_delay.call_args.args[1]
+        self.addCleanup(discard_staged_upload, queued)
+        self.assertTrue(queued.endswith(".csv"))
+
+    @override_settings(CELERY_BROKER_URL="redis://redis:6379/0")
+    @patch("lists.views_list_actions.list_tasks.import_list_csv_task.delay")
+    def test_unreachable_broker_names_redis(self, mock_delay):
+        """#1263. An unresolvable Redis host is named, not "try again"."""
+        mock_delay.side_effect = KombuOperationalError(
+            "Error -2 connecting to redis:6379. Name does not resolve."
+        )
+        response = self.client.post(
+            reverse("list_import_csv"),
+            {"csv_file": self._csv_bytes()},
+            follow=True,
+        )
+
+        self.assertRedirects(response, reverse("lists"))
+        messages = [str(m) for m in response.context["messages"]]
+        self.assertTrue(
+            any("cannot reach Redis at redis:6379" in m for m in messages),
+            messages,
+        )
 
     def test_csv_import_preserves_include_notes_for_public_list(self):
         """A public list import retains its Include Notes preference."""

@@ -8,6 +8,7 @@ from lists import (
     views_list_browse,
     views_mdblist,
     views_recommendations,
+    views_tiers,
     views_trakt,
 )
 
@@ -49,6 +50,11 @@ urlpatterns = [
     ),
     path("list/delete", views_list_actions.delete, name="list_delete"),
     path("list/import-csv", views_list_actions.import_list_csv, name="list_import_csv"),
+    path(
+        "list/bulk-add",
+        views_list_actions.bulk_list_add,
+        name="bulk_list_add",
+    ),
     path("list/<slug:list_reference>", views.list_detail, name="list_detail"),
     path("list/<slug:list_reference>/rss", feeds.list_rss_feed, name="list_rss"),
     path("list/<slug:list_reference>/json", feeds.list_json, name="list_json"),
@@ -71,6 +77,31 @@ urlpatterns = [
         "list/<int:list_id>/reorder-all",
         views_add_reorder.reorder_list_items_all,
         name="list_reorder_all",
+    ),
+    path(
+        "list/<int:list_id>/tiers/move",
+        views_tiers.move_tier_item,
+        name="list_tier_move",
+    ),
+    path(
+        "list/<int:list_id>/tiers/save",
+        views_tiers.save_tiers,
+        name="list_tier_save",
+    ),
+    path(
+        "list/<int:list_id>/tiers/fill",
+        views_tiers.fill_from_ratings,
+        name="list_tier_fill",
+    ),
+    path(
+        "list/<int:list_id>/tiers/fill/undo",
+        views_tiers.undo_fill,
+        name="list_tier_fill_undo",
+    ),
+    path(
+        "list/<int:list_id>/tiers/export.png",
+        views_tiers.export_tiers,
+        name="list_tier_export",
     ),
     path(
         "list/<int:list_id>/add",

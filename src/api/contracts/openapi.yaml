@@ -687,9 +687,49 @@ paths:
           type: string
         description: Match items completed on or before this date (YYYY-MM-DD).
       - in: query
+        name: completed_date_within
+        schema:
+          type: integer
+        description: Match the last N units instead of a completed_date_from/_to range
+          (1-999); see completed_date_within_unit.
+      - in: query
+        name: completed_date_within_unit
+        schema:
+          type: string
+          enum:
+          - days
+          - months
+          - weeks
+          - years
+      - in: query
         name: country
         schema:
           type: string
+      - in: query
+        name: date_added_from
+        schema:
+          type: string
+        description: Match items added to the library on or after this date (YYYY-MM-DD).
+      - in: query
+        name: date_added_to
+        schema:
+          type: string
+        description: Match items added to the library on or before this date (YYYY-MM-DD).
+      - in: query
+        name: date_added_within
+        schema:
+          type: integer
+        description: Match the last N units instead of a date_added_from/_to range
+          (1-999); see date_added_within_unit.
+      - in: query
+        name: date_added_within_unit
+        schema:
+          type: string
+          enum:
+          - days
+          - months
+          - weeks
+          - years
       - in: query
         name: direction
         schema:
@@ -750,6 +790,7 @@ paths:
           - podcast
           - season
           - tv
+          - video
         description: Optional type restriction; omitted returns the default media
           types.
       - in: query
@@ -799,6 +840,18 @@ paths:
           - not_rated
           - rated
       - in: query
+        name: rating_max
+        schema:
+          type: number
+          format: double
+        description: Match items rated at or below this score (0-10).
+      - in: query
+        name: rating_min
+        schema:
+          type: number
+          format: double
+        description: Match items rated at or above this score (0-10).
+      - in: query
         name: release
         schema:
           type: string
@@ -806,6 +859,31 @@ paths:
           - all
           - not_released
           - released
+      - in: query
+        name: release_date_from
+        schema:
+          type: string
+        description: Match items released on or after this date (YYYY-MM-DD).
+      - in: query
+        name: release_date_to
+        schema:
+          type: string
+        description: Match items released on or before this date (YYYY-MM-DD).
+      - in: query
+        name: release_date_within
+        schema:
+          type: integer
+        description: Match the last N units instead of a release_date_from/_to range
+          (1-999); see release_date_within_unit.
+      - in: query
+        name: release_date_within_unit
+        schema:
+          type: string
+          enum:
+          - days
+          - months
+          - weeks
+          - years
       - in: query
         name: search
         schema:
@@ -890,6 +968,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TrackedMediaEnvelope'
           description: ''
+      x-required-scope: watchlist:read
   /api/v1/media/{media_type}/:
     get:
       operationId: listTrackedMediaByType
@@ -919,9 +998,49 @@ paths:
           type: string
         description: Match items completed on or before this date (YYYY-MM-DD).
       - in: query
+        name: completed_date_within
+        schema:
+          type: integer
+        description: Match the last N units instead of a completed_date_from/_to range
+          (1-999); see completed_date_within_unit.
+      - in: query
+        name: completed_date_within_unit
+        schema:
+          type: string
+          enum:
+          - days
+          - months
+          - weeks
+          - years
+      - in: query
         name: country
         schema:
           type: string
+      - in: query
+        name: date_added_from
+        schema:
+          type: string
+        description: Match items added to the library on or after this date (YYYY-MM-DD).
+      - in: query
+        name: date_added_to
+        schema:
+          type: string
+        description: Match items added to the library on or before this date (YYYY-MM-DD).
+      - in: query
+        name: date_added_within
+        schema:
+          type: integer
+        description: Match the last N units instead of a date_added_from/_to range
+          (1-999); see date_added_within_unit.
+      - in: query
+        name: date_added_within_unit
+        schema:
+          type: string
+          enum:
+          - days
+          - months
+          - weeks
+          - years
       - in: query
         name: direction
         schema:
@@ -974,9 +1093,12 @@ paths:
           - podcast
           - season
           - tv
+          - video
         description: Media type, including `season` and `episode`. POST to a media-type
           collection creates a new consumption; omitted status defaults to Planning.
           Use the history/{consumption_id} route to update one specific existing consumption.
+          A `video` is created by its first play (`/videos/{source}/{media_id}/plays/`),
+          not by this POST.
         required: true
       - in: query
         name: offset
@@ -1025,6 +1147,18 @@ paths:
           - not_rated
           - rated
       - in: query
+        name: rating_max
+        schema:
+          type: number
+          format: double
+        description: Match items rated at or below this score (0-10).
+      - in: query
+        name: rating_min
+        schema:
+          type: number
+          format: double
+        description: Match items rated at or above this score (0-10).
+      - in: query
         name: release
         schema:
           type: string
@@ -1032,6 +1166,31 @@ paths:
           - all
           - not_released
           - released
+      - in: query
+        name: release_date_from
+        schema:
+          type: string
+        description: Match items released on or after this date (YYYY-MM-DD).
+      - in: query
+        name: release_date_to
+        schema:
+          type: string
+        description: Match items released on or before this date (YYYY-MM-DD).
+      - in: query
+        name: release_date_within
+        schema:
+          type: integer
+        description: Match the last N units instead of a release_date_from/_to range
+          (1-999); see release_date_within_unit.
+      - in: query
+        name: release_date_within_unit
+        schema:
+          type: string
+          enum:
+          - days
+          - months
+          - weeks
+          - years
       - in: query
         name: search
         schema:
@@ -1116,6 +1275,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TrackedMediaEnvelope'
           description: ''
+      x-required-scope: watchlist:read
     post:
       operationId: trackMedia
       description: |-
@@ -1151,9 +1311,12 @@ paths:
           - podcast
           - season
           - tv
+          - video
         description: Media type, including `season` and `episode`. POST to a media-type
           collection creates a new consumption; omitted status defaults to Planning.
           Use the history/{consumption_id} route to update one specific existing consumption.
+          A `video` is created by its first play (`/videos/{source}/{media_id}/plays/`),
+          not by this POST.
         required: true
       tags:
       - api
@@ -1208,6 +1371,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: watchlist:write
   /api/v1/media/{media_type}/{source}/{media_id}/:
     get:
       operationId: retrieveMediaItem
@@ -1235,6 +1399,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1280,6 +1445,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: watchlist:read
     patch:
       operationId: updateMediaItem
       description: |-
@@ -1310,6 +1476,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1366,6 +1533,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: watchlist:write
     delete:
       operationId: deleteMedia
       description: Delete a tracked media item and all its consumptions.
@@ -1392,6 +1560,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1436,6 +1605,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1487,6 +1657,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: watchlist:read
     delete:
       operationId: deleteMediaSeason
       description: Delete a tracked season item for the authenticated user.
@@ -1513,6 +1684,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1569,6 +1741,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1620,6 +1793,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: watchlist:read
     delete:
       operationId: deleteMediaEpisode
       description: Delete a tracked episode item for the authenticated user.
@@ -1652,6 +1826,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1827,6 +2002,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1883,6 +2059,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: watchlist:write
   /api/v1/media/{media_type}/{source}/{media_id}/lists/{list_id}/:
     put:
       operationId: api_v1_media_lists_update
@@ -1916,6 +2093,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -1986,6 +2164,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -2071,6 +2250,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -2139,6 +2319,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -2267,6 +2448,7 @@ paths:
           - music
           - podcast
           - tv
+          - video
         description: Media type. Does not include `season`/`episode` — those are addressed
           via separate path segments under `tv`.
         required: true
@@ -2339,6 +2521,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: catalog:read
   /api/v1/statistics/overview/:
     get:
       operationId: api_v1_statistics_overview_retrieve
@@ -2661,6 +2844,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ListenBrainzError'
           description: ''
+      x-required-scope: scrobble:write
   /apis/listenbrainz/1/validate-token/:
     get:
       operationId: validateListenBrainzToken
@@ -2684,6 +2868,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DetailError'
           description: ''
+      x-required-scope: any
 components:
   schemas:
     CompleteEpisodeResponse:
@@ -2709,6 +2894,12 @@ components:
           nullable: true
         max_progress:
           type: integer
+        episodes_left:
+          type: integer
+          nullable: true
+        total_episodes_left:
+          type: integer
+          nullable: true
         image:
           type: string
           nullable: true
@@ -2771,6 +2962,10 @@ components:
           items:
             type: object
             additionalProperties: {}
+        media_type_status:
+          allOf:
+          - $ref: '#/components/schemas/MediaTypeStatus'
+          nullable: true
       required:
       - backdrop
       - cast
@@ -2778,6 +2973,7 @@ components:
       - consumptions_number
       - crew
       - details
+      - episodes_left
       - genres
       - id
       - image
@@ -2788,6 +2984,7 @@ components:
       - max_progress
       - media_id
       - media_type
+      - media_type_status
       - parent_id
       - related
       - score
@@ -2796,6 +2993,7 @@ components:
       - source_url
       - synopsis
       - title
+      - total_episodes_left
       - tracked
     CompleteGameResponse:
       type: object
@@ -2820,6 +3018,12 @@ components:
           nullable: true
         max_progress:
           type: integer
+        episodes_left:
+          type: integer
+          nullable: true
+        total_episodes_left:
+          type: integer
+          nullable: true
         image:
           type: string
           nullable: true
@@ -2882,6 +3086,10 @@ components:
           items:
             type: object
             additionalProperties: {}
+        media_type_status:
+          allOf:
+          - $ref: '#/components/schemas/MediaTypeStatus'
+          nullable: true
       required:
       - backdrop
       - cast
@@ -2889,6 +3097,7 @@ components:
       - consumptions_number
       - crew
       - details
+      - episodes_left
       - genres
       - id
       - image
@@ -2899,6 +3108,7 @@ components:
       - max_progress
       - media_id
       - media_type
+      - media_type_status
       - parent_id
       - related
       - score
@@ -2907,6 +3117,7 @@ components:
       - source_url
       - synopsis
       - title
+      - total_episodes_left
       - tracked
     CompleteMediaItemResponse:
       oneOf:
@@ -2935,6 +3146,12 @@ components:
           nullable: true
         max_progress:
           type: integer
+        episodes_left:
+          type: integer
+          nullable: true
+        total_episodes_left:
+          type: integer
+          nullable: true
         image:
           type: string
           nullable: true
@@ -2998,6 +3215,10 @@ components:
           items:
             type: object
             additionalProperties: {}
+        media_type_status:
+          allOf:
+          - $ref: '#/components/schemas/MediaTypeStatus'
+          nullable: true
       required:
       - backdrop
       - cast
@@ -3005,6 +3226,7 @@ components:
       - consumptions_number
       - crew
       - details
+      - episodes_left
       - genres
       - id
       - image
@@ -3015,6 +3237,7 @@ components:
       - max_progress
       - media_id
       - media_type
+      - media_type_status
       - parent_id
       - related
       - score
@@ -3023,6 +3246,7 @@ components:
       - source_url
       - synopsis
       - title
+      - total_episodes_left
       - tracked
     ConsumptionResponse:
       type: object
@@ -3038,6 +3262,12 @@ components:
           type: number
           format: double
           nullable: true
+        scored_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the score was last set, changed or cleared; null when
+            never scored or when the rating predates this field.
         progress:
           type: number
           format: double
@@ -3060,14 +3290,23 @@ components:
         notes:
           type: string
           nullable: true
+        source:
+          type: string
+          nullable: true
+        external_id:
+          type: string
+          nullable: true
       required:
       - consumption_id
       - created
       - end_date
+      - external_id
       - notes
       - progress
       - progressed_at
       - score
+      - scored_at
+      - source
       - start_date
       - status
     DetailError:
@@ -3271,6 +3510,21 @@ components:
       - message
       - user_name
       - valid
+    MediaTypeStatus:
+      type: object
+      description: Whether the media type of this item is enabled for the user.
+      properties:
+        media_type:
+          type: string
+        enabled:
+          type: boolean
+        message:
+          type: string
+          nullable: true
+      required:
+      - enabled
+      - media_type
+      - message
     MediaUpdateRequest:
       type: object
       description: Fields accepted by tracked-media PATCH operations.
@@ -3299,6 +3553,9 @@ components:
         notes:
           type: string
           nullable: true
+        entry_source:
+          type: string
+          nullable: true
     NextEpisode:
       type: object
       description: The next released, unwatched TV-like episode.
@@ -3312,10 +3569,34 @@ components:
           type: string
           format: date-time
           nullable: true
+        title:
+          type: string
+          nullable: true
+          description: The episode's own name; null when unknown, never the show's
+            title.
+        episode_code:
+          type: string
+          nullable: true
+          description: SxxEyy code, as in history entries; null without a season number.
+        image:
+          type: string
+          nullable: true
+        ids:
+          type: object
+          additionalProperties:
+            type: string
+        url:
+          type: string
+          nullable: true
       required:
       - air_date
+      - episode_code
       - episode_number
+      - ids
+      - image
       - season_number
+      - title
+      - url
     Pagination:
       type: object
       description: Stable limit/offset response metadata.
@@ -3537,12 +3818,24 @@ components:
           type: number
           format: double
           nullable: true
+        scored_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the score was last set, changed or cleared; null when
+            never scored or when the rating predates this field.
         status:
           type: integer
           nullable: true
         progress:
           type: number
           format: double
+          nullable: true
+        episodes_left:
+          type: integer
+          nullable: true
+        total_episodes_left:
+          type: integer
           nullable: true
         progress_scope:
           type: string
@@ -3565,6 +3858,9 @@ components:
         notes:
           type: string
           nullable: true
+        source:
+          type: string
+          nullable: true
         lists:
           type: array
           items:
@@ -3582,6 +3878,7 @@ components:
       - consumption_id
       - created_at
       - end_date
+      - episodes_left
       - id
       - item
       - item_id
@@ -3594,9 +3891,12 @@ components:
       - progress_unit
       - progressed_at
       - score
+      - scored_at
       - show
+      - source
       - start_date
       - status
+      - total_episodes_left
       - tracked
     TrackedMediaUpdateRequest:
       type: object
@@ -3625,6 +3925,9 @@ components:
           description: ISO 8601 date or date-time accepted by this deployment.
           nullable: true
         notes:
+          type: string
+          nullable: true
+        entry_source:
           type: string
           nullable: true
         image_url:

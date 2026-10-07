@@ -1,5 +1,6 @@
-from pathlib import Path
+import sys
 import unittest
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -70,6 +71,32 @@ class ProjectToolContractTests(unittest.TestCase):
         self.assertIn("/mnt/user/appdata/floppy/db", document)
         self.assertNotIn("SECRET=", document)
 
+    def test_deploy_unraid_script_contract(self) -> None:
+        script = self.read("scripts/dev-publish/deploy-unraid.sh")
+        for token in (
+            "umask 077",
+            "DROP SCHEMA public CASCADE",
+            "CREATE SCHEMA public",
+            "--single-transaction",
+            "--set=ON_ERROR_STOP=1",
+            "--clean --if-exists --no-owner --no-privileges",
+            'docker stop "$container"',
+            "prune_redundant_images",
+            "UNRAID_READY",
+        ):
+            self.assertIn(token, script)
+        self.assertNotIn("DROP DATABASE", script)
+        self.assertNotIn("createdb", script)
+        self.assertNotIn("dropdb", script)
+
+
+# Expose runtime simulation tests to unittest test discovery
+
+DEV_PUBLISH_DIR = Path(__file__).resolve().parent
+if str(DEV_PUBLISH_DIR) not in sys.path:
+    sys.path.insert(0, str(DEV_PUBLISH_DIR))
+
+from test_deploy_unraid_runtime import DeployUnraidRuntimeTests  # noqa: F401, E402
 
 if __name__ == "__main__":
     unittest.main()

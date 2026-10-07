@@ -1,0 +1,335 @@
+# Floppy tracking client guide
+
+What a third-party client (Kodi, a scrobbler, or a Nuvio client, should Nuvio
+ever ship one) needs to implement two-way tracking against Floppy, without
+reading Floppy's source.
+
+The runnable half of this document is
+`src/api/tests/test_nuvio_conformance.py`. Every numbered step below has a test
+there; the assertions are the contract. If this page and that file disagree,
+the file is right.
+
+```bash
+SECRET=test-only scripts/test.sh api.tests.test_nuvio_conformance
+```
+
+## Contract artifacts
+
+| Artifact | Path |
+|---|---|
+| OpenAPI (verified subset) | `src/api/contracts/openapi.yaml` |
+| AsyncAPI (webhook channels) | `src/api/contracts/asyncapi.json` |
+| JSON-LD context | `src/api/contracts/context.jsonld` |
+| Scope contract | `docs/architecture/api-scopes.md` |
+
+Each operation in the OpenAPI document carries `x-required-scope`, so the scope
+to request is published rather than guessed.
+
+## 1. Connect
+
+### Preferred: OAuth device flow
+
+A public client should use Floppy's OAuth device flow instead of asking the
+user to copy a long-lived token.
+
+First introduce your app once per Floppy server and keep the returned
+`client_id`. The name is shown to the user, who sees it marked "Unverified".
+Limit: 10 requests a minute, name up to 60 characters. A registration that no
+one ever signed in with is deleted after a day; if the device endpoint answers
+`invalid_client`, register again.
+
+```http
+POST /oauth/register
+
+client_name=Nuvio on Living Room TV
+```
+
+The reply is `201` with `client_id`, `client_name`, `grant_types` and
+`token_endpoint_auth_method` (`none`).
+
+Discover the endpoints and supported scopes from:
+
+```
+GET /.well-known/oauth-authorization-server
+GET /oauth/scopes
+```
+
+Request a device code:
+
+```http
+POST /oauth/device/authorization
+
+client_id=flp_oauth_...
+scope=scrobble:write progress:read progress:write watchlist:read watchlist:write catalog:read sync:read
+```
+
+Show the returned `verification_uri_complete` (or `verification_uri` plus
+`user_code`) to the user. Poll the token endpoint no faster than the returned
+`interval`:
+
+```http
+POST /oauth/token
+
+client_id=flp_oauth_...
+grant_type=urn:ietf:params:oauth:grant-type:device_code
+device_code=flp_device_...
+```
+
+Before approval, the token endpoint returns `authorization_pending`. Polling
+too quickly returns `slow_down`. After approval it returns a one-hour bearer
+access token and a rotating refresh token.
+
+Refresh with:
+
+```http
+POST /oauth/token
+
+client_id=flp_oauth_...
+grant_type=refresh_token
+refresh_token=flp_refresh_...
+```
+
+A successful refresh returns a new access token **and a new refresh token**.
+Replace the old refresh token atomically; reusing a rotated token is treated as
+possible replay and revokes that rotation family. A refresh request may retain
+or narrow its scopes, but cannot broaden the user's original grant.
+
+The user can review and revoke grants under **Settings → Connected
+Applications**. A client may also call `POST /oauth/revoke` with its
+`client_id` and access or refresh token.
+
+Send the access token as:
+
+```
+Authorization: Bearer flp_xxx
+```
+
+### Manual-token fallback
+
+For clients that do not implement the device flow, the user can still create a
+token in **Settings → Integrations → App tokens**, name it after the device, and
+paste it into the client. The secret is shown once.
+
+Manual tokens may be sent as:
+
+```
+Authorization: Bearer flp_xxx
+Authorization: Token flp_xxx
+X-API-Key: flp_xxx
+```
+
+The default tracking preset carries exactly what a tracking client needs:
+
+```
+scrobble:write  progress:read  progress:write
+watchlist:read  watchlist:write  catalog:read  sync:read
+```
+
+It cannot reach lists, music, podcasts, imports, exports, user settings, or
+metadata writes. Request only the additional permissions your client actually
+needs.
+
+Then call `GET /api/v1/sync/connections/` and keep each `origin_key`. You need
+it in step 5, and without it your position can never be recorded.
+
+## 2. Initial merge
+
+Floppy merges non-conflicting state and preserves conflicting local values for
+review. It never silently overwrites a user's existing library.
+
+Start from `cursor=0`, which is always valid. Read `oldest_sequence` and
+`newest_sequence` from any feed response to know what the server still holds.
+
+## 3. Playback updates
+
+| Purpose | Call |
+|---|---|
+| Resume position | `PUT /api/v1/playback/progress/` |
+| Playback events | `POST /api/v1/scrobble/` |
+| Watched state | `PUT /api/v1/media/{type}/{source}/{id}/watched-state/` |
+
+Progress does not create history. Completion applies to the identified movie or
+episode only, and a retry never becomes a rewatch.
+
+## 4. Offline retries
+
+Send `client_event_id` (or the `Idempotency-Key` header) on every mutation.
+
+| Situation | Result |
+|---|---|
+| Same id, same payload | The prior result, no second mutation |
+| Same id, different payload | `409` with `idempotency_conflict` |
+| New id | A new operation |
+
+Receipts are scoped to your connection, so a per-install counter starting at
+`1` on a second device is not a collision.
+
+Retention is `INTEGRATION_RECEIPT_RETENTION_DAYS` (default 14). A retry after
+that window is treated as a new operation, so back off within it.
+
+**One known deviation:** a replayed response is the same result, but its
+`updated_at` is re-encoded to millisecond precision where the original had
+microseconds. Compare semantic fields, not bytes.
+
+## 5. Incremental pulls
+
+| Feed | Path |
+|---|---|
+| Watched state | `GET /api/v1/sync/changes/` |
+| Resume progress | `GET /api/v1/sync/progress-changes/` |
+
+Both take `cursor` and `limit`, and both return `results`, `next_cursor`,
+`has_more`, `oldest_sequence` and `newest_sequence`. The cursor is exclusive
+and is a server sequence, not a timestamp.
+
+Always pass `connection=<origin_key>`. Asking for changes after N is your proof
+that you applied everything through N: it records your checkpoint, and it is
+what allows Floppy to compact the log. **A client that never names itself pins
+the change log open forever.**
+
+Apply a page fully before pulling the next one. Never advance your own cursor
+past a page you failed to apply.
+
+Deletes arrive as entries with `kind: "delete"`. Absence from a page is never a
+delete.
+
+## 6. Resets and expired cursors
+
+If your cursor falls below what the server retains, you get:
+
+```json
+{
+  "code": "cursor_expired",
+  "detail": "This cursor is older than the retained change log...",
+  "oldest_sequence": 4211,
+  "newest_sequence": 9020
+}
+```
+
+with status `409`. Read the current snapshot and resume from there. Floppy
+returns this rather than serving the remaining tail, which would look like a
+successful catch-up while silently dropping everything in between.
+
+Change-log retention is `WATCH_STATE_CHANGE_RETENTION_DAYS` (default 30), and
+compaction never crosses a live connection's checkpoint.
+
+## 7. Reconciliation and diagnostics
+
+`GET /api/v1/sync/connections/` reports, per connection:
+
+`status`, `directions`, `capabilities`, `unavailable_capabilities`,
+`last_reconciled_at`, `last_error_message`, `pending_deliveries`,
+`failed_deliveries`, `open_conflicts`, `unresolved_references`, and
+`checkpoints` (with `last_sequence` and `behind_by`).
+
+Surface `failed_deliveries` and `behind_by` in your UI. A connection that shows
+"connected" while sitting thousands of changes behind is the failure users
+actually hit, and no status field shows it.
+
+Conflicts: `GET /api/v1/sync/conflicts/` and
+`POST /api/v1/sync/conflicts/{id}/resolve/`. Destructive reconciliation always
+requires an explicit user action.
+
+## 8. Disconnect
+
+The user revokes the token in Settings. Revocation and expiry take effect on the
+next request.
+
+**Disconnecting never deletes tracking data.** Do not offer "disconnect and
+erase" as one action.
+
+## NuvioTV's Floppy tracker
+
+**Status: not released.** Nuvio does not officially support Floppy. This is an
+unmerged proposal ([NuvioMedia/NuvioTV#3811](https://github.com/NuvioMedia/NuvioTV/pull/3811))
+awaiting maintainer approval ([#2935](https://github.com/NuvioMedia/NuvioTV/issues/2935))
+and device testing. Nuvio Mobile has no Floppy client.
+
+The proposed NuvioTV tracker (Settings, Trackers, Floppy) is scrobble-only. The
+user enters their server address and the app token; NuvioTV checks it with
+`GET /api/v1/sync/connections/` and sends playback to `POST /api/v1/scrobble/`.
+
+NuvioTV only knows how far through a title it is, as a percentage, never in
+seconds. So it sends an explicit `completed` flag and no position:
+
+| NuvioTV event | Sent to Floppy | Result in Floppy |
+|---|---|---|
+| Playback starts or pauses | `start` / `pause` | Now Playing card only |
+| Stop at 80% or more | `stop`, `completed: true` | Completed, one play |
+| Stop from 1% to 80% | `stop`, `completed: false` | In Progress, never Completed |
+| Stop under 1% | Not sent | Nothing (a skim) |
+
+It identifies a title by `imdb`, `tmdb` or `tvdb` as strings, plus `anidb` for
+anime. An event with none of them, an episode with no season and episode number,
+or an episode numbered by TVDB order is not sent, because Floppy never matches by
+title.
+
+What it does not do: send a resume position (it has no seconds to send),
+read history or lists back, or send ratings. The Nuvio and Floppy sides of those
+are separate changes.
+
+The exact bodies it sends are the fixtures in
+`src/api/tests/test_nuviotv_scrobble_contract.py`:
+
+```bash
+SECRET=test-only scripts/test.sh api.tests.test_nuviotv_scrobble_contract
+```
+
+## Errors
+
+| Status | Meaning | What to do |
+|---|---|---|
+| `400` | Malformed request | Fix the request; do not retry unchanged |
+| `403` | Credential missing, invalid, revoked, expired, **or** lacking the scope | See below |
+| `404` | Unknown or unresolvable item | Record as unresolved; do not retry |
+| `409` | `idempotency_conflict` or `cursor_expired` | See steps 4 and 6 |
+
+**Known limitation.** Floppy returns `403` for both "your credential is dead"
+and "your credential lacks this scope", so status alone cannot tell them apart.
+DRF downgrades authentication failures to `403` unless the authenticator sends a
+challenge, and Floppy's authentication matrix asserts `403` across every
+protected endpoint, so changing it is an API break that has not been made.
+
+Until it is: on a `403`, re-check the credential against a low-scope endpoint
+such as `GET /api/v1/sync/connections/`. If that also returns `403`, the
+credential is dead and the user should reconnect. If it succeeds, the original
+call needed a scope the token does not carry.
+
+## What add-ons cannot do
+
+| Feature | Add-on is enough | Needs native client work |
+|---|---|---|
+| Browsing Floppy lists and Discover rows | Yes | No |
+| Catalog metadata | Yes | No |
+| Saved-item sync | No | Yes |
+| Watched state sync | No | Yes |
+| Resume progress sync | No | Yes |
+| Reconciliation | No | Yes |
+
+The Stremio-compatible add-on covers the first two through a revocable install
+credential. Everything else needs a client that speaks this API.
+
+## Compatibility matrices
+
+`server ready` means Floppy's own conformance suite passes. It is not a claim
+about any client. A client row becomes `verified` only after that build passed
+the suite end to end.
+
+### Nuvio TV — https://github.com/NuvioMedia/NuvioTV
+
+| Floppy revision | Client revision | Result | Date |
+|---|---|---|---|
+| `efbb545` | dannyvfilms/NuvioTV `13f4bb3` (unmerged fork branch, proposed upstream as NuvioTV#3811) | Scrobble only. Client code ran against a live Floppy (connection check, start, early stop, finished stop) and the JVM unit tests pass. Not `verified`: the Android build was not compiled and nothing ran on a device. | 2026-10-01 |
+
+### Nuvio Mobile — https://github.com/NuvioMedia/NuvioMobile
+
+Kotlin Multiplatform. Target the KMP implementation; the former React Native
+architecture is not the integration surface. Confirm the architecture at the
+revision you test before writing platform guidance.
+
+| Floppy revision | Client revision | Result | Date |
+|---|---|---|---|
+| — | — | Not yet tested | — |
+
+Both matrices use the same fixtures. A divergent fixture set between the two
+targets is a defect in this kit, not a platform difference.

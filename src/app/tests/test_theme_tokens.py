@@ -72,9 +72,7 @@ class ThemeTokenContractTests(SimpleTestCase):
             encoding="utf-8"
         )
         explicit_themes = [theme for theme in THEME_PRESETS if theme != "system"]
-        selector = ":root" + "".join(
-            f":not(.{theme})" for theme in explicit_themes
-        )
+        selector = ":root" + "".join(f":not(.{theme})" for theme in explicit_themes)
 
         self.assertIn(selector, css)
 
@@ -273,9 +271,9 @@ class ThemeTokenContractTests(SimpleTestCase):
         base = Path(settings.BASE_DIR, "templates", "base.html").read_text(
             encoding="utf-8"
         )
-        portal = Path(
-            settings.BASE_DIR, "static", "js", "modalPortal.js"
-        ).read_text(encoding="utf-8")
+        portal = Path(settings.BASE_DIR, "static", "js", "modalPortal.js").read_text(
+            encoding="utf-8"
+        )
         modal_handler = Path(
             settings.BASE_DIR, "static", "js", "mediaStatusDateHandler.js"
         ).read_text(encoding="utf-8")
@@ -301,10 +299,15 @@ class ThemeTokenContractTests(SimpleTestCase):
         template = Path(
             settings.BASE_DIR, "templates", "users", "home_screen.html"
         ).read_text(encoding="utf-8")
-
-        self.assertIn("min-h-10", template)
-        self.assertIn("flex-wrap", template)
-        self.assertIn("min-w-0 flex-1 flex-wrap", template)
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("home-settings-row-body", template)
+        self.assertIn("home-settings-row-controls", template)
+        self.assertIn(".home-settings-row-body > div {\n    flex-wrap: wrap;", css)
+        self.assertIn("min-height: 2.5rem;", css)
+        self.assertIn(".home-settings-row-controls {\n    display: contents;", css)
+        self.assertIn("max-width: 100%;", css)
 
     def test_episode_picker_truncates_long_titles(self):
         template = Path(
@@ -312,4 +315,6 @@ class ThemeTokenContractTests(SimpleTestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('class="relative min-w-0 flex-1 md:max-w-xs"', template)
-        self.assertIn('class="block min-w-0 flex-1 truncate text-sm font-medium"', template)
+        self.assertIn(
+            'class="block min-w-0 flex-1 truncate text-sm font-medium"', template
+        )

@@ -24,6 +24,7 @@ from app import (
     custom_metadata,
     helpers,
     metadata_utils,
+    podcast_views,
     statistics_cache,
 )
 from app import statistics as stats
@@ -47,13 +48,18 @@ from app.detail_builders import (
     _build_game_lengths_context,
     _build_imdb_rating_context,
     _build_mal_rating_context,
+    _build_opencritic_context,
     _build_season_scores_graph,
     _build_series_graph_data,
     _build_stored_season_scores_graph,
     _build_trakt_popularity_context,
     enrich_season_cards,
 )
-from app.detail_related import enrich_detail_related_cards, enrich_detail_seasons
+from app.detail_related import (
+    drop_recommendations_if_hidden,
+    enrich_detail_related_cards,
+    enrich_detail_seasons,
+)
 from app.log_safety import exception_summary
 from app.media_list_views import _collect_reading_activity_day_keys
 from app.metadata_sync_views import _build_flat_anime_episode_preview
@@ -71,7 +77,7 @@ from app.models import (
 from app.models.episode_runtimes import build_season_runtime_index
 from app.providers import services, tmdb
 from app.public_reviews import ReviewTarget, providers_for_target
-from app.services import metadata_resolution
+from app.services import metadata_resolution, opencritic_scores
 from app.services.metadata_fallback import stored_metadata_fallback
 from app.tag_views import (
     _build_detail_tag_sections,
@@ -92,8 +98,26 @@ logger = logging.getLogger(__name__)
 
 RUNTIME_UNKNOWN_AIRED = 999998  # aired but runtime unknown
 
+# How long a podcast show's page renders its stored episodes before a view
+# re-reads the feed.
+PODCAST_DETAIL_RSS_REFRESH_SECONDS = 15 * 60
 
-def _enrich_comic_issues(issues, user):
+# How often the details fragment may drop an item's provider cache and refetch
+# because a field is missing. When the provider has no such data, the refetch
+# returns the same gap, so without a limit every visit paid for a live call.
+DETAIL_FORCED_REFETCH_SECONDS = 24 * 60 * 60
+
+
+def _detail_refetch_allowed(reason, source, media_type, media_id):
+    """Return True at most once per window for this item and reason."""
+    return cache.add(
+        f"detail_forced_refetch:{reason}:{source}:{media_type}:{media_id}",
+        True,
+        DETAIL_FORCED_REFETCH_SECONDS,
+    )
+
+
+def _enrich_comic_issues(issues, user, source):
     """Attach user tracking history to each issue dict from the volume issues list."""
     if not issues:
         return issues
@@ -101,7 +125,7 @@ def _enrich_comic_issues(issues, user):
     issue_ids = [str(issue["media_id"]) for issue in issues]
     items_qs = Item.objects.filter(
         media_id__in=issue_ids,
-        source=Sources.COMICVINE.value,
+        source=source,
         media_type=MediaTypes.COMIC_ISSUE.value,
     )
     item_by_media_id = {item.media_id: item for item in items_qs}
@@ -123,6 +147,42 @@ def _enrich_comic_issues(issues, user):
         entry["item"] = item_by_media_id.get(media_id)
         enriched.append(entry)
     return enriched
+
+
+def _metadata_episode_count(media_metadata):
+    """Return a numeric episode count from metadata, or None when unavailable.
+
+    Providers disagree on the shape of their episode payloads: TVDB and MAL
+    expose ``details["episodes"]`` as a count, while the anime detail preview
+    stores a list of episode rows under the top-level ``episodes`` key. Falling
+    back to the raw value rendered the list itself into the Collection panel
+    (see the "0/[{'media_id': ...}]" report), so collapse any sequence to its
+    length and reject anything that is not a usable count.
+    """
+    candidates = (
+        (media_metadata.get("details") or {}).get("episodes"),
+        media_metadata.get("episodes"),
+    )
+    for candidate in candidates:
+        if isinstance(candidate, bool) or candidate is None:
+            continue
+        if isinstance(candidate, int):
+            if candidate > 0:
+                return candidate
+            continue
+        if isinstance(candidate, str):
+            try:
+                parsed = int(candidate.strip())
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                return parsed
+            continue
+        if isinstance(candidate, (list, tuple, set, frozenset, dict)) and len(
+            candidate,
+        ):
+            return len(candidate)
+    return None
 
 
 def _get_tv_runtime_display_fallback(detail_item, media_metadata):
@@ -313,12 +373,12 @@ def media_details(
                 # This looks like an iTunes ID, try to enrich
                 from django.contrib import messages
                 from django.shortcuts import redirect
-                from django.utils.text import slugify
 
                 from app.services.podcast_import import (
                     PodcastImportError,
                     import_show_from_itunes_id,
                 )
+                from app.templatetags import app_tags
 
                 try:
                     show = import_show_from_itunes_id(media_id)
@@ -327,7 +387,7 @@ def media_details(
                         source=source,
                         media_type=MediaTypes.PODCAST.value,
                         media_id=show.podcast_uuid,
-                        title=slugify(show.title or "podcast"),
+                        title=app_tags.slug(show.title or "") or "podcast",
                     )
                 except PodcastImportError as e:
                     messages.error(request, str(e))
@@ -355,7 +415,17 @@ def media_details(
             # published since the last visit, and backfill website_url on the
             # ones already stored, which is the only path that repairs rows
             # created before podcast website links existed (issue #1014).
-            if show.rss_feed_url and not public_view:
+            # The feed is a full third-party download plus episode writes, so
+            # repeat views inside the window render the stored episodes.
+            if (
+                show.rss_feed_url
+                and not public_view
+                and cache.add(
+                    f"podcast:detail-rss-refresh:{show.id}",
+                    True,
+                    PODCAST_DETAIL_RSS_REFRESH_SECONDS,
+                )
+            ):
                 from app.fork_services_podcast import refresh_show_from_rss
 
                 _best_effort_detail_followup(
@@ -403,32 +473,23 @@ def media_details(
 
             # Build episode items - create Item objects for enrichment
             # Initially load first 20 episodes, rest will be loaded via infinite scroll
-            episode_items_data = []
-            episode_items_map = {}  # Map media_id to Item object
             initial_limit = 20
-            for episode in episodes[:initial_limit]:
-                item, _ = Item.objects.get_or_create(
-                    media_id=episode.episode_uuid,
-                    source=source,
-                    media_type=media_type,
-                    defaults={
-                        "title": episode.title,
-                        "image": show.image or settings.IMG_NONE,
-                    },
-                )
-                # Update if needed
-                if item.title != episode.title:
-                    item.title = episode.title
-                    item.save(update_fields=["title"])
-                # enrich_items_with_user_data expects dicts with media_id, source, media_type
-                episode_items_data.append(
-                    {
-                        "media_id": episode.episode_uuid,
-                        "source": source,
-                        "media_type": media_type,
-                    }
-                )
-                episode_items_map[episode.episode_uuid] = item
+            page_episodes = list(episodes[:initial_limit])
+            episode_items_map = podcast_views.episode_items_by_uuid(
+                show,
+                page_episodes,
+                source=source,
+                media_type=media_type,
+            )
+            # enrich_items_with_user_data expects dicts with media_id, source, media_type
+            episode_items_data = [
+                {
+                    "media_id": episode.episode_uuid,
+                    "source": source,
+                    "media_type": media_type,
+                }
+                for episode in page_episodes
+            ]
 
             # Enrich episodes with user data
             enriched_episodes_raw = helpers.enrich_items_with_user_data(
@@ -464,8 +525,31 @@ def media_details(
 
             # Build episode data in TV season format (inline episodes, not related items)
             episode_list = []
+            # One read each for the page's play rows and their completed-play
+            # history, instead of a few queries per episode.
+            podcasts_by_episode = (
+                {}
+                if public_view
+                else podcast_views.user_podcasts_by_episode(
+                    request.user,
+                    show,
+                    page_episodes,
+                )
+            )
+            history_by_podcast_id = podcast_views.completed_plays_by_podcast_id(
+                {
+                    podcast.id
+                    for entries in podcasts_by_episode.values()
+                    for podcast in entries
+                }
+                | {
+                    enriched["media"].id
+                    for enriched in enriched_episodes
+                    if enriched["media"]
+                },
+            )
             for episode_obj, enriched in zip(
-                episodes[:initial_limit], enriched_episodes, strict=False
+                page_episodes, enriched_episodes, strict=False
             ):
                 duration_str = helpers.seconds_to_hm(episode_obj.duration)
 
@@ -473,14 +557,11 @@ def media_details(
                 episode_media = enriched["media"]
                 episode_history = []
                 if episode_media:
-                    # Get history for this episode using simple_history
-                    # Media instances have a .history relationship from HistoricalRecords
-                    # Only include history records with end_date (completed plays)
-                    episode_history = list(
-                        episode_media.history.filter(end_date__isnull=False).order_by(
-                            "-end_date"
-                        )[:10]
-                    )
+                    # Only completed plays (history records with end_date)
+                    episode_history = history_by_podcast_id.get(
+                        episode_media.id,
+                        [],
+                    )[:10]
 
                 # Create adapter objects for music-style modal (like track_modal does)
                 class PodcastEpisodeAdapter:
@@ -521,17 +602,7 @@ def media_details(
                         self.id = show.id
 
                 # Get all Podcast entries for this episode to aggregate history
-                all_podcasts = (
-                    list(
-                        Podcast.objects.filter(
-                            user=request.user if not public_view else None,
-                            show=show,
-                            episode=episode_obj,
-                        ).order_by("-end_date")
-                    )
-                    if not public_view
-                    else []
-                )
+                all_podcasts = podcasts_by_episode.get(episode_obj.id, [])
 
                 # Create a wrapper object that aggregates history from all podcast entries
                 if all_podcasts:
@@ -540,17 +611,7 @@ def media_details(
                     all_history = []
                     for podcast in all_podcasts:
                         # Only include history records with end_date (completed plays)
-                        history = (
-                            podcast.history.filter(end_date__isnull=False)
-                            if hasattr(podcast.history, "filter")
-                            else [h for h in podcast.history.all() if h.end_date]
-                        )
-                        # Convert queryset to list if needed to ensure proper evaluation
-                        if hasattr(history, "__iter__") and not isinstance(
-                            history, (list, tuple)
-                        ):
-                            history = list(history)
-                        all_history.extend(history)
+                        all_history.extend(history_by_podcast_id.get(podcast.id, []))
 
                     # Sort by end_date descending (most recent first) for display
                     all_history.sort(
@@ -852,7 +913,11 @@ def media_details(
     if media_type == MediaTypes.COMIC.value and isinstance(media_metadata, dict):
         raw_issues = media_metadata.pop("issues", None)
         if raw_issues:
-            media_metadata["episodes"] = _enrich_comic_issues(raw_issues, request.user)
+            media_metadata["episodes"] = _enrich_comic_issues(
+                raw_issues,
+                request.user,
+                media_metadata["source"],
+            )
 
     if (
         render_secondary_only
@@ -894,7 +959,11 @@ def media_details(
         and isinstance(media_metadata, dict)
         and not media_metadata.get("original_title")
     )
-    if render_secondary_only and should_refresh_tmdb_titles:
+    if (
+        render_secondary_only
+        and should_refresh_tmdb_titles
+        and _detail_refetch_allowed("titles", source, tracking_media_type, media_id)
+    ):
         cache.delete(tmdb_detail_cache_key)
         media_metadata = services.get_media_metadata(
             media_type,
@@ -916,7 +985,11 @@ def media_details(
         and not media_metadata.get("cast")
         and not media_metadata.get("crew")
     )
-    if render_secondary_only and should_refresh_tmdb_tv_credits:
+    if (
+        render_secondary_only
+        and should_refresh_tmdb_tv_credits
+        and _detail_refetch_allowed("credits", source, tracking_media_type, media_id)
+    ):
         cache.delete(tmdb_detail_cache_key)
         media_metadata = services.get_media_metadata(
             media_type,
@@ -1028,6 +1101,7 @@ def media_details(
             persistence_mode="best_effort",
             retry_max_retries=detail_db_max_retries,
             on_persistence_deferred=_mark_detail_persistence_deferred,
+            persist_links=False,
         )
         media_metadata = metadata_resolution_result.header_metadata
         media_metadata.update(
@@ -1037,11 +1111,12 @@ def media_details(
             ),
         )
 
-    # For podcasts and manual music entries, ensure source is in metadata dict
+    # For podcasts, videos and manual music entries, ensure source is in metadata dict
     # (fixes KeyError in template — see services.get_media_metadata's music/manual stub)
     if media_type in (
         MediaTypes.PODCAST.value,
         MediaTypes.MUSIC.value,
+        MediaTypes.VIDEO.value,
     ) and isinstance(media_metadata, dict):
         media_metadata["source"] = source
         media_metadata["media_type"] = media_type
@@ -1093,7 +1168,11 @@ def media_details(
         and detail_item is not None
         and igdb_game_studios_missing
     )
-    if render_secondary_only and should_refresh_igdb_game_studios:
+    if (
+        render_secondary_only
+        and should_refresh_igdb_game_studios
+        and _detail_refetch_allowed("studios", source, tracking_media_type, media_id)
+    ):
         cache.delete(f"{source}_{tracking_media_type}_{media_id}")
         media_metadata = services.get_media_metadata(media_type, media_id, source)
         if isinstance(media_metadata, dict):
@@ -1197,6 +1276,13 @@ def media_details(
     trakt_score = _build_trakt_popularity_context(detail_item, media_type)
     imdb_score = _build_imdb_rating_context(detail_item, media_type)
     mal_score = _build_mal_rating_context(detail_item, media_type)
+    opencritic_score = _build_opencritic_context(detail_item, media_type)
+    if media_type == MediaTypes.GAME.value:
+        _best_effort_detail_followup(
+            lambda: opencritic_scores.queue_refresh(detail_item, request.user),
+            operation_name="OpenCritic refresh enqueue",
+            fallback=False,
+        )
 
     author_detail_keys = ("author", "authors", "people")
     authors_linked = []
@@ -1270,7 +1356,9 @@ def media_details(
             and any(details_payload.get(key) for key in author_detail_keys)
             and not isinstance(media_metadata.get("authors_full"), list)
         )
-        if should_refresh_author_cache:
+        if should_refresh_author_cache and _detail_refetch_allowed(
+            "authors", source, media_type, media_id
+        ):
             cache_key = f"{source}_{media_type}_{media_id}"
             cache.delete(cache_key)
             media_metadata = services.get_media_metadata(
@@ -1336,12 +1424,19 @@ def media_details(
     if render_secondary_only and isinstance(media_metadata, dict):
         studios_linked = _collect_studios_linked(media_metadata)
 
-    # Prefer a stored poster/cover override when the tracked item has one.
+    # Prefer a stored poster/cover override when the tracked item has one -
+    # unless this request just fetched a specific Hardcover edition (query
+    # param preview or the viewer's saved preference), whose cover the live
+    # fetch above already resolved and which would otherwise be immediately
+    # discarded in favor of the item's default-edition cover (#1251). This is
+    # display-only: the shared Item is never written here, since the edition
+    # choice is per-viewer, not the item's own record (#1283 review).
     if (
         detail_item
         and isinstance(media_metadata, dict)
         and detail_item.image
         and detail_item.image != settings.IMG_NONE
+        and not hardcover_edition_id
     ):
         media_metadata["image"] = detail_item.image
 
@@ -1554,6 +1649,8 @@ def media_details(
         public_view=public_view,
     )
 
+    drop_recommendations_if_hidden(request, media_metadata)
+
     # Enrich related items with user tracking data
     # For public views, use list owner's data if available
     if render_secondary_only and media_metadata.get("related"):
@@ -1649,9 +1746,7 @@ def media_details(
             # For TV shows, also get collection statistics (episodes/seasons)
             if media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
                 # Use episode count from metadata if available to match Details pane
-                metadata_episode_count = media_metadata.get("details", {}).get(
-                    "episodes"
-                ) or media_metadata.get("episodes")
+                metadata_episode_count = _metadata_episode_count(media_metadata)
                 collection_stats = get_tv_show_collection_stats(
                     request.user, item, metadata_episode_count=metadata_episode_count
                 )
@@ -1705,8 +1800,35 @@ def media_details(
         MediaTypes.MOVIE.value,
         MediaTypes.ANIME.value,
     ]:
+        watch_provider_region = (
+            request.user.watch_provider_region
+            if request.user.is_authenticated
+            else None
+        )
         watch_provider_payload = media_metadata.get("providers")
+        tmdb_media_id = None
+        tmdb_media_type = media_type
         if (
+            render_secondary_only
+            and media_type == MediaTypes.ANIME.value
+            and source == Sources.MAL.value
+            and not watch_provider_payload
+            and watch_provider_region != "UNSET"
+        ):
+            try:
+                identity = metadata_resolution.resolve_mal_tmdb_identity(media_id)
+            except (services.ProviderAPIError, TypeError, ValueError) as error:
+                logger.warning(
+                    "Skipping watch providers for MAL anime media_id=%s: "
+                    "mapping resolution failed: %s",
+                    media_id,
+                    exception_summary(error),
+                )
+                identity = None
+            if identity:
+                tmdb_media_id = identity.media_id
+                tmdb_media_type = identity.media_type
+        elif (
             render_secondary_only
             and detail_item
             and media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value)
@@ -1719,30 +1841,32 @@ def media_details(
                 persistence_mode="best_effort",
                 retry_max_retries=detail_db_max_retries,
                 on_deferred=_mark_detail_persistence_deferred,
+                persist_links=False,
             )
-            if tmdb_media_id:
-                try:
-                    tmdb_metadata = services.get_media_metadata(
-                        media_type,
-                        tmdb_media_id,
-                        Sources.TMDB.value,
-                        language=metadata_resolution.metadata_language_default(
-                            request.user, detail_item
-                        ),
-                    )
-                except services.ProviderAPIError:
-                    # Watch providers are TMDB-only enrichment. A dead TMDB
-                    # mapping must not take down a page the tracking provider
-                    # can render on its own.
-                    logger.warning(
-                        "Skipping watch providers for %s media_id=%s: mapped TMDB "
-                        "ID %s could not be fetched",
-                        source,
-                        media_id,
-                        tmdb_media_id,
-                    )
-                else:
-                    watch_provider_payload = tmdb_metadata.get("providers")
+
+        if tmdb_media_id:
+            try:
+                tmdb_metadata = services.get_media_metadata(
+                    tmdb_media_type,
+                    tmdb_media_id,
+                    Sources.TMDB.value,
+                    language=metadata_resolution.metadata_language_default(
+                        request.user, detail_item
+                    ),
+                )
+            except services.ProviderAPIError:
+                # Watch providers are TMDB-only enrichment. A dead TMDB
+                # mapping must not take down a page the tracking provider
+                # can render on its own.
+                logger.warning(
+                    "Skipping watch providers for %s media_id=%s: mapped TMDB "
+                    "ID %s could not be fetched",
+                    source,
+                    media_id,
+                    tmdb_media_id,
+                )
+            else:
+                watch_provider_payload = tmdb_metadata.get("providers")
 
         if (
             detail_item
@@ -1760,9 +1884,7 @@ def media_details(
         watch_providers = (
             tmdb.filter_providers(
                 watch_provider_payload,
-                request.user.watch_provider_region
-                if request.user.is_authenticated
-                else None,
+                watch_provider_region,
             )
             if watch_provider_payload is not None
             else None
@@ -1909,6 +2031,7 @@ def media_details(
         "user": request.user,
         "media": media_metadata,
         "media_type": media_type,
+        "match_item": detail_item,
         "authors_linked": authors_linked,
         "author_detail_keys": author_detail_keys,
         "studios_linked": studios_linked,
@@ -1943,6 +2066,7 @@ def media_details(
         "trakt_score": trakt_score,
         "imdb_score": imdb_score,
         "mal_score": mal_score,
+        "opencritic_score": opencritic_score,
         "game_lengths": game_lengths,
         "game_lengths_pending": game_lengths_refresh_pending
         and not (game_lengths and game_lengths.get("available")),

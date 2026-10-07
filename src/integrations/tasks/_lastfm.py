@@ -4,11 +4,14 @@ import time
 
 from celery import current_task, shared_task
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db.models import F
 from django.utils import timezone
 
 from app.log_safety import exception_summary
+from app.providers import credentials
+from integrations import connection_health
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +256,8 @@ def poll_lastfm_for_user(user_id):
         )
         return {"processed": 0, "errors": 0, "message": "No connected Last.fm account."}
 
-    result = _run_incremental_lastfm_sync(account)
+    with credentials.current_user_scope(account.user):
+        result = _run_incremental_lastfm_sync(account)
     return {
         "processed": 1 if result["status"] in {"success", "partial"} else 0,
         "errors": 1 if result["status"] in {"partial", "error"} else 0,
@@ -264,6 +268,13 @@ def poll_lastfm_for_user(user_id):
 @shared_task(name="Import from Last.fm History")
 def import_lastfm_history(user_id, reset=False, import_run_id=None):
     """Import a user's historical Last.fm scrobbles in bounded chunks."""
+    user = get_user_model().objects.filter(id=user_id).first()
+    with credentials.current_user_scope(user):
+        return _import_lastfm_history_chunk(user_id, reset, import_run_id)
+
+
+def _import_lastfm_history_chunk(user_id, reset, import_run_id):
+    """Run one chunk of the Last.fm history import."""
     from integrations import import_progress, lastfm_api, lastfm_sync
     from integrations.models import ImportRun, LastFMAccount, LastFMHistoryImportStatus
 
@@ -509,14 +520,18 @@ def poll_all_lastfm_scrobbles():
     """Global task to poll Last.fm for all connected users."""
     from integrations.models import LastFMAccount
 
-    accounts = LastFMAccount.objects.filter(connection_broken=False).select_related(
-        "user"
-    )
-    if not accounts.exists():
+    # Broken accounts are included once they are due for a re-probe: a
+    # successful sync clears the flag, a rejected one re-records it.
+    accounts = [
+        account
+        for account in LastFMAccount.objects.select_related("user")
+        if connection_health.due_for_probe(account)
+    ]
+    if not accounts:
         logger.debug("No Last.fm accounts to poll")
         return {"processed": 0, "errors": 0, "message": "No accounts to poll"}
 
-    logger.info("Polling Last.fm for %d users", accounts.count())
+    logger.info("Polling Last.fm for %d users", len(accounts))
 
     batch_size = 10
 
@@ -531,7 +546,8 @@ def poll_all_lastfm_scrobbles():
         if index > 0 and index % batch_size == 0:
             time.sleep(random.uniform(0.5, 2.0))  # noqa: S311  # sampling/jitter only, not cryptographic
 
-        result = _run_incremental_lastfm_sync(account)
+        with credentials.current_user_scope(account.user):
+            result = _run_incremental_lastfm_sync(account)
         if result["status"] == "success":
             processed_count += 1
         elif result["status"] == "partial":
@@ -550,6 +566,6 @@ def poll_all_lastfm_scrobbles():
     return {
         "processed": processed_count,
         "errors": error_count,
-        "total_accounts": accounts.count(),
+        "total_accounts": len(accounts),
         "message": f"Processed {processed_count} Last.fm account(s).",
     }

@@ -177,7 +177,7 @@ def _build_prefetch_for_range(user, day_list):
     ):
         Episode = apps.get_model("app", "Episode")
         episode_rows = list(
-            Episode.objects.filter(
+            Episode.all_objects.filter(
                 related_season__user=user,
                 end_date__gte=range_start,
                 end_date__lt=range_end,
@@ -388,6 +388,31 @@ def _build_prefetch_for_range(user, day_list):
             }
         else:
             prefetch["podcast_map"] = {}
+
+    if MediaTypes.VIDEO.value in active_media_types:
+        VideoPlay = apps.get_model("app", "VideoPlay")
+        prefetch["video_plays"] = _bucket_single_field_rows(
+            list(
+                VideoPlay.objects.filter(
+                    video__user=user,
+                    end_date__gte=range_start,
+                    end_date__lt=range_end,
+                )
+                .values(
+                    "id",
+                    "end_date",
+                    "progress",
+                    "video__id",
+                    "video__item_id",
+                    "video__status",
+                    "video__score",
+                    "video__length_seconds",
+                )
+                .iterator(chunk_size=2000),
+            ),
+            "end_date",
+            day_list_set,
+        )
 
     reading_prefetch = {}
     for media_type in (
@@ -689,7 +714,7 @@ def build_stats_for_day(
         else:
             Episode = apps.get_model("app", "Episode")
             episodes = (
-                Episode.objects.filter(
+                Episode.all_objects.filter(
                     related_season__user=user,
                     end_date__gte=day_start,
                     end_date__lt=day_end,
@@ -1530,6 +1555,53 @@ def build_stats_for_day(
                 elif podcast.item:
                     episode_stats["image"] = podcast.item.image or ""
 
+    if MediaTypes.VIDEO.value in active_media_types:
+        # One play per watched day. Like History, a play counts the video's
+        # length; the position reached stands in when the length is unknown.
+        if prefetch is not None:
+            video_plays = prefetch.get("video_plays", {}).get(day, [])
+        else:
+            VideoPlay = apps.get_model("app", "VideoPlay")
+            video_plays = (
+                VideoPlay.objects.filter(
+                    video__user=user,
+                    end_date__gte=day_start,
+                    end_date__lt=day_end,
+                )
+                .values(
+                    "id",
+                    "end_date",
+                    "progress",
+                    "video__id",
+                    "video__item_id",
+                    "video__status",
+                    "video__score",
+                    "video__length_seconds",
+                )
+                .iterator(chunk_size=1000)
+            )
+        for play in video_plays:
+            seconds = play.get("video__length_seconds") or play.get("progress") or 0
+            # Fractional minutes, so a 45 second video still counts and long
+            # ones do not lose up to a minute per play.
+            runtime_minutes = seconds / 60
+            if runtime_minutes <= 0:
+                missing_runtime += 1
+            localized = stats._localize_datetime(play["end_date"])
+            plays_by_type[MediaTypes.VIDEO.value] += 1
+            play_count += 1
+            _add_hour(MediaTypes.VIDEO.value, localized, runtime_minutes)
+            minutes_by_type[MediaTypes.VIDEO.value] += runtime_minutes
+            daily_minutes_by_type[MediaTypes.VIDEO.value] += runtime_minutes
+            _update_item_meta(
+                MediaTypes.VIDEO.value,
+                play.get("video__item_id"),
+                play.get("video__id"),
+                play.get("video__status"),
+                play.get("video__score"),
+                play["end_date"],
+            )
+
     for media_type in (
         MediaTypes.MANGA.value,
         MediaTypes.BOOK.value,
@@ -1828,32 +1900,22 @@ def build_stats_for_day(
             day_stats,
             timeout=STATISTICS_DAY_CACHE_TIMEOUT,
         )
-    if play_count or missing_runtime or missing_credits:
-        logger.info(
-            (
-                "stats_day_summary user_id=%s day=%s plays=%s missing_runtime=%s "
-                "missing_genres=%s missing_credits=%s scheduled_credits=%s"
-            ),
-            user_id,
-            day.isoformat(),
-            play_count,
-            missing_runtime,
-            missing_genres,
-            missing_credits,
-            scheduled_credit_backfills,
-        )
-    elif not defer_cache_write:
-        logger.debug(
-            (
-                "stats_day_summary user_id=%s day=%s plays=%s missing_runtime=%s "
-                "missing_genres=%s missing_credits=%s scheduled_credits=%s"
-            ),
-            user_id,
-            day.isoformat(),
-            play_count,
-            missing_runtime,
-            missing_genres,
-            missing_credits,
-            scheduled_credit_backfills,
-        )
+    # A sweep (defer_cache_write) builds thousands of days and already reports
+    # stats_range_summary and stats_sync, so its per-day lines stay at DEBUG.
+    # Production logged 21,574 of them, about a fifth of the file.
+    notable = bool(play_count or missing_runtime or missing_credits)
+    logger.log(
+        logging.INFO if notable and not defer_cache_write else logging.DEBUG,
+        (
+            "stats_day_summary user_id=%s day=%s plays=%s missing_runtime=%s "
+            "missing_genres=%s missing_credits=%s scheduled_credits=%s"
+        ),
+        user_id,
+        day.isoformat(),
+        play_count,
+        missing_runtime,
+        missing_genres,
+        missing_credits,
+        scheduled_credit_backfills,
+    )
     return day_stats

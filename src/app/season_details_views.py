@@ -18,6 +18,7 @@ from app import credits as credits_module
 from app.activity_builders import (
     _normalize_detail_episode_actions,
     _paginate_detail_episodes,
+    attach_unwatched_ratings,
 )
 from app.db_retry import run_retryable_db_operation
 from app.detail_builders import (
@@ -30,6 +31,7 @@ from app.detail_builders import (
     build_remaining_time_summary,
     enrich_episode_rows,
 )
+from app.detail_related import drop_recommendations_if_hidden
 from app.log_safety import exception_summary
 from app.metadata_sync_views import (
     _build_local_tv_with_seasons_metadata,
@@ -263,15 +265,16 @@ def season_details(
         )
         season_metadata_missing = True
     else:
-        tv_with_seasons_metadata = services.get_media_metadata(
-            "tv_with_seasons",
-            media_id,
-            source,
-            [season_number],
-            language=metadata_resolution.metadata_language_default(
-                request.user, show_item
-            ),
-        )
+        with services.interactive_request_scope():
+            tv_with_seasons_metadata = services.get_media_metadata(
+                "tv_with_seasons",
+                media_id,
+                source,
+                [season_number],
+                language=metadata_resolution.metadata_language_default(
+                    request.user, show_item
+                ),
+            )
         season_metadata = tv_with_seasons_metadata.get(season_key)
         season_metadata_missing = season_metadata is None
         if season_metadata_missing:
@@ -734,6 +737,8 @@ def season_details(
             if db_item is not None and db_item.release_datetime is not None:
                 episode["air_date"] = db_item.release_datetime
 
+    drop_recommendations_if_hidden(request, season_metadata)
+
     # Enrich related items with user tracking data
     # For public views, use list owner's data if available
     if render_secondary_only and season_metadata.get("related"):
@@ -998,6 +1003,11 @@ def season_details(
         )
         season_metadata["episodes"] = _normalize_detail_episode_actions(
             season_metadata["episodes"],
+        )
+        attach_unwatched_ratings(
+            season_metadata["episodes"],
+            request.user,
+            season_metadata,
         )
         season_metadata["episodes"], episode_load_more = _paginate_detail_episodes(
             request,

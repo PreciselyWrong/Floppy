@@ -1,9 +1,9 @@
 """Plex history importer."""
 
+import json
 import logging
-import re
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 
 import urllib3
@@ -27,10 +27,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import contextlib
 
-from integrations import episode_remap, import_progress, plex_audiobook_sync
+from integrations import (
+    episode_remap,
+    external_references,
+    import_progress,
+    plex_audiobook_sync,
+)
 from integrations import plex as plex_api
 from integrations.imports import helpers, plex_audiobooks
 from integrations.imports.helpers import MediaImportError, MediaImportUnexpectedError
+from integrations.matching import unique_title_match
 from integrations.webhooks import anime_mappings
 from integrations.webhooks.plex import PlexWebhookProcessor
 
@@ -39,6 +45,15 @@ logger = logging.getLogger(__name__)
 MAX_SKIPPED_USER_SAMPLES = 5
 RATING_SCALE_MAX = 10
 RATING_PERCENTAGE_SCALE_MAX = 100
+MARK_WATCHED_TASK_NAME = "Sync Plex Watched Marks"
+MARK_WATCHED_INTERVAL_MINUTES = 15
+# Each poll re-reads this much history before it started. Libraries are read
+# one after another, so a mark landing on an already-read library mid-poll is
+# caught next time; the "new" mode dedupe drops the rows seen twice.
+MARK_WATCHED_OVERLAP = timedelta(minutes=10)
+# How long an entry that failed to import keeps the checkpoint held back, so a
+# transient failure is retried but a permanent one cannot pin it forever.
+MARK_WATCHED_RETRY_WINDOW = timedelta(days=1)
 
 # Matching an imported history record against a pre-existing row (e.g. one
 # already created by a live webhook, or by a Trakt import) is handled by the
@@ -62,12 +77,83 @@ def importer(library, user, mode):
     return plex_importer.import_data()
 
 
+def mark_watched_importer(library, user, mode):
+    """Import Plex history newer than the account's checkpoint.
+
+    Plex sends no webhook when an item is marked watched by hand, but it does
+    write the mark into its history. Polling only the new rows catches those
+    marks; plays a webhook already recorded are skipped by the usual "new"
+    mode dedupe.
+    """
+    account = getattr(user, "plex_account", None)
+    if not account or not account.plex_token:
+        msg = "Plex is not connected for this user."
+        raise MediaImportError(msg)
+
+    poll_started = timezone.now()
+    previous = account.mark_watched_checkpoint or poll_started
+    plex_importer = PlexHistoryImporter(
+        user=user,
+        account=account,
+        mode=mode,
+        library=library,
+        since=previous,
+    )
+    result = plex_importer.import_data()
+
+    checkpoint = poll_started - MARK_WATCHED_OVERLAP
+    failed_at = plex_importer.oldest_failed_viewed_at
+    if failed_at:
+        checkpoint = min(checkpoint, failed_at - timedelta(seconds=1))
+    checkpoint = max(checkpoint, poll_started - MARK_WATCHED_RETRY_WINDOW, previous)
+    account.mark_watched_checkpoint = checkpoint
+    account.save(update_fields=["mark_watched_checkpoint"])
+    return result
+
+
+def set_mark_watched_sync(account, enabled):
+    """Turn the recurring watched-mark poll on or off for one Plex account."""
+    from django_celery_beat.models import IntervalSchedule, PeriodicTask
+
+    task_name = f"{MARK_WATCHED_TASK_NAME} for user {account.user_id}"
+    if not enabled:
+        PeriodicTask.objects.filter(name=task_name).delete()
+        account.mark_watched_sync_enabled = False
+        account.save(update_fields=["mark_watched_sync_enabled"])
+        return
+
+    interval, _ = IntervalSchedule.objects.get_or_create(
+        every=MARK_WATCHED_INTERVAL_MINUTES,
+        period=IntervalSchedule.MINUTES,
+    )
+    PeriodicTask.objects.update_or_create(
+        name=task_name,
+        defaults={
+            "task": MARK_WATCHED_TASK_NAME,
+            "interval": interval,
+            "kwargs": json.dumps({"user_id": account.user_id}),
+            "enabled": True,
+        },
+    )
+    update_fields = ["mark_watched_sync_enabled"]
+    if not account.mark_watched_sync_enabled:
+        # Start from now, so turning this on never replays old history.
+        account.mark_watched_checkpoint = timezone.now()
+        update_fields.append("mark_watched_checkpoint")
+    account.mark_watched_sync_enabled = True
+    account.save(update_fields=update_fields)
+
+
 class PlexHistoryImporter:
     """Importer that replays Plex history through TMDB-backed bulk creation."""
 
-    def __init__(self, user, account, mode, library, fast_mode=True):
+    def __init__(self, user, account, mode, library, fast_mode=True, since=None):
         """Store the extra keyword arguments this form needs."""
         self.user = user
+        # When set, only history viewed after this moment is fetched, and the
+        # library ratings pass is skipped (see mark_watched_importer).
+        self.since_ts = int(since.timestamp()) if since else None
+        self.oldest_failed_viewed_at = None
         self.account = account
         self.mode = mode
         # Accept a bare string for backward compatibility with already-scheduled
@@ -143,6 +229,8 @@ class PlexHistoryImporter:
         # resolution keyed by (tmdb show id, season number) — avoids repeating
         # a TVDB lookup for every episode record of the same show/season.
         self._tv_genesis_cache: dict[tuple[str, int], tuple] = {}
+        self._active_episode_order_identities: set[tuple[str, str]] | None = None
+        self._pending_external_references: list[dict] = []
 
     def import_data(self):
         """Import history for the selected library."""
@@ -217,6 +305,7 @@ class PlexHistoryImporter:
         self._build_bulk_media()
         logger.info("Finalizing bulk creation...")
         helpers.bulk_create_media(self.bulk_media, self.user)
+        self._persist_external_references()
 
         self._prefetch_collected_album_covers()
         self._enqueue_fast_runtime_backfill()
@@ -460,12 +549,14 @@ class PlexHistoryImporter:
                 self._process_entry(entry, uri_used, section_type)
             except MediaImportError as exc:
                 self.warnings.append(str(exc))
+                self._record_failed_entry(entry)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning(
                     "Failed to import a Plex history entry: %s",
                     exception_summary(exc),
                 )
                 self.warnings.append(f"Failed to import a Plex entry: {exc}")
+                self._record_failed_entry(entry)
 
         logger.info(
             "Processed %s Plex history entries from library %s on %s "
@@ -478,6 +569,9 @@ class PlexHistoryImporter:
             len(self._episode_records),
             self._skipped_user_count - skipped_users_before,
         )
+
+        if self.since_ts is not None:
+            return
 
         # Fetch and apply ratings from library items
         try:
@@ -521,7 +615,13 @@ class PlexHistoryImporter:
                     if not page:
                         break
 
+                    reached_checkpoint = False
+                    if self.since_ts is not None:
+                        page, reached_checkpoint = self._entries_since(page)
+
                     entries.extend(page)
+                    if reached_checkpoint:
+                        break
                     start += len(page)
                     import_progress.report(
                         len(entries),
@@ -560,6 +660,30 @@ class PlexHistoryImporter:
         if max_items is None:
             return entries, uri_used
         return entries[:max_items], uri_used
+
+    def _entries_since(self, page: list[dict]) -> tuple[list[dict], bool]:
+        """Keep entries viewed after the checkpoint; history is newest first."""
+        newer = []
+        reached_checkpoint = False
+        for entry in page:
+            try:
+                viewed_at = int(entry.get("viewedAt"))
+            except (TypeError, ValueError):
+                continue
+            if viewed_at <= self.since_ts:
+                reached_checkpoint = True
+                continue
+            newer.append(entry)
+        return newer, reached_checkpoint
+
+    def _record_failed_entry(self, entry: dict):
+        """Remember the oldest entry that failed, so a poll can retry it."""
+        try:
+            failed = datetime.fromtimestamp(int(entry.get("viewedAt")), tz=UTC)
+        except (TypeError, ValueError):
+            return
+        if self.oldest_failed_viewed_at is None or failed < self.oldest_failed_viewed_at:
+            self.oldest_failed_viewed_at = failed
 
     def _is_server_owned(self, machine_identifier) -> bool:
         """Return whether the user owns the server hosting this section."""
@@ -624,14 +748,37 @@ class PlexHistoryImporter:
             self._track_unknown_type(metadata)
             return
 
-        metadata, ids = self._ensure_external_ids(
+        reference = external_references.lookup_plex_reference(
+            self.user,
+            self.account,
             metadata,
-            uri,
-            allow_title_search=(
-                media_type == MediaTypes.MOVIE.value
-                and section_type in ("show", "movie")
-            ),
+            MediaTypes.EPISODE.value if metadata.get("type") == "episode" else media_type,
+            payload=payload,
         )
+        if reference and reference.review_status == external_references.ExternalReferenceReviewStatus.IGNORED.value:
+            self.summary_counts["skipped_ignored"] += 1
+            return
+        target = external_references.reference_target(reference)
+        if target and (
+            target.media_type == media_type
+            or (
+                target.media_type == MediaTypes.EPISODE.value
+                and media_type == MediaTypes.TV.value
+            )
+        ):
+            ids = {"tmdb_id": str(target.media_id), "imdb_id": None, "tvdb_id": None}
+        else:
+            ids = None
+
+        if ids is None:
+            metadata, ids = self._ensure_external_ids(
+                metadata,
+                uri,
+                allow_title_search=(
+                    media_type == MediaTypes.MOVIE.value
+                    and section_type in ("show", "movie")
+                ),
+            )
         logger.debug(
             "Resolved Plex history ID presence: %s",
             presence_map(ids, ("tmdb_id", "imdb_id", "tvdb_id", "anidb_id")),
@@ -674,21 +821,21 @@ class PlexHistoryImporter:
             if section_type == "show" and (
                 metadata.get("parentIndex") or metadata.get("index")
             ):
-                if not self._record_episode_entry(metadata, ids):
+                if not self._record_episode_entry(metadata, ids, reference):
                     # Fallback: if episode recording failed (e.g. missing season/episode numbers),
                     # try recording as a movie. This handles cases like Anime Specials (Movies)
                     # that are in TV libraries but lack standard S/E numbering.
                     logger.debug(
                         "Episode recording failed during Plex import; falling back to movie",
                     )
-                    self._record_movie_entry(metadata, ids)
+                    self._record_movie_entry(metadata, ids, reference)
             else:
-                self._record_movie_entry(metadata, ids)
-        elif not self._record_episode_entry(metadata, ids):
+                self._record_movie_entry(metadata, ids, reference)
+        elif not self._record_episode_entry(metadata, ids, reference):
             # Fallback: if episode recording failed (e.g. missing season/episode numbers),
             # try recording as a movie. This handles cases like Anime Specials (Movies)
             # that are in TV libraries but lack standard S/E numbering.
-            self._record_movie_entry(metadata, ids)
+            self._record_movie_entry(metadata, ids, reference)
 
     def _album_key(self, metadata: dict):
         """Return the Plex rating key of the album a track belongs to."""
@@ -986,11 +1133,130 @@ class PlexHistoryImporter:
     def _track_missing_ids(self, metadata: dict, reason: str | None = None):
         """Record a skipped entry due to missing identifiers."""
         self.summary_counts["skipped_missing_ids"] += 1
+        raw_type = metadata.get("type")
+        media_type = {
+            "movie": MediaTypes.MOVIE.value,
+            "episode": MediaTypes.EPISODE.value,
+        }.get(raw_type, MediaTypes.TV.value)
+        self._remember_external_reference(
+            metadata,
+            media_type,
+            matched_item=None,
+            needs_review=True,
+        )
         title = self._get_entry_title(metadata)
         if reason:
             self.warnings.append(f"Skipping Plex entry for {title}: {reason}")
         else:
             self.warnings.append(f"Skipping Plex entry without external IDs: {title}")
+
+    def _plex_reference_scope(self):
+        """Return the server/account scope for the current history section."""
+        return external_references.plex_source_account(
+            self.account,
+            machine_identifier=self._current_section_machine_id,
+        )
+
+    def _remember_external_reference(
+        self,
+        metadata,
+        media_type,
+        *,
+        matched_item=None,
+        needs_review=False,
+    ):
+        """Persist a stable Plex identity without changing a saved decision."""
+        identities = []
+        identity = external_references.plex_identity(
+            metadata,
+            show=media_type == MediaTypes.TV.value,
+        )
+        if identity:
+            identities.append((identity, media_type))
+        if media_type == MediaTypes.EPISODE.value:
+            episode_identity = external_references.plex_identity(metadata)
+            if episode_identity:
+                identities.append((episode_identity, media_type))
+            show_identity = external_references.plex_identity(metadata, show=True)
+            if show_identity:
+                identities.append((show_identity, MediaTypes.TV.value))
+        for (namespace, identity), identity_type in identities:
+            external_references.save_observation(
+                self.user,
+                "plex",
+                self._plex_reference_scope(),
+                namespace,
+                identity,
+                identity_type,
+                matched_item=matched_item,
+                metadata=metadata,
+                needs_review=needs_review,
+            )
+
+    def _queue_external_reference(
+        self,
+        metadata,
+        media_type,
+        tmdb_id,
+        *,
+        season_number=None,
+        episode_number=None,
+        reference=None,
+    ):
+        """Queue a resolved identity until bulk creation has produced its Item."""
+        self._pending_external_references.append(
+            {
+                "metadata": dict(metadata),
+                "media_type": media_type,
+                "tmdb_id": str(tmdb_id),
+                "season_number": season_number,
+                "episode_number": episode_number,
+                "reference": reference,
+            },
+        )
+
+    def _persist_external_references(self):
+        """Attach queued Plex observations to the Items created by the import."""
+        for queued in self._pending_external_references:
+            metadata = queued["metadata"]
+            media_type = queued["media_type"]
+            item_filters = {
+                "media_id": queued["tmdb_id"],
+                "source": Sources.TMDB.value,
+                "media_type": media_type,
+            }
+            if media_type == MediaTypes.EPISODE.value:
+                item_filters.update(
+                    season_number=queued["season_number"],
+                    episode_number=queued["episode_number"],
+                )
+            matched_item = app.models.Item.objects.filter(**item_filters).first()
+            self._remember_external_reference(
+                metadata,
+                media_type,
+                matched_item=matched_item,
+            )
+            if media_type == MediaTypes.EPISODE.value:
+                show_identity = external_references.plex_identity(
+                    metadata,
+                    show=True,
+                )
+                if show_identity:
+                    show_item = app.models.Item.objects.filter(
+                        media_id=queued["tmdb_id"],
+                        source=Sources.TMDB.value,
+                        media_type=MediaTypes.TV.value,
+                    ).first()
+                    external_references.save_observation(
+                        self.user,
+                        "plex",
+                        self._plex_reference_scope(),
+                        *show_identity,
+                        MediaTypes.TV.value,
+                        matched_item=show_item,
+                        metadata=metadata,
+                    )
+        self._pending_external_references.clear()
 
     def _get_entry_title(self, metadata: dict) -> str:
         """Return the best-effort title for a Plex history entry."""
@@ -1000,6 +1266,33 @@ class PlexHistoryImporter:
             or metadata.get("parentTitle")
             or "Unknown title"
         )
+
+    def _episode_debug_context(self, metadata: dict) -> dict:
+        """Return a compact, row-level context payload for import diagnostics."""
+        guid_values = [
+            guid["id"]
+            for guid in self._normalize_guid_list(
+                metadata.get("Guid") or metadata.get("guid"),
+            )
+            if guid.get("id")
+        ]
+
+        return {
+            "library": metadata.get("librarySectionTitle")
+            or metadata.get("librarySectionID")
+            or metadata.get("librarySectionKey"),
+            "rating_key": metadata.get("ratingKey") or metadata.get("ratingkey"),
+            "grandparent_rating_key": metadata.get("grandparentRatingKey"),
+            "title": metadata.get("title"),
+            "series_title": metadata.get("grandparentTitle"),
+            "season": metadata.get("parentIndex"),
+            "episode": metadata.get("index"),
+            "viewed_at": metadata.get("viewedAt") or metadata.get("lastViewedAt"),
+            "account_id": metadata.get("accountID")
+            or metadata.get("accountId")
+            or metadata.get("account_id"),
+            "guids": guid_values,
+        }
 
     def _ensure_external_ids(
         self,
@@ -1128,21 +1421,13 @@ class PlexHistoryImporter:
         if not series_title:
             return None
 
-        media_id = None
         try:
-            if show_year is not None:
-                media_id, _, _ = self.processor._find_tv_media_id(
-                    ids,
-                    series_title,
-                    allow_title_fallback=True,
-                    year=show_year,
-                )
-            if not media_id:
-                media_id, _, _ = self.processor._find_tv_media_id(
-                    ids,
-                    series_title,
-                    allow_title_fallback=True,
-                )
+            media_id, _, _ = self.processor._find_tv_media_id(
+                ids,
+                series_title,
+                allow_title_fallback=True,
+                year=show_year,
+            )
         except Exception as exc:
             logger.warning(
                 "TV title fallback search failed during Plex import: %s",
@@ -1172,7 +1457,9 @@ class PlexHistoryImporter:
             skip_existing=skip_existing,
         )
 
-    def _record_movie_entry(self, metadata: dict, ids: dict) -> bool:
+    def _record_movie_entry(
+        self, metadata: dict, ids: dict, reference=None
+    ) -> bool:
         """Store a normalized movie history record for bulk import."""
         tmdb_id = self._resolve_movie_tmdb_id(ids)
         logger.debug(
@@ -1196,10 +1483,16 @@ class PlexHistoryImporter:
                         page=1,
                     )
                     results = search_results.get("results") or []
-                    if results:
-                        tmdb_id = str(results[0].get("media_id"))
+                    year = (
+                        metadata.get("year")
+                        or metadata.get("originallyAvailableAt")
+                        or metadata.get("grandparentYear")
+                    )
+                    matched = unique_title_match(results, title, year=year)
+                    if matched:
+                        tmdb_id = str(matched.get("media_id") or matched.get("id"))
                         logger.info(
-                            "Resolved Plex movie entry via title fallback search",
+                            "Resolved Plex movie entry via unique title fallback search",
                         )
                 except Exception as exc:
                     logger.warning(
@@ -1212,6 +1505,12 @@ class PlexHistoryImporter:
             return False
 
         tmdb_id = str(tmdb_id)
+        self._queue_external_reference(
+            metadata,
+            MediaTypes.MOVIE.value,
+            tmdb_id,
+            reference=reference,
+        )
         if not self._should_process_media(MediaTypes.MOVIE.value, tmdb_id):
             self.summary_counts["skipped_existing"] += 1
             return True
@@ -1238,7 +1537,7 @@ class PlexHistoryImporter:
         self._movie_ids.add(tmdb_id)
         return True
 
-    def _record_episode_entry(self, metadata: dict, ids: dict) -> bool:
+    def _record_episode_entry(self, metadata: dict, ids: dict, reference=None) -> bool:
         """
         Store a normalized episode history record for bulk import.
 
@@ -1256,23 +1555,78 @@ class PlexHistoryImporter:
         media_id = None
         found_season = None
         found_episode = None
-        try:
-            media_id, found_season, found_episode = self.processor._find_tv_media_id(
-                ids,
-                series_search_title,
+        target = external_references.reference_target(reference)
+        if target and target.media_type in (
+            MediaTypes.TV.value,
+            MediaTypes.EPISODE.value,
+        ):
+            media_id = str(target.media_id)
+            if target.media_type == MediaTypes.EPISODE.value:
+                found_season = target.season_number
+                found_episode = target.episode_number
+        corrected = (
+            media_id is not None
+            and reference.review_status
+            == external_references.ExternalReferenceReviewStatus.CORRECTED
+        )
+        # A modern tmdb:// episode GUID is an episode ID, never a /tv/{id}. Only
+        # the legacy agent form (themoviedb://<show>/<season>/<episode>) names
+        # the show.
+        lookup_ids = dict(ids)
+        if metadata.get("type") == "episode" and not any(
+            "themoviedb://" in guid["id"]
+            and "/" in guid["id"].split("://", 1)[1].split("?", 1)[0]
+            for guid in self._normalize_guid_list(
+                metadata.get("Guid") or metadata.get("guid"),
             )
-        except Exception as exc:
-            logger.warning(
-                "TV ID resolution failed during Plex import: %s",
-                exception_summary(exc),
-            )
+        ):
+            lookup_ids["tmdb_id"] = None
 
-        # Episode-level Guids often lack show IDs; resolve via the show's own
-        # Plex metadata before falling back to ambiguous title search.
+        # The show's own Plex metadata is the authoritative show identity.
+        # Episode-level IDs are not: an episode TMDB ID is a different namespace
+        # from /tv/{id}, and a TVDB episode ID can equal an unrelated TVDB
+        # series ID, which TMDB's find then returns as a show (#876).
         show_ids: dict = {}
         show_year = None
-        if not media_id or self._current_section_anime_hint:
+        if not corrected or self._current_section_anime_hint:
             show_ids, show_year = self._resolve_show_level_ids(metadata)
+        show_tmdb_id = str(show_ids["tmdb_id"]) if show_ids.get("tmdb_id") else None
+        if (
+            media_id is not None
+            and not corrected
+            and show_tmdb_id
+            and show_tmdb_id != media_id
+        ):
+            # An automatic match only caches an earlier resolution. When it
+            # contradicts the show's own TMDB ID, resolve again so wrong
+            # matches from older imports heal.
+            media_id, found_season, found_episode = None, None, None
+
+        if media_id is None:
+            try:
+                media_id, found_season, found_episode = self.processor._find_tv_media_id(
+                    lookup_ids,
+                    series_search_title,
+                    allow_title_fallback=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "TV ID resolution failed during Plex import: %s",
+                    exception_summary(exc),
+                )
+            # An episode-level hit (show plus numbering) is trusted, since TMDB
+            # can split one Plex show across several. A bare show hit from an
+            # episode ID is not: it is the TVDB ID collision above.
+            if show_tmdb_id and found_season is None and str(media_id) != show_tmdb_id:
+                if media_id:
+                    logger.debug(
+                        "Plex episode IDs resolved to TMDB show %s; using the "
+                        "show-level TMDB ID %s instead",
+                        media_id,
+                        show_tmdb_id,
+                    )
+                media_id, found_season, found_episode = show_tmdb_id, None, None
+
         if not media_id and self._has_external_ids(show_ids):
             try:
                 media_id, _, _ = self.processor._find_tv_media_id(
@@ -1287,7 +1641,7 @@ class PlexHistoryImporter:
 
         if not media_id:
             media_id = self._resolve_tv_via_title_search(
-                ids,
+                lookup_ids,
                 series_search_title,
                 show_year,
             )
@@ -1313,7 +1667,21 @@ class PlexHistoryImporter:
             # Don't log a warning yet; return False to allow fallback to Movie
             return False
 
+        season_number, episode_number = external_references.map_episode_coordinates(
+            reference,
+            season_number,
+            episode_number,
+        )
+
         media_id = str(media_id)
+        self._queue_external_reference(
+            metadata,
+            MediaTypes.EPISODE.value,
+            media_id,
+            season_number=season_number,
+            episode_number=episode_number,
+            reference=reference,
+        )
         # skip_existing=False: an already-tracked show must not block newly
         # watched episodes of it (issue #541); exact-duplicate watch events
         # are still filtered per-episode by _should_skip_episode_record.
@@ -1354,8 +1722,16 @@ class PlexHistoryImporter:
                 "rating": rating,
                 "title": metadata.get("title") or "Unknown Episode",
                 "series_title": series_search_title,
+                "series_year": show_year,
                 "guid": metadata.get("Guid") or metadata.get("guid"),
             },
+        )
+        logger.debug(
+            "Recorded Plex episode import row tmdb_id=%s season=%s episode=%s context=%s",
+            media_id,
+            season_number,
+            episode_number,
+            self._episode_debug_context(metadata),
         )
         self._tv_ids.add(media_id)
         return True
@@ -2044,6 +2420,22 @@ class PlexHistoryImporter:
             if self._should_skip_episode_record(record):
                 continue
 
+            if self._has_active_episode_order(
+                record["tmdb_id"], Sources.TMDB.value,
+            ):
+                from integrations.episode_orders import apply_targets, resolve_incoming
+
+                ordered_targets = resolve_incoming(
+                    self.user, record["tmdb_id"], Sources.TMDB.value,
+                    record["season_number"], record["episode_number"],
+                    integration="plex",
+                )
+                if ordered_targets is not None:
+                    apply_targets(
+                        self.user, ordered_targets, watched_at=record["watched_at"],
+                    )
+                    continue
+
             tv_metadata = self._tv_metadata_cache.get(record["tmdb_id"])
             if not tv_metadata:
                 self._track_missing_ids(
@@ -2260,6 +2652,26 @@ class PlexHistoryImporter:
                 item_tv_metadata,
             )
 
+    def _has_active_episode_order(self, media_id: str, source: str) -> bool:
+        """Return whether this import identity needs episode-order resolution."""
+        if self._active_episode_order_identities is None:
+            identities: set[tuple[str, str]] = set()
+            rows = app.models.TV.objects.filter(
+                user=self.user,
+                active_episode_order__isnull=False,
+            ).values_list(
+                "item__media_id",
+                "item__source",
+                "active_episode_order__series_id",
+                "active_episode_order__provider",
+            )
+            for item_media_id, item_source, series_id, provider in rows:
+                identities.add((str(item_media_id), item_source))
+                identities.add((str(series_id), provider))
+            self._active_episode_order_identities = identities
+
+        return (str(media_id), source) in self._active_episode_order_identities
+
     def _validate_or_remap_episode(self, record: dict, tv_metadata: dict):
         """Return the season payload for a record, remapping numbering if needed.
 
@@ -2296,7 +2708,7 @@ class PlexHistoryImporter:
             return remapped_season_metadata
 
         item_identifier = (
-            f"{tv_metadata.get('title') or record['series_title']} "
+            f"{record['series_title'] or tv_metadata.get('title')} "
             f"S{record['season_number']}E{record['episode_number']}"
         )
         self.warnings.append(
@@ -2319,6 +2731,7 @@ class PlexHistoryImporter:
                 record["tmdb_id"],
                 season_number,
                 record.get("series_title"),
+                record.get("series_year"),
             )
 
         return load_season
@@ -2346,6 +2759,7 @@ class PlexHistoryImporter:
         tmdb_id: str,
         season_number: int,
         series_title: str | None,
+        series_year: int | None = None,
     ):
         """Fetch and cache a season payload that the warm pass didn't load."""
         cached = self._tv_metadata_cache.get(tmdb_id)
@@ -2356,7 +2770,12 @@ class PlexHistoryImporter:
             return None
 
         self._tv_seasons_loaded[tmdb_id].add(season_number)
-        metadata = self._get_tv_metadata(tmdb_id, {season_number}, series_title)
+        metadata = self._get_tv_metadata(
+            tmdb_id,
+            {season_number},
+            series_title,
+            series_year,
+        )
         if not metadata:
             return None
 
@@ -2466,12 +2885,14 @@ class PlexHistoryImporter:
         """Fetch TV metadata with season payloads in bulk."""
         seasons_by_show: dict[str, set[int]] = defaultdict(set)
         series_titles: dict[str, str | None] = {}
+        series_years: dict[str, int | None] = {}
         for record in self._episode_records:
             seasons_by_show[record["tmdb_id"]].add(record["season_number"])
             if record["tmdb_id"] not in series_titles:
                 series_titles[record["tmdb_id"]] = record.get(
                     "series_title"
                 ) or record.get("title")
+                series_years[record["tmdb_id"]] = record.get("series_year")
 
         for tmdb_id, seasons in seasons_by_show.items():
             missing_seasons = seasons - self._tv_seasons_loaded[tmdb_id]
@@ -2482,6 +2903,7 @@ class PlexHistoryImporter:
                 tmdb_id,
                 missing_seasons or seasons,
                 series_titles.get(tmdb_id),
+                series_years.get(tmdb_id),
             )
             if not metadata:
                 continue
@@ -2525,6 +2947,7 @@ class PlexHistoryImporter:
         tmdb_id: str,
         season_numbers: set[int],
         series_title: str | None = None,
+        series_year: int | None = None,
     ) -> dict | None:
         """Fetch TV metadata for the selected seasons, with title search fallback."""
         try:
@@ -2547,10 +2970,17 @@ class PlexHistoryImporter:
                             series_title,
                             page=1,
                         )
-                        if search_results and search_results.get("results"):
-                            new_tmdb_id = str(search_results["results"][0]["media_id"])
+                        matched = unique_title_match(
+                            (search_results or {}).get("results") or [],
+                            series_title,
+                            year=series_year,
+                        )
+                        if matched:
+                            new_tmdb_id = str(
+                                matched.get("media_id") or matched.get("id")
+                            )
                             logger.info(
-                                "Resolved Plex TV metadata via title fallback search",
+                                "Resolved Plex TV metadata via unique title fallback search",
                             )
                             # Retry with new ID
                             return services.get_media_metadata(
@@ -2560,30 +2990,6 @@ class PlexHistoryImporter:
                                 season_numbers=sorted(season_numbers),
                             )
 
-                        # If title has year in parenthesis like "Show (YYYY)", try stripping it
-                        clean_title = re.sub(r"\s*\(\d{4}\)$", "", series_title[:500])
-                        if clean_title != series_title:
-                            logger.info(
-                                "Retrying Plex TV title fallback search with normalized title"
-                            )
-                            search_results = services.search(
-                                MediaTypes.TV.value,
-                                clean_title,
-                                page=1,
-                            )
-                            if search_results and search_results.get("results"):
-                                new_tmdb_id = str(
-                                    search_results["results"][0]["media_id"]
-                                )
-                                logger.info(
-                                    "Resolved Plex TV metadata via normalized title fallback search",
-                                )
-                                return services.get_media_metadata(
-                                    "tv_with_seasons",
-                                    new_tmdb_id,
-                                    Sources.TMDB.value,
-                                    season_numbers=sorted(season_numbers),
-                                )
                     except Exception as fallback_exc:
                         logger.warning(
                             "Plex TV title fallback search failed: %s",

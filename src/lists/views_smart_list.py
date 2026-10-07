@@ -9,38 +9,35 @@ Smart lists use rule-based membership (smart_rules module) rather than
 manually curated items, and have their own template (smart_list_detail.html).
 """
 
+import json
 import logging
 
-from django.core.paginator import Paginator
-from django.db.models import F, OuterRef, Subquery
 from django.shortcuts import render
 from django.urls import reverse
 
 from app import helpers
+from app.bulk_actions import build_bulk_action_data
 from app.columns import (
     resolve_column_config,
     resolve_columns,
     resolve_default_column_config,
 )
+from app.library_query import FilterValues
+from app.library_query.spec import STATUS_MATCH_ANY
 from app.models import Item, MediaTypes
 from app.release_years import prefill_display_release_years
 from lists import smart_rules
 from lists.forms import CustomListForm
-from lists.models import CustomListItem
 from lists.views_helpers import (
     _adapt_list_items_for_table,
-    _attach_media_with_aggregation,
+    _attach_kometa_episode_urls,
     _build_collection_platforms_by_item_id,
+    _build_list_count_trigger,
     _build_list_url_template,
     _build_media_type_breakdown,
-    _date_sort_value,
-    _media_date_value,
-    _order_expression,
-    _platform_sort_value,
-    _progress_value,
-    _rating_value,
     _resolve_list_sort_direction,
     _resolve_list_table_media_type,
+    paginate_list_items,
 )
 from users.models import ListDetailSortChoices, MediaStatusChoices
 
@@ -56,7 +53,12 @@ def _smart_list_detail_response(
     media_user,
 ):
     """Render smart-list detail page and HTMX partial responses."""
-    valid_sorts = [choice[0] for choice in ListDetailSortChoices.choices]
+    # A smart list's items are computed, so they have no tiers to sort by.
+    valid_sorts = [
+        choice[0]
+        for choice in ListDetailSortChoices.choices
+        if choice[0] != ListDetailSortChoices.TIER
+    ]
     saved_sort = (custom_list.smart_filters or {}).get(
         "sort"
     ) or ListDetailSortChoices.DATE_ADDED
@@ -157,6 +159,11 @@ def _smart_list_detail_response(
                     "completed_date_to",
                     saved_rules["completed_date_to"],
                 ),
+                **{
+                    key: request.GET.get(key, saved_rules[key])
+                    for field in smart_rules.RELATIVE_DATE_FIELDS
+                    for key in (f"{field}_within", f"{field}_within_unit")
+                },
                 "source": request.GET.get("source", saved_rules["source"]),
                 "language": request.GET.get("language", saved_rules["language"]),
                 "country": request.GET.get("country", saved_rules["country"]),
@@ -181,127 +188,38 @@ def _smart_list_detail_response(
                 "sort_direction": request.GET.get(
                     "direction", saved_rules["sort_direction"]
                 ),
+                # Not a request parameter: a list always evaluates under the
+                # semantics it was saved with.
+                "semantics_version": saved_rules["semantics_version"],
             },
             custom_list.owner,
         )
 
-    matched_item_ids = smart_rules.collect_matching_item_ids(
-        custom_list.owner, active_rules
+    matched_items = smart_rules.matching_items(custom_list.owner, active_rules)
+    filtered_media_types = list(
+        Item.objects.filter(pk__in=matched_items)
+        .order_by()
+        .values_list("media_type", flat=True)
+        .distinct(),
     )
-    items = Item.objects.filter(id__in=matched_item_ids).annotate(
-        list_date_added=Subquery(
-            CustomListItem.objects.filter(
-                custom_list=custom_list,
-                item_id=OuterRef("pk"),
-            )
-            .order_by("-date_added")
-            .values("date_added")[:1],
-        ),
-    )
-    total_items_count = items.count()
-    filtered_media_types = list(items.values_list("media_type", flat=True).distinct())
     current_media_type = _resolve_list_table_media_type(
         active_rules["media_types"],
         filtered_media_types,
     )
-
-    sort_mapping = {
-        ListDetailSortChoices.DATE_ADDED: [
-            _order_expression("list_date_added", direction),
-            _order_expression("title", direction),
-        ],
-        ListDetailSortChoices.TITLE: [
-            _order_expression("title", direction),
-            F("season_number").asc(nulls_first=True)
-            if direction == "asc"
-            else F("season_number").desc(nulls_last=True),
-            F("episode_number").asc(nulls_first=True)
-            if direction == "asc"
-            else F("episode_number").desc(nulls_last=True),
-        ],
-        ListDetailSortChoices.MEDIA_TYPE: [
-            _order_expression("media_type", direction),
-        ],
-        ListDetailSortChoices.RATING: [
-            _order_expression("list_date_added", direction),
-        ],
-        ListDetailSortChoices.PROGRESS: [
-            _order_expression("list_date_added", direction),
-        ],
-        ListDetailSortChoices.RELEASE_DATE: [
-            _order_expression("release_datetime", direction),
-            _order_expression("title", direction),
-        ],
-        ListDetailSortChoices.START_DATE: [
-            _order_expression("list_date_added", direction),
-        ],
-        ListDetailSortChoices.END_DATE: [
-            _order_expression("list_date_added", direction),
-        ],
-    }
-    media_sort_config = {
-        ListDetailSortChoices.RATING: {
-            "key": lambda item: _rating_value(item.media),
-            "reverse": direction == "desc",
-        },
-        ListDetailSortChoices.PROGRESS: {
-            "key": lambda item: _progress_value(item.media),
-            "reverse": direction == "desc",
-        },
-        ListDetailSortChoices.START_DATE: {
-            "key": lambda item: _date_sort_value(
-                _media_date_value(item.media, "start_date"),
-                direction,
-            ),
-            "reverse": direction == "desc",
-        },
-        ListDetailSortChoices.END_DATE: {
-            "key": lambda item: _date_sort_value(
-                _media_date_value(item.media, "end_date"),
-                direction,
-            ),
-            "reverse": direction == "desc",
-        },
-        ListDetailSortChoices.PLATFORM: {
-            "key": lambda item: _platform_sort_value(
-                item, collection_platforms_by_item_id
-            ),
-            "reverse": direction == "desc",
-        },
-    }
-
+    items_page, filtered_items_count = paginate_list_items(
+        custom_list=custom_list,
+        media_user=media_user,
+        candidates=matched_items,
+        filters=FilterValues(status_match=STATUS_MATCH_ANY),
+        sort_by=sort_by,
+        direction=direction,
+        page=page,
+    )
+    # The rules define the list, so every match is a member.
+    total_items_count = filtered_items_count
     collection_platforms_by_item_id = {}
-    sort_config = media_sort_config.get(sort_by)
-    if sort_config:
-        all_items = list(
-            items.order_by(
-                *sort_mapping.get(
-                    sort_by, sort_mapping[ListDetailSortChoices.DATE_ADDED]
-                )
-            )
-        )
-        _attach_media_with_aggregation(all_items, media_user)
-        if sort_by == ListDetailSortChoices.PLATFORM:
-            collection_platforms_by_item_id = _build_collection_platforms_by_item_id(
-                media_user, [item.id for item in all_items]
-            )
-        all_items = sorted(
-            all_items,
-            key=sort_config["key"],
-            reverse=sort_config["reverse"],
-        )
-        paginator = Paginator(all_items, 16)
-        items_page = paginator.get_page(page)
-        filtered_items_count = paginator.count
-    else:
-        items = items.order_by(
-            *sort_mapping.get(sort_by, sort_mapping[ListDetailSortChoices.DATE_ADDED])
-        )
-        paginator = Paginator(items, 16)
-        items_page = paginator.get_page(page)
-        filtered_items_count = paginator.count
-        _attach_media_with_aggregation(items_page, media_user)
 
+    _attach_kometa_episode_urls(items_page)
     prefill_display_release_years(items_page)
 
     if layout == "table":
@@ -323,8 +241,11 @@ def _smart_list_detail_response(
         (
             choice
             for choice in ListDetailSortChoices.choices
-            if choice[0] != ListDetailSortChoices.PLATFORM
-            or current_media_type == MediaTypes.GAME.value
+            if choice[0] != ListDetailSortChoices.TIER
+            and (
+                choice[0] != ListDetailSortChoices.PLATFORM
+                or current_media_type == MediaTypes.GAME.value
+            )
         ),
         key=lambda x: x[1],
     )
@@ -367,6 +288,10 @@ def _smart_list_detail_response(
             active_rules.get("date_added_to"),
             active_rules.get("completed_date_from"),
             active_rules.get("completed_date_to"),
+            *(
+                active_rules.get(f"{field}_within")
+                for field in smart_rules.RELATIVE_DATE_FIELDS
+            ),
             active_rules.get("source"),
             active_rules.get("language"),
             active_rules.get("country"),
@@ -399,6 +324,19 @@ def _smart_list_detail_response(
         else "",
         "show_public_notes": not is_public_view or custom_list.include_notes,
         "can_edit": can_edit,
+        "enable_bulk_select": can_edit,
+        "bulk_action_data": (
+            build_bulk_action_data(
+                request.user,
+                request=request,
+                status_url=reverse("bulk_status_update"),
+                list_url=reverse("bulk_list_add"),
+                collection_url=reverse("bulk_collection_quick_add"),
+                tag_url=reverse("tag_bulk_toggle"),
+            )
+            if can_edit
+            else {}
+        ),
         "list_ordering_enabled": can_edit and sort_by == ListDetailSortChoices.CUSTOM,
         "is_public_view": is_public_view,
         "recommendation_count": recommendation_count,
@@ -464,9 +402,17 @@ def _smart_list_detail_response(
     if is_partial:
         if layout == "table":
             if is_pagination:
-                return render(request, "app/components/table_items.html", context)
-            return render(request, "lists/components/list_table.html", context)
-        return render(request, "lists/components/media_grid.html", context)
+                template_name = "app/components/table_items.html"
+            else:
+                template_name = "lists/components/list_table.html"
+        else:
+            template_name = "lists/components/media_grid.html"
+
+        response = render(request, template_name, context)
+        response["HX-Trigger"] = json.dumps(
+            _build_list_count_trigger(total_items_count),
+        )
+        return response
 
     context["media_type_breakdown"] = _build_media_type_breakdown(custom_list)
     if can_edit:

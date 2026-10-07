@@ -3,13 +3,15 @@ import json
 import logging
 import re
 import uuid
+from datetime import timedelta
 from io import BytesIO
 from itertools import batched
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
 
-import apprise
 from allauth.account.views import SignupView
 from allauth.socialaccount.views import SignupView as SocialSignupView
+from celery import states
 from django.apps import apps
 from django.conf import settings
 from django.contrib import messages
@@ -31,11 +33,15 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.template.defaultfilters import pluralize
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.translation import gettext
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_celery_beat.models import PeriodicTask
+from django_celery_results.models import TaskResult
 
-from app import config, history_cache, image_cache, statistics_cache
+from api import scopes as api_scopes
+from app import cache_utils, config, history_cache, image_cache, statistics_cache
 from app import helpers as app_helpers
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
@@ -54,10 +60,18 @@ from app.models import (
 from app.providers import credentials, tmdb
 from app.services import metadata_resolution
 from app.templatetags import app_tags
-from integrations import exports, plex, stremio_catalog, tasks
+from config import run_state
+from integrations import exports, plex, seerr_api, stremio_catalog, tasks
+from integrations.imports import plex as plex_import
 from integrations.imports import trakt as trakt_imports
+from integrations.imports.helpers import periodic_task_user_kwargs
 from integrations.models import (
+    DEFAULT_INTEGRATION_SCOPES,
+    CatalogGrant,
+    ExternalReference,
+    ExternalReferenceReviewStatus,
     ImportRun,
+    IntegrationToken,
     LastFMAccount,
     PlexAccount,
     PlexWebhookShare,
@@ -90,6 +104,7 @@ from users.media_type_chips import (
     normalize_media_type_chip_colors,
 )
 from users.models import (
+    HISTORY_VIEW_TYPE,
     LOGO_TEXT_INPUT_MAX_LENGTH,
     LOGO_TEXT_STORAGE_MAX_LENGTH,
     PERSON_KNOWN_FOR_LIMIT_MAX,
@@ -105,11 +120,12 @@ from users.models import (
     LogoTextFillChoices,
     LogoTextFontChoices,
     LogoTextWeightChoices,
-    MediaCardSubtitleDisplayChoices,
+    MediaStatusChoices,
     MetadataSourceDefaultChoices,
     MobileGridLayoutChoices,
     PlannedHomeDisplayChoices,
     RatingScaleChoices,
+    SavedView,
     SessionDurationChoices,
     ThemeChoices,
     TimeFormatChoices,
@@ -120,39 +136,14 @@ from users.models import (
     WeekStartDayChoices,
 )
 
-try:
-    import qrcode
-except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
-    qrcode = None
-
-
 logger = logging.getLogger(__name__)
 
-
-@login_required
-@require_POST
-def toggle_home_pin(request, item_id):
-    """Toggle one tracked episodic title in the user's Up Next row."""
-    item = get_object_or_404(
-        Item,
-        id=item_id,
-        media_type__in=[MediaTypes.TV.value, MediaTypes.ANIME.value],
-    )
-    tracker_model = apps.get_model("app", item.media_type)
-    if not tracker_model.objects.filter(user=request.user, item=item).exists():
-        return HttpResponse(status=404)
-
-    pin, created = HomePinnedItem.objects.get_or_create(
-        user=request.user,
-        item=item,
-    )
-    if not created:
-        pin.delete()
-    return render(
-        request,
-        "app/components/home_pin_button.html",
-        {"item": item, "is_home_pinned": created},
-    )
+# Carries a freshly minted token secret across the create redirect, so a refresh
+# cannot mint a second token. The session backend is ``cached_db``, so the secret
+# does sit in the cache and session table for that one request cycle; it is
+# popped on the next render and the database only ever holds the digest.
+NEW_TOKEN_SESSION_KEY = "new_integration_token"  # noqa: S105 - session key, not a secret
+MAX_TOKEN_NAME_LENGTH = 255
 
 
 class CustomSignupView(SignupView):
@@ -185,6 +176,32 @@ class CustomSocialSignupView(SocialSignupView):
     def get_success_url(self):
         """Send a newly created account into guided setup instead of Home."""
         return reverse("onboarding_media_types")
+
+
+@login_required
+@require_POST
+def toggle_home_pin(request, item_id):
+    """Toggle one tracked episodic title in the user's Up Next row."""
+    item = get_object_or_404(
+        Item,
+        id=item_id,
+        media_type__in=[MediaTypes.TV.value, MediaTypes.ANIME.value],
+    )
+    tracker_model = apps.get_model("app", item.media_type)
+    if not tracker_model.objects.filter(user=request.user, item=item).exists():
+        return HttpResponse(status=404)
+
+    pin, created = HomePinnedItem.objects.get_or_create(
+        user=request.user,
+        item=item,
+    )
+    if not created:
+        pin.delete()
+    return render(
+        request,
+        "app/components/home_pin_button.html",
+        {"item": item, "is_home_pinned": created},
+    )
 
 
 DEFAULT_AUTO_PAUSE_WEEKS = 16
@@ -287,12 +304,16 @@ def _get_import_data_user(user):
     return user._meta.model.objects.select_related(
         "plex_account",
         "audiobookshelf_account",
+        "kavita_account",
+        "komga_account",
         "pocketcasts_account",
         "lastfm_account",
         "koito_account",
     ).prefetch_related(
         "radarr_instances",
         "sonarr_instances",
+        "mylar_instances",
+        "kapowarr_instances",
     ).get(pk=user.pk)
 
 
@@ -325,7 +346,12 @@ def _build_qr_data_uri(provisioning_uri: str) -> str:
     if not provisioning_uri:
         return ""
 
-    if qrcode is None:
+    # Imported here, not at module scope: qrcode pulls in Pillow, so importing
+    # it at module scope keeps a C extension resident in every web process for
+    # the sake of one authenticator screen.
+    try:
+        import qrcode
+    except ModuleNotFoundError:  # pragma: no cover - optional dependency guard
         logger.warning(
             "qrcode package is unavailable; skipping authenticator QR rendering"
         )
@@ -539,9 +565,9 @@ def rss_settings(request):
     media_types = [
         {
             "value": media_type,
-            "label": MediaTypes(media_type).label,
+            "label": gettext(MediaTypes(media_type).label),
             "rows": [
-                {"key": row.key, "title": row.title}
+                {"key": row.key, "title": gettext(row.title)}
                 for row in get_external_row_definitions(media_type)
             ],
         }
@@ -646,6 +672,11 @@ def include_item(request):
 @require_GET
 def test_notification(request):
     """Send a test notification to the user."""
+    # Imported here, not at module scope: apprise loads its whole notification
+    # plugin registry on import, and that cost lands in every long-lived
+    # process that merely imports this module.
+    import apprise
+
     try:
         # Create Apprise instance
         apobj = apprise.Apprise()
@@ -754,6 +785,11 @@ def sidebar(request):
             request.user.clickable_media_cards = clickable_media_cards
             fields_to_update.append("clickable_media_cards")
 
+        show_discover = request.POST.get("show_discover") == "on"
+        if request.user.show_discover != show_discover:
+            request.user.show_discover = show_discover
+            fields_to_update.append("show_discover")
+
         # Handle media types checkboxes + order
         fields_to_update += apply_media_type_preferences(
             request.user,
@@ -763,6 +799,8 @@ def sidebar(request):
 
         if fields_to_update:
             request.user.save(update_fields=fields_to_update)
+            # Mixed Home rows depend on which media types are enabled.
+            cache_utils.clear_home_row_cache_for_user(request.user.id)
             messages.success(request, "Settings updated successfully.")
         else:
             messages.info(request, "No changes to save.")
@@ -800,29 +838,89 @@ def home_screen(request):
         except HomeScreenValidationError as exc:
             messages.error(request, str(exc))
         else:
-            request.user.home_show_media_type_headers = bool(
-                request.POST.get("show_media_type_headers"),
+            fields_to_update = []
+            show_media_type_headers = (
+                request.POST.get("show_media_type_headers") == "1"
             )
+            if (
+                request.user.home_show_media_type_headers
+                != show_media_type_headers
+            ):
+                request.user.home_show_media_type_headers = show_media_type_headers
+                fields_to_update.append("home_show_media_type_headers")
+
             try:
                 stale_days = int(request.POST.get("home_stale_days_threshold", 21))
             except (TypeError, ValueError):
                 stale_days = 21
-            request.user.home_stale_days_threshold = max(1, stale_days)
-            request.user.save(
-                update_fields=[
-                    "home_show_media_type_headers",
-                    "home_stale_days_threshold",
-                ]
-            )
+            stale_days = max(1, stale_days)
+            if request.user.home_stale_days_threshold != stale_days:
+                request.user.home_stale_days_threshold = stale_days
+                fields_to_update.append("home_stale_days_threshold")
+
+            if request.POST.get("home_media_type_chips_present") is not None:
+                chips_enabled = (
+                    request.POST.get("home_media_type_chips_enabled") == "1"
+                )
+                chip_style = request.POST.get("home_media_type_chip_style")
+                submitted_colors = {
+                    media_type: request.POST.get(
+                        f"home_media_type_chip_color_{media_type}"
+                    )
+                    for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+                    if f"home_media_type_chip_color_{media_type}" in request.POST
+                }
+                chip_colors = normalize_media_type_chip_colors(
+                    request.user.home_media_type_chip_colors
+                )
+                chip_colors.update(
+                    normalize_media_type_chip_colors(submitted_colors)
+                )
+
+                if request.user.home_media_type_chips_enabled != chips_enabled:
+                    request.user.home_media_type_chips_enabled = chips_enabled
+                    fields_to_update.append("home_media_type_chips_enabled")
+                if (
+                    chip_style in HOME_MEDIA_TYPE_CHIP_STYLES
+                    and request.user.home_media_type_chip_style != chip_style
+                ):
+                    request.user.home_media_type_chip_style = chip_style
+                    fields_to_update.append("home_media_type_chip_style")
+                if request.user.home_media_type_chip_colors != chip_colors:
+                    request.user.home_media_type_chip_colors = chip_colors
+                    fields_to_update.append("home_media_type_chip_colors")
+
+            if fields_to_update:
+                request.user.save(update_fields=fields_to_update)
             messages.success(request, "Home screen updated successfully.")
         return redirect("home_screen")
 
+    sections = serialize_settings_sections(request.user)
+    saved_chip_colors = normalize_media_type_chip_colors(
+        request.user.home_media_type_chip_colors
+    )
+    for section in sections:
+        media_type = section["media_type"]
+        section["media_type_chip_color"] = (
+            saved_chip_colors.get(
+                media_type,
+                default_media_type_chip_color(media_type),
+            )
+            if media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+            else None
+        )
+
     context = {
         "home_screen_sections_json": json.dumps(
-            serialize_settings_sections(request.user), cls=DjangoJSONEncoder
+            sections, cls=DjangoJSONEncoder
         ),
         "show_media_type_headers": request.user.home_show_media_type_headers,
         "home_stale_days_threshold": request.user.home_stale_days_threshold,
+        "media_type_chip_styles": (
+            ("solid", "Solid"),
+            ("soft", "Soft"),
+            ("outline", "Outline"),
+        ),
         "home_screen_list_search_url": reverse("home_screen_list_search"),
         "home_screen_filter_fields_url": reverse("home_screen_filter_fields"),
         "direction_choices_json": json.dumps(
@@ -835,7 +933,6 @@ def home_screen(request):
     return render(request, "users/home_screen.html", context)
 
 
-@require_GET
 def home_screen_list_search(request):
     """Return accessible list suggestions for the Home screen settings page."""
     return JsonResponse(
@@ -954,6 +1051,7 @@ def toggle_obfuscate_episodes(request):
 def ui_preferences(request):
     """Redirect the legacy UI settings URL to Appearance."""
     return redirect("appearance")
+
 
 
 @require_http_methods(["GET", "POST"])
@@ -1148,6 +1246,303 @@ def appearance(request):
     return render(request, "users/appearance.html", context)
 
 
+
+
+def _cards_redirect(media_type):
+    """Return the settings URL for one card type, or the first type."""
+    from users.card_metadata import PROFILE_TYPES
+
+    if media_type not in PROFILE_TYPES:
+        media_type = PROFILE_TYPES[0]
+    return redirect("cards_type", media_type=media_type)
+
+
+def _cards_catalog():
+    """Return the editor catalog with a child route for each type."""
+    from django.urls import reverse
+
+    from users.card_metadata import editor_catalog
+
+    catalog = editor_catalog()
+    for entry in catalog:
+        entry["href"] = reverse("cards_type", kwargs={"media_type": entry["id"]})
+    return catalog
+
+
+@require_http_methods(["GET", "POST"])
+def cards(request, media_type=None):
+    """Edit per-media-type subtitle fields."""
+    from users.card_metadata import (
+        PROFILE_TYPES,
+        parse_card_metadata,
+        resolve_profile,
+    )
+
+    if media_type not in PROFILE_TYPES:
+        media_type = None
+    if request.method == "POST":
+        if request.user.is_demo:
+            messages.error(request, "This section is view-only for demo accounts.")
+            return _cards_redirect(media_type)
+        request.user.card_metadata = parse_card_metadata(
+            request.POST.get("card_metadata")
+        )
+        request.user.save(update_fields=["card_metadata"])
+        messages.success(request, "Media cards updated")
+        return _cards_redirect(media_type)
+    if media_type is None:
+        return _cards_redirect(None)
+
+    saved = {
+        entry_type: resolve_profile(request.user, entry_type)
+        for entry_type in PROFILE_TYPES
+    }
+    return render(
+        request,
+        "users/cards.html",
+        {
+            "card_catalog_json": _cards_catalog(),
+            "card_saved_json": saved,
+            "card_active_type": media_type,
+        },
+    )
+
+
+@require_http_methods(["GET", "POST"])
+def cards_preview(request):
+    """Return a real media card for the draft profile of one type."""
+    import json
+
+    from users.card_metadata import PROFILE_TYPES, parse_card_metadata
+
+    media_type = "movie"
+    draft_payload = {}
+    if request.method == "POST":
+        try:
+            body = json.loads(request.body.decode() or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        media_type = body.get("type") or media_type
+        draft_payload = body.get("draft") if isinstance(body.get("draft"), dict) else {}
+    else:
+        media_type = request.GET.get("type") or media_type
+        try:
+            draft_payload = json.loads(request.GET.get("draft") or "{}")
+        except json.JSONDecodeError:
+            draft_payload = {}
+    if media_type not in PROFILE_TYPES:
+        media_type = "movie"
+    if not isinstance(draft_payload, dict):
+        draft_payload = {}
+    if "types" not in draft_payload and media_type in draft_payload:
+        draft_payload = {"version": 1, "types": {media_type: draft_payload}}
+    request.user.card_metadata = parse_card_metadata(draft_payload)
+    sample = _card_preview_sample(request.user, media_type)
+    if sample is None:
+        item, media = _card_preview_stand_in(media_type)
+        public_view = True
+    else:
+        item, media = sample
+        public_view = False
+    return render(
+        request,
+        "users/cards_preview.html",
+        {
+            "item": item,
+            "media": media,
+            "preview_type": media_type,
+            "public_view": public_view,
+        },
+    )
+
+
+def _card_preview_stand_in(media_type):
+    """Return a card-shaped sample when this account has no row of the type."""
+    from types import SimpleNamespace
+
+    from django.utils import timezone
+
+    titles = {
+        "tv": "Sample Show",
+        "season": "Sample Season",
+        "episode": "Sample Episode",
+        "movie": "Sample Movie",
+        "anime": "Sample Anime",
+        "manga": "Sample Manga",
+        "game": "Sample Game",
+        "book": "Sample Book",
+        "comic": "Sample Comic",
+        "comicissue": "Sample Issue",
+        "boardgame": "Sample Board Game",
+        "music": "Sample Album",
+        "podcast": "Sample Podcast",
+        "person": "Sample Person",
+    }
+    item = {
+        "title": titles.get(media_type, "Sample"),
+        "media_type": "movie" if media_type == "person" else media_type,
+        "source": "manual",
+        "media_id": "card-preview",
+        "year": 2024,
+        "genres": ["Drama", "Thriller"],
+        "runtime": "42 min",
+        "synopsis": "A short sample line so this field has something to show.",
+        "season_number": 1,
+        "episode_number": 3,
+        "role": "Lead",
+        "character": "Lead",
+        "artist_name": "Sample Artist",
+        "author": "Sample Author",
+        "series_position": 2,
+        "show_title": "Sample Show",
+        "image": "",
+    }
+    media = SimpleNamespace(
+        id=0,
+        status="In progress",
+        progress=4,
+        max_progress=10,
+        score=8,
+        repeats=2,
+        formatted_progress="4 / 10",
+        aggregated_status="In progress",
+        last_played_at=timezone.now(),
+        is_statusless=False,
+        end_date=None,
+        aggregated_end_date=None,
+        next_event=None,
+        card_tile_url="",
+        album=None,
+        artist=None,
+    )
+    return item, media
+
+
+def _person_preview_sample(user):
+    """Return a cast card for the newest credit on this account."""
+    from types import SimpleNamespace
+
+    movie_model = apps.get_model("app", "Movie")
+    credit_model = apps.get_model("app", "ItemPersonCredit")
+    item_ids = movie_model.objects.filter(user=user).values("item_id")
+    credit = (
+        credit_model.objects.filter(item_id__in=item_ids)
+        .select_related("person", "item")
+        .order_by("-id")
+        .first()
+    )
+    if credit is None:
+        return None
+    person = credit.person
+    item = credit.item
+    return {
+        "id": person.id,
+        "title": person.name,
+        "media_type": "movie",
+        "source": item.source,
+        "media_id": item.media_id,
+        "image": person.image or item.image or "",
+        "role": credit.role or person.known_for_department,
+        "character": credit.role,
+        "department": credit.department,
+    }, SimpleNamespace(
+        id=0,
+        status="",
+        score=None,
+        progress=0,
+        is_statusless=True,
+        card_tile_url="",
+        album=None,
+        artist=None,
+        end_date=None,
+        progressed_at=None,
+    )
+
+
+def _music_preview_item(album):
+    """Return a card item for an album.
+
+    Album rows are not ``Item`` records, and the shared card looks up
+    ``media_type`` on whatever it is given.
+    """
+    artist = getattr(album, "artist", None)
+    release_date = getattr(album, "release_date", None)
+    release_id = (
+        album.musicbrainz_release_group_id or album.musicbrainz_release_id or album.id
+    )
+    return {
+        "id": album.id,
+        "title": album.title,
+        "media_type": "music",
+        "source": "musicbrainz",
+        "media_id": release_id,
+        "image": album.image or "",
+        "genres": album.genres or [],
+        "release_date": release_date,
+        "year": release_date.year if release_date else None,
+        "artist_name": getattr(artist, "name", None) or "",
+    }
+
+
+def _card_preview_sample(user, media_type):
+    """Return ``(item, media)`` for the user's newest row of this type."""
+    model_names = {
+        "movie": "Movie",
+        "tv": "TV",
+        "season": "Season",
+        "episode": "Episode",
+        "anime": "Anime",
+        "manga": "Manga",
+        "game": "Game",
+        "book": "Book",
+        "comic": "Comic",
+        "comicissue": "ComicIssue",
+        "boardgame": "BoardGame",
+        "podcast": "Podcast",
+    }
+    if media_type == "music":
+        music_model = apps.get_model("app", "Music")
+        music = (
+            music_model.objects.filter(user=user)
+            .select_related("item", "album", "album__artist", "artist", "track")
+            .order_by("-id")
+            .first()
+        )
+        if music is not None:
+            return music.item, music
+        tracker_model = apps.get_model("app", "AlbumTracker")
+        tracker = (
+            tracker_model.objects.filter(user=user)
+            .select_related("album", "album__artist")
+            .order_by("-id")
+            .first()
+        )
+        if tracker is None or tracker.album_id is None:
+            return None
+        return _music_preview_item(tracker.album), tracker
+    if media_type == "person":
+        return _person_preview_sample(user)
+    model_name = model_names.get(media_type)
+    if model_name is None:
+        return None
+    try:
+        model = apps.get_model("app", model_name)
+    except LookupError:
+        return None
+    if not hasattr(model, "item"):
+        return None
+    sample = model.objects.select_related("item")
+    if media_type == "episode":
+        sample = sample.filter(related_season__user=user)
+    else:
+        sample = sample.filter(user=user)
+    media = sample.order_by("-id").first()
+    if media is None:
+        return None
+    return media.item, media
+
+
+
 @require_http_methods(["GET", "POST"])
 def preferences(request):
     """Render the preferences settings page."""
@@ -1226,7 +1621,6 @@ def preferences(request):
         activity_history_view = request.POST.get("activity_history_view")
         game_logging_style = request.POST.get("game_logging_style")
         mobile_grid_layout = request.POST.get("mobile_grid_layout")
-        media_card_subtitle_display = request.POST.get("media_card_subtitle_display")
         title_display_preference = request.POST.get("title_display_preference")
         top_talent_sort_by = request.POST.get("top_talent_sort_by")
         rating_scale = request.POST.get("rating_scale")
@@ -1239,8 +1633,7 @@ def preferences(request):
         hide_completed_recommendations_raw = request.POST.get(
             "hide_completed_recommendations"
         )
-        hide_zero_rating_raw = request.POST.get("hide_zero_rating")
-        progress_bar_raw = request.POST.get("progress_bar")
+        show_recommendations_raw = request.POST.get("show_recommendations")
         season_enrichment_raw = request.POST.get("show_season_enrichment")
         episode_public_ratings_raw = request.POST.get("show_episode_public_ratings")
         personal_rating_trend_raw = request.POST.get("show_personal_rating_trend")
@@ -1400,14 +1793,6 @@ def preferences(request):
             request.user.mobile_grid_layout = mobile_grid_layout
             fields_to_update.append("mobile_grid_layout")
 
-        if (
-            media_card_subtitle_display
-            and media_card_subtitle_display
-            in [choice[0] for choice in MediaCardSubtitleDisplayChoices.choices]
-            and request.user.media_card_subtitle_display != media_card_subtitle_display
-        ):
-            request.user.media_card_subtitle_display = media_card_subtitle_display
-            fields_to_update.append("media_card_subtitle_display")
 
         if show_up_next_episode_code_raw is not None:
             show_up_next_episode_code = show_up_next_episode_code_raw == "1"
@@ -1460,17 +1845,13 @@ def preferences(request):
                 )
                 fields_to_update.append("hide_completed_recommendations")
 
-        if hide_zero_rating_raw is not None:
-            hide_zero_rating = hide_zero_rating_raw == "1"
-            if request.user.hide_zero_rating != hide_zero_rating:
-                request.user.hide_zero_rating = hide_zero_rating
-                fields_to_update.append("hide_zero_rating")
+        if show_recommendations_raw is not None:
+            show_recommendations = show_recommendations_raw == "1"
+            if request.user.show_recommendations != show_recommendations:
+                request.user.show_recommendations = show_recommendations
+                fields_to_update.append("show_recommendations")
 
-        if progress_bar_raw is not None:
-            progress_bar = progress_bar_raw == "1"
-            if request.user.progress_bar != progress_bar:
-                request.user.progress_bar = progress_bar
-                fields_to_update.append("progress_bar")
+
 
         for field_name, raw_value in (
             ("show_season_enrichment", season_enrichment_raw),
@@ -1742,6 +2123,9 @@ def preferences(request):
 
 @login_required
 @require_POST
+
+@login_required
+@require_POST
 def convert_anime_library(request):
     """Convert this user's existing anime into their preferred shape."""
     from app.tasks_anime_library_repair import convert_anime_library_shape_task
@@ -1755,9 +2139,31 @@ def convert_anime_library(request):
     return redirect("preferences")
 
 
+@login_required
+@require_POST
+def convert_tv_library(request):
+    """Move this user's tracked TV shows to their default TV provider."""
+    from app.tasks_tv_provider_migration import move_user_tv_library_task
+
+    # Moving is also the user's go-ahead for the nightly job to keep new shows
+    # on their default provider.
+    request.user.tv_auto_move_to_default_provider = True
+    request.user.save(update_fields=["tv_auto_move_to_default_provider"])
+    move_user_tv_library_task.delay(request.user.id)
+    messages.success(
+        request,
+        "Moving your tracked TV shows. This runs in the background; shows that "
+        "cannot be moved safely are left as they are.",
+    )
+    return redirect("metadata_settings")
+
+
 @require_GET
 def integrations(request):
     """Render the integrations settings page."""
+    from integrations.state import settings_view
+    from integrations.webhooks.jellyfin import jellyfin_template_outdated
+
     user = request.user
     last_received = user.plex_webhook_last_received_at
     rotated_at = user.plex_webhook_token_rotated_at
@@ -1811,6 +2217,25 @@ def integrations(request):
         .select_related("owner")
         .order_by("owner__username")
     )
+    match_review_references = list(
+        ExternalReference.objects.filter(
+            user=user,
+            review_status=ExternalReferenceReviewStatus.NEEDS_REVIEW.value,
+        )
+        .select_related("matched_item", "corrected_item")
+        .order_by("-updated_at")[:100]
+    )
+    match_saved_references = list(
+        ExternalReference.objects.filter(
+            user=user,
+            review_status__in=(
+                ExternalReferenceReviewStatus.CORRECTED.value,
+                ExternalReferenceReviewStatus.IGNORED.value,
+            ),
+        )
+        .select_related("matched_item", "corrected_item")
+        .order_by("-updated_at")[:100]
+    )
     all_plex_library_values = [option["value"] for option in plex_library_options]
     for share in plex_webhook_shares:
         share.selected_libraries_json = json.dumps(
@@ -1829,7 +2254,10 @@ def integrations(request):
         "users/integrations.html",
         {
             "user": user,
+            "sync_bindings": settings_view.binding_rows(user),
+            "sync_conflicts": settings_view.open_conflicts(user),
             "plex_webhook_needs_update": plex_webhook_needs_update,
+            "jellyfin_template_outdated": jellyfin_template_outdated(user.id),
             "plex_library_options_json": json.dumps(plex_library_options),
             "plex_library_options": plex_library_options,
             "selected_plex_webhook_libraries_json": json.dumps(
@@ -1837,13 +2265,53 @@ def integrations(request):
             ),
             "plex_webhook_shares": plex_webhook_shares,
             "received_plex_webhook_shares": received_plex_webhook_shares,
+            "match_review_references": match_review_references,
+            "match_saved_references": match_saved_references,
             "plex_share_recipients": plex_share_recipients,
             "plex_connected": bool(plex_account and plex_account.plex_token),
             "jellyfin_account": jellyfin_account,
             "jellyfin_playback_reporting_import": jellyfin_playback_reporting_import,
             "jellyfin_pull_interval_minutes": tasks.JELLYFIN_PULL_INTERVAL_MINUTES,
             "seerr_global_webhook_enabled": bool(settings.SEERR_GLOBAL_WEBHOOK_SECRET),
-            "stremio_catalog_readiness": stremio_catalog.catalog_readiness(user),
+            # Popped, not read: the secret is shown once and never again.
+            "new_integration_token": request.session.pop(
+                NEW_TOKEN_SESSION_KEY,
+                None,
+            ),
+            **integration_token_context(user),
+        },
+    )
+
+
+STREMIO_CATALOG_STATUS_CACHE_SECONDS = 120
+
+
+@require_GET
+def stremio_catalog_status(request):
+    """Render the Stremio "Catalog Status" block for the integrations page.
+
+    Counting publishable titles reads every entry the catalogs cover, which
+    dominated the page's load time (about 5 s on a large library). The page
+    loads this block after first paint, and a short cache keeps a settings
+    visit from repeating the scan.
+    """
+    cache_key = f"stremio_catalog_status_{request.user.id}"
+    readiness = cache.get(cache_key)
+    if readiness is None:
+        readiness = stremio_catalog.catalog_readiness(request.user)
+        cache.set(cache_key, readiness, STREMIO_CATALOG_STATUS_CACHE_SECONDS)
+    return render(
+        request,
+        "users/components/stremio_catalog_status.html",
+        {
+            "stremio_catalog_readiness": [
+                {
+                    **catalog,
+                    "noun": gettext(catalog["noun"]),
+                    "list_name": gettext(catalog["list_name"]),
+                }
+                for catalog in readiness
+            ],
         },
     )
 
@@ -1892,6 +2360,9 @@ def import_data(request):
     # Get Audiobookshelf account
     audiobookshelf_account = getattr(user, "audiobookshelf_account", None)
 
+    komga_account = getattr(user, "komga_account", None)
+    kavita_account = getattr(user, "kavita_account", None)
+
     # Get Storyteller account and any in-progress device login
     storyteller_account = getattr(user, "storyteller_account", None)
     storyteller_pending = request.session.get("storyteller_pending_auth")
@@ -1924,6 +2395,8 @@ def import_data(request):
             koito_history_button_label = "Reimport full history"
     radarr_instances = list(user.radarr_instances.order_by("created_at"))
     sonarr_instances = list(user.sonarr_instances.order_by("created_at"))
+    mylar_instances = list(user.mylar_instances.order_by("created_at"))
+    kapowarr_instances = list(user.kapowarr_instances.order_by("created_at"))
     stremio_account = getattr(user, "stremio_account", None)
     xbox_account = getattr(user, "xbox_account", None)
     psn_account = getattr(user, "psn_account", None)
@@ -1936,13 +2409,11 @@ def import_data(request):
 
         audiobookshelf_periodic_task = PeriodicTask.objects.filter(
             task="Import from Audiobookshelf (Recurring)",
-            kwargs__contains=f'"user_id": {user.id}',
+            **periodic_task_user_kwargs(user.id),
             enabled=True,
         ).first()
         if audiobookshelf_periodic_task and audiobookshelf_periodic_task.interval:
-            audiobookshelf_poll_interval = (
-                audiobookshelf_periodic_task.interval.every
-            )
+            audiobookshelf_poll_interval = audiobookshelf_periodic_task.interval.every
 
     # Get Last.fm periodic task status
     lastfm_periodic_task = None
@@ -1995,6 +2466,8 @@ def import_data(request):
         "plex_sections": plex_sections,
         "plex_sections_json": json.dumps(plex_sections),
         "audiobookshelf_account": audiobookshelf_account,
+        "komga_account": komga_account,
+        "kavita_account": kavita_account,
         "audiobookshelf_poll_interval": audiobookshelf_poll_interval,
         "storyteller_account": storyteller_account,
         "storyteller_pending": storyteller_pending,
@@ -2006,6 +2479,12 @@ def import_data(request):
         "koito_account": koito_account,
         "radarr_instances": radarr_instances,
         "sonarr_instances": sonarr_instances,
+        "mylar_instances": mylar_instances,
+        "radarr_connected": any(i.is_connected() for i in radarr_instances),
+        "sonarr_connected": any(i.is_connected() for i in sonarr_instances),
+        "mylar_connected": any(i.is_connected() for i in mylar_instances),
+        "kapowarr_instances": kapowarr_instances,
+        "kapowarr_connected": any(i.is_connected() for i in kapowarr_instances),
         "stremio_account": stremio_account,
         "xbox_account": xbox_account,
         "psn_account": psn_account,
@@ -2026,6 +2505,11 @@ def import_data(request):
         ),
         "trakt_redirect_uri": trakt_redirect_uri,
         "trakt_redirect_capable": trakt_redirect_capable,
+        "simkl_configured": credentials.is_configured("simkl", user),
+        "simkl_redirect_uri": app_helpers.build_absolute_app_url(
+            request,
+            reverse("import_simkl_private"),
+        ),
     }
     return render(request, "users/import_data.html", context)
 
@@ -2205,6 +2689,7 @@ def export_data(request):
 def advanced(request):
     """Render the advanced settings page."""
     image_stats = image_cache.cache_stats()
+    log_files = _log_files(Path(settings.LOG_FILE).name)
     bug_report_body = (
         f"**Floppy version:** {settings.VERSION}\n\n"
         "**Describe the issue:**\n\n\n"
@@ -2220,6 +2705,10 @@ def advanced(request):
         "bug_report_title": "[BUG] ",
         "bug_report_body": bug_report_body,
         "media_types": DELETABLE_MEDIA_TYPES,
+        "logs_since": _first_log_time(log_files[0]) if log_files else "",
+        "last_unclean_exit": parse_datetime(
+            (run_state.read_state() or {}).get("last_unclean_at") or "",
+        ),
     }
     return render(request, "users/advanced.html", context)
 
@@ -2253,24 +2742,54 @@ def clear_image_cache(request):
     return redirect("advanced")
 
 
+def _log_files(name):
+    """Return a log file in the log directory and its rotated backups, oldest first."""
+    log_path = Path(settings.LOG_FILE).parent / name
+    backups = sorted(
+        (p for p in log_path.parent.glob(f"{name}.*") if p.suffix[1:].isdigit()),
+        key=lambda p: int(p.suffix[1:]),
+        reverse=True,
+    )
+    return [p for p in [*backups, log_path] if p.exists()]
+
+
+def _first_log_time(path):
+    """Return the timestamp on a log file's first line, e.g. 2026-10-02 13:39:14."""
+    try:
+        with path.open(errors="replace") as log:
+            return log.readline()[1:20]
+    except OSError:
+        return ""
+
+
 @require_GET
 def export_logs(request):
-    """Return recent application logs, with secrets redacted, as a text file."""
-    from pathlib import Path
+    """Return recent application logs, with secrets redacted, as a text file.
 
+    Streamed one line at a time: the logs can be tens of megabytes and the
+    container this runs in may already be short of memory. After floppy.log come
+    the process manager's log and any crash tracebacks (see config.run_state).
+    """
     from app.log_safety import redact_secrets
 
-    log_path = Path(settings.LOG_FILE)
-    raw_logs = (
-        log_path.read_text(encoding="utf-8", errors="replace")
-        if log_path.exists()
-        else ""
-    )
+    log_name = Path(settings.LOG_FILE).name
+    sections = [(log_name, _log_files(log_name))]
+    sections += [(n, _log_files(n)) for n in ("supervisord.log", "faulthandler.log")]
 
-    sanitized_logs = redact_secrets(raw_logs)
+    def lines():
+        for title, found in sections:
+            paths = [path for path in found if path.stat().st_size]
+            if not paths:
+                continue
+            if title != log_name:
+                yield f"\n===== {title} =====\n"
+            for path in paths:
+                with path.open(encoding="utf-8", errors="replace") as log:
+                    for line in log:
+                        yield redact_secrets(line)
 
     filename = f"floppy-logs-{timezone.localtime():%Y%m%d-%H%M%S}.txt"
-    response = HttpResponse(sanitized_logs, content_type="text/plain")
+    response = StreamingHttpResponse(lines(), content_type="text/plain")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
@@ -2680,6 +3199,100 @@ def cancel_import_run(request, run_id):
         cancel_requested=True,
         finished_at=timezone.now(),
     )
+    _reset_history_import_status(request.user, run.source)
+    messages.success(request, "Import cancelled.")
+    return redirect("import_data")
+
+
+def _reset_history_import_status(user, source):
+    """Leave a cancelled Last.fm/Koito backfill in a state the user can restart.
+
+    Both keep their own queued/running status on the account, which a revoked
+    task never clears, so the "Import full history" button would stay disabled.
+    """
+    from integrations.models import LastFMHistoryImportStatus
+
+    if source not in {"lastfm", "koito"}:
+        return
+
+    # A queued continuation chunk belongs to a run that is still RUNNING; close
+    # it so Recent Import Runs does not keep a stale entry.
+    ImportRun.objects.filter(
+        user=user,
+        source=source,
+        status=ImportRun.Status.RUNNING,
+    ).update(
+        status=ImportRun.Status.CANCELLED,
+        cancel_requested=True,
+        finished_at=timezone.now(),
+    )
+
+    if source == "lastfm":
+        account = getattr(user, "lastfm_account", None)
+    else:
+        account = getattr(user, "koito_account", None)
+    if account is None or not account.history_import_is_active:
+        return
+
+    account.history_import_status = LastFMHistoryImportStatus.FAILED
+    account.history_import_last_error_message = "Cancelled by user."
+    account.save(
+        update_fields=["history_import_status", "history_import_last_error_message"],
+    )
+    if source == "koito":
+        # A terminated worker never releases the lock, which would otherwise
+        # block a restart until it goes stale.
+        from integrations import koito_sync
+
+        cache.delete(koito_sync.get_koito_history_import_lock_key(user.id))
+
+
+@require_POST
+def cancel_pending_import(request, task_id):
+    """Cancel an import that is queued but has not started running.
+
+    The row is claimed as REVOKED first, so a worker that starts afterwards
+    sees it and stops (``FloppyTask.__call__``). A worker that started between
+    the page load and the claim already reported STARTED, and is terminated
+    like a running import.
+    """
+    from celery.result import AsyncResult
+
+    from config.celery import app as celery_app
+
+    pending = next(
+        (
+            result
+            for result in request.user.get_import_tasks()["results"]
+            if result.get("task_id") == task_id and result["status"] == states.PENDING
+        ),
+        None,
+    )
+    claimed = pending is not None and TaskResult.objects.filter(
+        task_id=task_id,
+        status=states.PENDING,
+    ).update(status=states.REVOKED, date_done=timezone.now())
+    if not claimed:
+        messages.error(
+            request,
+            "This import is no longer queued. A running import can be cancelled "
+            "from Recent Import Runs.",
+        )
+        return redirect("import_data")
+
+    already_started = AsyncResult(task_id).status == states.STARTED
+    celery_app.control.revoke(task_id, terminate=already_started)
+    if already_started:
+        ImportRun.objects.filter(
+            user=request.user,
+            task_id=task_id,
+            status=ImportRun.Status.RUNNING,
+        ).update(
+            status=ImportRun.Status.CANCELLED,
+            cancel_requested=True,
+            finished_at=timezone.now(),
+        )
+    _reset_history_import_status(request.user, pending["source"])
     messages.success(request, "Import cancelled.")
     return redirect("import_data")
 
@@ -2777,6 +3390,10 @@ def delete_import_schedule(request):
         PlexAccount.objects.filter(user=request.user).update(
             watchlist_sync_enabled=False,
         )
+    if task.task == plex_import.MARK_WATCHED_TASK_NAME:
+        PlexAccount.objects.filter(user=request.user).update(
+            mark_watched_sync_enabled=False,
+        )
     task.delete()
     messages.success(request, "Import schedule deleted.")
     return redirect("import_data")
@@ -2862,7 +3479,7 @@ def create_export_schedule(request):
     # same content and same cadence - rather than any second schedule.
     existing_schedules = PeriodicTask.objects.filter(
         task="Scheduled backup export",
-        kwargs__contains=f'"user_id": {request.user.id}',
+        **periodic_task_user_kwargs(request.user.id),
         enabled=True,
         crontab=crontab,
     )
@@ -2907,13 +3524,131 @@ def delete_export_schedule(request):
     try:
         task = PeriodicTask.objects.get(
             name=task_name,
-            kwargs__contains=f'"user_id": {request.user.id}',
+            **periodic_task_user_kwargs(request.user.id),
         )
         task.delete()
         messages.success(request, "Backup schedule deleted.")
     except PeriodicTask.DoesNotExist:
         messages.error(request, "Backup schedule not found.")
     return redirect("export_data")
+
+
+def integration_token_context(user):
+    """Return the named-token context for the integrations page."""
+    return {
+        "integration_tokens": list(
+            IntegrationToken.objects.filter(
+                user=user, client_identifier="", revoked_at__isnull=True
+            ).order_by("-created_at"),
+        ),
+        "integration_scope_choices": [
+            {
+                "value": scope,
+                "description": description,
+                "default": scope in DEFAULT_INTEGRATION_SCOPES,
+            }
+            for scope, description in sorted(api_scopes.SCOPE_DESCRIPTIONS.items())
+        ],
+        "integration_tracking_preset_json": json.dumps(
+            list(DEFAULT_INTEGRATION_SCOPES),
+        ),
+        "catalog_grants": list(
+            CatalogGrant.objects.filter(
+                user=user,
+                revoked_at__isnull=True,
+            ).order_by("-created_at"),
+        ),
+    }
+
+
+@require_POST
+def create_catalog_grant(request):
+    """Mint a revocable add-on install credential."""
+    name = (request.POST.get("name") or "").strip()[:MAX_TOKEN_NAME_LENGTH]
+    if not name:
+        messages.error(request, "Give the install a name so you can recognise it.")
+        return redirect("integrations")
+
+    allow_playback_start = request.POST.get("allow_playback_start") == "on"
+    grant, _token = CatalogGrant.generate(
+        user=request.user,
+        name=name,
+        allow_playback_start=allow_playback_start,
+    )
+    messages.success(request, f"Created add-on install '{grant.name}'.")
+    return redirect("integrations")
+
+
+@require_POST
+def revoke_catalog_grant(request, grant_id):
+    """Revoke one add-on install credential."""
+    grant = get_object_or_404(
+        CatalogGrant,
+        pk=grant_id,
+        user=request.user,
+        revoked_at__isnull=True,
+    )
+    grant.revoked_at = timezone.now()
+    grant.save(update_fields=["revoked_at"])
+    messages.success(request, f"Revoked add-on install '{grant.name}'.")
+    return redirect("integrations")
+
+
+@require_POST
+def create_integration_token(request):
+    """Mint a named, scoped API token and show its secret once."""
+    name = (request.POST.get("name") or "").strip()[:MAX_TOKEN_NAME_LENGTH]
+    if not name:
+        messages.error(request, "Give the token a name so you can recognise it later.")
+        return redirect("integrations")
+
+    requested = request.POST.getlist("scopes")
+    scopes = [scope for scope in requested if scope in api_scopes.ALL_SCOPES]
+    if not scopes:
+        messages.error(request, "Select at least one permission for the token.")
+        return redirect("integrations")
+
+    expires_at = None
+    raw_expiry = (request.POST.get("expires_in_days") or "").strip()
+    if raw_expiry:
+        try:
+            days = int(raw_expiry)
+        except ValueError:
+            messages.error(request, "Expiry must be a number of days.")
+            return redirect("integrations")
+        if days < 1:
+            messages.error(request, "Expiry must be at least one day.")
+            return redirect("integrations")
+        expires_at = timezone.now() + timedelta(days=days)
+
+    token, raw_token = IntegrationToken.generate(
+        user=request.user,
+        name=name,
+        scopes=scopes,
+        expires_at=expires_at,
+    )
+    # Never logged and never stored: the session is the one delivery channel.
+    request.session[NEW_TOKEN_SESSION_KEY] = {
+        "name": token.name,
+        "secret": raw_token,
+    }
+    messages.success(request, f"Created token '{token.name}'.")
+    return redirect("integrations")
+
+
+@require_POST
+def revoke_integration_token(request, token_id):
+    """Revoke one of the user's named tokens."""
+    token = get_object_or_404(
+        IntegrationToken,
+        pk=token_id,
+        user=request.user,
+        revoked_at__isnull=True,
+    )
+    token.revoked_at = timezone.now()
+    token.save(update_fields=["revoked_at"])
+    messages.success(request, f"Revoked token '{token.name}'.")
+    return redirect("integrations")
 
 
 @require_POST
@@ -2951,6 +3686,22 @@ def update_plex_usernames(request):
         messages.success(request, "Plex usernames updated successfully")
 
     return redirect(redirect_target)
+
+
+@require_POST
+def update_plex_mark_watched(request):
+    """Turn the Plex manual watched-mark sync on or off for the user."""
+    account = getattr(request.user, "plex_account", None)
+    if not account:
+        messages.error(request, "Connect Plex before changing this setting.")
+        return redirect("integrations")
+
+    plex_import.set_mark_watched_sync(
+        account,
+        enabled="plex_mark_watched_enabled" in request.POST,
+    )
+    messages.success(request, "Plex watched settings updated successfully")
+    return redirect("integrations")
 
 
 @require_POST
@@ -3032,9 +3783,7 @@ def update_plex_webhook_share(request):
         messages.error(request, "Enter one or more Plex usernames for this share.")
         return redirect("integrations")
 
-    duplicate_usernames = {
-        username.casefold() for username in plex_usernames
-    }
+    duplicate_usernames = {username.casefold() for username in plex_usernames}
     existing_shares = (
         PlexWebhookShare.objects.filter(owner=user)
         .exclude(pk=share.pk or None)
@@ -3219,17 +3968,71 @@ def update_jellyseerr_settings(request):
     else:
         allowed_usernames = ""
 
+    # Requesting from Floppy: URL + API key + Seerr user (#772).
+    from integrations.imports.helpers import (
+        MediaImportError,
+        decrypt_or_raise,
+        encrypt,
+    )
+
+    seerr_url = (request.POST.get("seerr_url") or "").strip().rstrip("/")
+    if seerr_url:
+        # Not URLValidator: it refuses bare LAN/Docker hosts like http://seerr:5055.
+        parsed = urlparse(seerr_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            messages.error(request, "Seerr URL must be an http(s) address.")
+            return redirect("integrations")
+    raw_api_key = (request.POST.get("seerr_api_key") or "").strip()
+    seerr_username = (request.POST.get("seerr_username") or "").strip()
+    seerr_user_id = None
+    # Every request is attributed to a real Seerr user, so it gets that user's
+    # permissions, quotas and approval flow instead of the API key owner's.
+    # Resolving the name here also proves the URL and key work.
+    unchanged = (
+        seerr_url == user.seerr_url
+        and seerr_username == user.seerr_username
+        and not raw_api_key
+        and user.seerr_user_id
+    )
+    if unchanged:
+        # Saving the webhook half of this form must not depend on Seerr being up.
+        seerr_user_id = user.seerr_user_id
+    elif seerr_url:
+        if not seerr_username:
+            messages.error(request, "A Seerr username is required to request from Seerr.")
+            return redirect("integrations")
+        try:
+            api_key = raw_api_key or decrypt_or_raise(user.seerr_api_key)
+            seerr_user_id = seerr_api.SeerrClient(seerr_url, api_key).find_user_id(
+                seerr_username
+            )
+        except (seerr_api.SeerrError, MediaImportError) as error:
+            messages.error(request, f"Seerr settings not saved: {error}")
+            return redirect("integrations")
+
     # Save
     user.jellyseerr_enabled = enabled
     user.jellyseerr_trigger_statuses = trigger_statuses
     user.jellyseerr_allowed_usernames = allowed_usernames
     user.jellyseerr_default_added_status = default_status
+    user.seerr_url = seerr_url
+    # A blank key keeps the stored one; clearing the URL disconnects.
+    if not seerr_url:
+        user.seerr_api_key = ""
+    elif raw_api_key:
+        user.seerr_api_key = encrypt(raw_api_key)
+    user.seerr_username = seerr_username if seerr_url else ""
+    user.seerr_user_id = seerr_user_id
     user.save(
         update_fields=[
             "jellyseerr_enabled",
             "jellyseerr_trigger_statuses",
             "jellyseerr_allowed_usernames",
             "jellyseerr_default_added_status",
+            "seerr_url",
+            "seerr_api_key",
+            "seerr_username",
+            "seerr_user_id",
         ],
     )
 
@@ -3347,3 +4150,135 @@ def update_tmdb_proxy(request):
     )
 
     return redirect("advanced")
+
+
+# Form fields that describe the save request itself, not the media list view.
+_SAVED_VIEW_SKIP_PARAMS = frozenset(
+    {"csrfmiddlewaretoken", "edit_smart_rules", "media_type", "name", "page"},
+)
+
+
+# The History filter window controls these; everything else in the address
+# (paging, one-off drill-downs such as an artist) is not part of a saved view.
+_HISTORY_VIEW_PARAMS = (
+    "start-date",
+    "end-date",
+    "media_type",
+    "history_mode",
+    "genre",
+    "implied_genre",
+)
+
+
+def _saved_history_query(params) -> str:
+    """Return the History query string a saved view should reopen.
+
+    The History filters arrive as one `query` string because the form's own
+    `media_type` field already names the kind of view being saved.
+    """
+    submitted = parse_qs(params.get("query", ""))
+    return urlencode(
+        [
+            (key, submitted[key][0].strip())
+            for key in _HISTORY_VIEW_PARAMS
+            if submitted.get(key) and submitted[key][0].strip()
+        ],
+    )
+
+
+def _saved_view_query(params) -> str:
+    """Return the media list query string a saved view should reopen."""
+    pairs = [
+        (key, value.strip())
+        for key in params
+        if key not in _SAVED_VIEW_SKIP_PARAMS
+        for value in params.getlist(key)
+        if value.strip()
+    ]
+    # Without a status param the media list falls back to the last-used
+    # status, so "all statuses" has to be spelled out.
+    if not any(key == "status" for key, _ in pairs):
+        pairs.append(("status", MediaStatusChoices.ALL.value))
+    return urlencode(pairs)
+
+
+@login_required
+@require_POST
+def saved_view_create(request):
+    """Save the current media list filters as a named sidebar view."""
+    if request.user.is_demo:
+        return JsonResponse(
+            {"error": "This section is view-only for demo accounts."},
+            status=403,
+        )
+
+    media_type = request.POST.get("media_type", "")
+    is_history = media_type == HISTORY_VIEW_TYPE
+    if not is_history and media_type not in request.user.get_sidebar_media_types():
+        return JsonResponse({"error": "Invalid media type."}, status=400)
+
+    name = request.POST.get("name", "").strip()[:100]
+    if not name:
+        return JsonResponse({"error": "Give the view a name."}, status=400)
+
+    last = (
+        SavedView.objects.filter(user=request.user, media_type=media_type)
+        .order_by("-position")
+        .first()
+    )
+    saved_view = SavedView.objects.create(
+        user=request.user,
+        media_type=media_type,
+        name=name,
+        query=(
+            _saved_history_query(request.POST)
+            if is_history
+            else _saved_view_query(request.POST)
+        ),
+        position=last.position + 1 if last else 0,
+    )
+    return JsonResponse({"url": saved_view.get_absolute_url()})
+
+
+@login_required
+@require_POST
+def saved_view_delete(request, view_id: int):
+    """Delete one of the user's saved views and return to the page it was on."""
+    saved_view = get_object_or_404(SavedView, id=view_id, user=request.user)
+    if not request.user.is_demo:
+        saved_view.delete()
+
+    next_url = request.POST.get("next", "")
+    if not url_has_allowed_host_and_scheme(
+        next_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        next_url = saved_view.get_absolute_url().split("?")[0]
+    return redirect(next_url)
+
+
+@login_required
+@require_POST
+def saved_view_reorder(request):
+    """Store a new order for one media type's saved views."""
+    if request.user.is_demo:
+        return HttpResponse(status=403)
+
+    media_type = request.POST.get("media_type", "")
+    views_by_id = {
+        str(saved_view.id): saved_view
+        for saved_view in SavedView.objects.filter(
+            user=request.user,
+            media_type=media_type,
+        )
+    }
+    ordered_ids = [
+        view_id for view_id in request.POST.getlist("ids") if view_id in views_by_id
+    ]
+    # Views missing from the request keep their relative order at the end.
+    ordered_ids += [view_id for view_id in views_by_id if view_id not in ordered_ids]
+    for position, view_id in enumerate(ordered_ids):
+        views_by_id[view_id].position = position
+    SavedView.objects.bulk_update(views_by_id.values(), ["position"])
+    return HttpResponse(status=204)

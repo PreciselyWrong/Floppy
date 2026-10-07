@@ -10,10 +10,14 @@ views_smart_list.py; the browse views live in views_list_browse.py.
 import contextlib
 import json
 import logging
+import os
+import time
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_not_required, login_required
-from django.db import transaction
+from django.core.cache import cache
+from django.db import OperationalError, transaction
 from django.db.models import Q
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -23,11 +27,22 @@ from django.views.decorators.http import require_GET, require_POST
 
 from app import helpers
 from app.columns import sanitize_column_prefs
+from app.db_retry import is_contention_error, is_lock_error
 from app.discover import tab_cache as discover_tab_cache
+from app.library_query.adapters import (
+    SMART_RULES_CURRENT_SEMANTICS,
+    SMART_RULES_SEMANTICS_KEY,
+)
 from app.models import Item, MediaTypes, Status
 from app.providers import services
+from app.redis_diagnosis import queue_failure_message
 from app.services import metadata_resolution
 from app.templatetags.app_tags import media_type_readable_plural
+from integrations.upload_staging import (
+    enqueue_staged_task,
+    stage_uploaded_file,
+    staging_failure_message,
+)
 from lists import smart_rules
 from lists import tasks as list_tasks
 from lists.forms import CustomListForm
@@ -169,6 +184,8 @@ def share_view(request):
         key: normalized.get(key, smart_rules.SMART_FILTER_DEFAULTS[key])
         for key in smart_rules.SMART_FILTER_KEYS
     }
+    # A snapshot of a media-list view evaluates the way that view does.
+    smart_filters[SMART_RULES_SEMANTICS_KEY] = str(SMART_RULES_CURRENT_SEMANTICS)
 
     existing = CustomList.objects.filter(
         owner=request.user,
@@ -220,10 +237,7 @@ def smart_rules_update(request, list_id):
     normalized = smart_rules.normalize_rule_payload(payload, custom_list.owner)
     custom_list.smart_media_types = normalized["media_types"]
     custom_list.smart_excluded_media_types = []
-    custom_list.smart_filters = {
-        key: normalized.get(key, smart_rules.SMART_FILTER_DEFAULTS[key])
-        for key in smart_rules.SMART_FILTER_KEYS
-    }
+    custom_list.smart_filters = smart_rules.saved_filters(normalized, custom_list)
     custom_list.save(
         update_fields=[
             "smart_media_types",
@@ -321,7 +335,34 @@ def import_list_csv(request):
         messages.error(request, gettext("Select a CSV file to import."))
         return redirect("lists")
 
-    list_tasks.import_list_csv_task.delay(request.user.id, csv_file.read(), "new")
+    try:
+        staged_file = str(stage_uploaded_file(csv_file))
+    except OSError as error:
+        logger.exception("Could not stage custom list CSV upload")
+        messages.error(request, staging_failure_message(error))
+        return redirect("lists")
+
+    try:
+        enqueue_staged_task(
+            list_tasks.import_list_csv_task,
+            request.user.id,
+            staged_file,
+            "new",
+            staged_paths=(staged_file,),
+        )
+    except Exception as error:
+        logger.exception("Could not queue custom list CSV import")
+        messages.error(
+            request,
+            queue_failure_message(
+                error,
+                "The list import could not be queued.",
+                "Try again.",
+                settings.CELERY_BROKER_URL,
+            ),
+        )
+        return redirect("lists")
+
     messages.info(request, gettext("List import started in the background."))
     return redirect("lists")
 
@@ -424,7 +465,7 @@ def lists_modal(
     )
 
 
-def _list_item_toggle_error_response():
+def _list_item_toggle_error_response(*, busy=False):
     """Return an empty HTMX response that only triggers an error toast.
 
     htmx doesn't swap the response body for 4xx/5xx status codes by
@@ -432,20 +473,60 @@ def _list_item_toggle_error_response():
     nothing committed — while HX-Trigger still fires the toast regardless
     of swap/status.
     """
-    response = HttpResponse(status=500)
+    if busy:
+        status = 503
+        message = "The database is busy right now, so nothing changed. Please try again."
+    else:
+        status = 500
+        message = (
+            "Couldn't update this list — please try again. If it "
+            "keeps happening, file a bug report from "
+            "Settings > Advanced."
+        )
+    response = HttpResponse(status=status)
     response["HX-Trigger"] = json.dumps(
-        {
-            "showToast": {
-                "message": (
-                    "Couldn't update this list — please try again. If it "
-                    "keeps happening, file a bug report from "
-                    "Settings > Advanced."
-                ),
-                "type": "error",
-            },
-        },
+        {"showToast": {"message": message, "type": "error"}},
     )
     return response
+
+
+# SQLite reports a stale read snapshot as "database is locked" at once, without
+# waiting out busy_timeout, so a couple of quick retries clear it. A lock that
+# already waited the full timeout is a long writer, and retrying only doubles
+# the wait.
+LIST_TOGGLE_ATTEMPTS = 3
+LIST_TOGGLE_QUICK_FAILURE_SECONDS = 1.0
+
+
+def _toggle_list_membership(custom_list, item, user):
+    """Add or remove ``item`` and record the activity in one transaction."""
+    with transaction.atomic():
+        CustomListItem.objects.lock_custom_lists([custom_list.id])
+        custom_list_item = CustomListItem.objects.filter(
+            custom_list=custom_list,
+            item=item,
+        ).first()
+        if custom_list_item is not None:
+            # Instance-level delete renumbers the per-list sequence.
+            custom_list_item.delete()
+            has_item = False
+            activity_type = ListActivityType.ITEM_REMOVED
+        else:
+            CustomListItem.objects.create(
+                custom_list=custom_list,
+                item=item,
+                added_by=user,
+            )
+            has_item = True
+            activity_type = ListActivityType.ITEM_ADDED
+
+        ListActivity.objects.create(
+            custom_list=custom_list,
+            user=user,
+            activity_type=activity_type,
+            item=item,
+        )
+    return has_item
 
 
 @require_POST
@@ -469,53 +550,141 @@ def list_item_toggle(request):
     if custom_list.is_smart:
         return HttpResponse(status=403)
 
+    started = time.monotonic()
+    attempt = 0
     try:
-        with transaction.atomic():
-            CustomListItem.objects.lock_custom_lists([custom_list.id])
-            custom_list_item = CustomListItem.objects.filter(
-                custom_list=custom_list,
-                item=item,
-            ).first()
-            if custom_list_item is not None:
-                # Instance-level delete renumbers the per-list sequence.
-                custom_list_item.delete()
-                has_item = False
-                activity_type = ListActivityType.ITEM_REMOVED
-                log_action = "removed from"
-            else:
-                CustomListItem.objects.create(
-                    custom_list=custom_list,
-                    item=item,
-                    added_by=request.user,
+        while True:
+            attempt += 1
+            attempt_started = time.monotonic()
+            try:
+                has_item = _toggle_list_membership(custom_list, item, request.user)
+                break
+            except OperationalError as error:
+                quick = (
+                    time.monotonic() - attempt_started
+                    < LIST_TOGGLE_QUICK_FAILURE_SECONDS
                 )
-                has_item = True
-                activity_type = ListActivityType.ITEM_ADDED
-                log_action = "added to"
-
-            ListActivity.objects.create(
-                custom_list=custom_list,
-                user=request.user,
-                activity_type=activity_type,
-                item=item,
-            )
-        logger.info("%s %s %s.", item, log_action, custom_list)
-    except Exception:
+                if not (is_lock_error(error) and quick) or (
+                    attempt >= LIST_TOGGLE_ATTEMPTS
+                ):
+                    raise
+                time.sleep(0.1 * attempt)
+        logger.info(
+            "%s %s %s.",
+            item,
+            "added to" if has_item else "removed from",
+            custom_list,
+        )
+    except Exception as error:
         # Keep the last committed button state and surface every failed toggle.
-        # The structured context contains database IDs only.
+        # The structured context contains database IDs only. SQLite cannot say
+        # which connection held a lock, so a contention failure records how long
+        # this request waited and how many attempts it made instead.
+        contention = is_contention_error(error)
         logger.exception(
             "Failed to toggle list membership (item_id=%s, custom_list_id=%s, "
-            "user_id=%s)",
+            "user_id=%s, contention=%s, attempts=%s, elapsed_ms=%s, pid=%s)",
             item.id,
             custom_list.id,
             request.user.id,
+            contention,
+            attempt,
+            int((time.monotonic() - started) * 1000),
+            os.getpid(),
         )
-        return _list_item_toggle_error_response()
+        return _list_item_toggle_error_response(busy=contention)
 
     return render(
         request,
         "lists/components/list_item_button.html",
         {"custom_list": custom_list, "item": item, "has_item": has_item},
     )
+
+
+@login_required
+@require_POST
+def bulk_list_add(request):
+    """Add several items to one editable manual list."""
+    from app.bulk_actions import posted_item_ids
+
+    item_ids = posted_item_ids(request.POST)
+    if not item_ids:
+        return JsonResponse(
+            {"success": False, "error": "At least one item is required."},
+            status=400,
+        )
+
+    custom_list = get_object_or_404(
+        CustomList.objects.filter(
+            Q(owner=request.user) | Q(collaborators=request.user),
+            id=request.POST.get("custom_list_id"),
+        ).distinct(),
+    )
+    if custom_list.is_smart:
+        return JsonResponse(
+            {"success": False, "error": "Smart lists cannot be edited directly."},
+            status=403,
+        )
+
+    items_by_id = Item.objects.in_bulk(item_ids)
+    skipped = len(item_ids) - len(items_by_id)
+    added_items = []
+    with transaction.atomic():
+        CustomListItem.objects.lock_custom_lists([custom_list.id])
+        existing_ids = set(
+            CustomListItem.objects.filter(
+                custom_list=custom_list,
+                item_id__in=items_by_id,
+            ).values_list("item_id", flat=True),
+        )
+        added_items = [
+            item
+            for item_id, item in items_by_id.items()
+            if item_id not in existing_ids
+        ]
+        CustomListItem.objects.bulk_create(
+            [
+                CustomListItem(
+                    custom_list=custom_list,
+                    item=item,
+                    added_by=request.user,
+                )
+                for item in added_items
+            ],
+        )
+        ListActivity.objects.bulk_create(
+            [
+                ListActivity(
+                    custom_list=custom_list,
+                    user=request.user,
+                    activity_type=ListActivityType.ITEM_ADDED,
+                    item=item,
+                )
+                for item in added_items
+            ],
+        )
+
+    already_present = len(items_by_id) - len(added_items)
+    return JsonResponse(
+        {
+            "success": True,
+            "added": len(added_items),
+            "already_present": already_present,
+            "skipped": skipped,
+            "message": (
+                f"Added {len(added_items)} item(s) to {custom_list.name}."
+                + (f" {already_present} already present." if already_present else "")
+                + (f" {skipped} skipped." if skipped else "")
+            ),
+        },
+    )
+
+
+# An item the provider has no release date for is asked about on every page
+# that shows it, one provider call each. Remember the miss for a day; a
+# provider error is remembered briefly so an outage is not retried per view.
+RELEASE_YEAR_MISS_SECONDS = 60 * 60 * 24
+RELEASE_YEAR_ERROR_SECONDS = 60 * 10
 
 
 @require_GET
@@ -552,6 +721,10 @@ def fetch_release_year(request):
             item.save(update_fields=["release_datetime"])
             return JsonResponse({"year": episode_release.year})
 
+    miss_key = f"release_year_miss_{item.id}"
+    if cache.get(miss_key):
+        return JsonResponse({"year": None})
+
     try:
         season_numbers = None
         episode_number = None
@@ -565,13 +738,14 @@ def fetch_release_year(request):
             season_numbers = [item.season_number]
             episode_number = item.episode_number
 
-        metadata = services.get_media_metadata(
-            item.media_type,
-            item.media_id,
-            item.source,
-            season_numbers=season_numbers,
-            episode_number=episode_number,
-        )
+        with services.interactive_request_scope():
+            metadata = services.get_media_metadata(
+                item.media_type,
+                item.media_id,
+                item.source,
+                season_numbers=season_numbers,
+                episode_number=episode_number,
+            )
         if metadata:
             release_datetime = helpers.extract_release_datetime(metadata)
             if release_datetime:
@@ -584,5 +758,8 @@ def fetch_release_year(request):
             item_id,
             exc,
         )
+        cache.set(miss_key, True, RELEASE_YEAR_ERROR_SECONDS)
+        return JsonResponse({"year": None})
 
+    cache.set(miss_key, True, RELEASE_YEAR_MISS_SECONDS)
     return JsonResponse({"year": None})

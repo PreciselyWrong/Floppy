@@ -20,11 +20,10 @@ from drf_spectacular.utils import (
     extend_schema,
 )
 from health_check.mixins import CheckMixin
-from rest_framework import permissions
 from rest_framework import views as drf_views
 from rest_framework.response import Response
 
-from app import metadata_utils
+from app import history_cache, metadata_utils
 from app.activity_builders import (
     _get_game_lengths_refresh_lock,
     _queue_game_lengths_refresh,
@@ -38,7 +37,7 @@ from app.media_list_filters import (
     get_next_episode_map,
     parse_media_list_filters,
 )
-from app.models import BasicMedia, Item, MediaTypes, Sources
+from app.models import BasicMedia, Episode, Item, MediaTypes, Sources
 from app.providers import services, tmdb
 from app.services import metadata_resolution
 from app.services.metadata_sync import enrich_synced_item, sync_podcast_show_from_rss
@@ -78,7 +77,6 @@ from .contract_serializers import (
 )
 from .helpers import (
     MEDIA_TYPE_COMPLETE_MODEL_MAP,
-    apply_aggregated_sort,
     apply_image_url,
     apply_list_sort,
     build_game_lengths_summary,
@@ -87,8 +85,9 @@ from .helpers import (
     check_valid_type,
     get_item_lists,
     get_media_status,
-    get_sorts,
+    get_media_type_availability,
     paginate_data,
+    paginate_list_items,
     parse_limit_offset,
     parse_sort_filter,
     resolve_calendar_date_range,
@@ -173,8 +172,6 @@ def _resolve_api_episode_coordinate(
 class CalendarView(drf_views.APIView):
     """Calendar view."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     def get(self, request):
         """Retrieve calendar events for the authenticated user."""
         start_date = request.GET.get("start_date")
@@ -224,8 +221,6 @@ class CalendarView(drf_views.APIView):
 class CalendarUpdateView(drf_views.APIView):
     """Update calendar view."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     def post(self, request):
         """Trigger calendar events update for the authenticated user."""
         tasks.reload_calendar.delay(request.user)
@@ -238,8 +233,6 @@ class CalendarUpdateView(drf_views.APIView):
 # /api/v1/changes_history/[media_type]/[history_id]
 class MediaTypeChangesHistoryDetailView(drf_views.APIView):
     """Changes history record view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_COMPLETE_PARAM])
     def get(self, request, media_type, history_id):
@@ -337,8 +330,6 @@ class InfoView(drf_views.APIView):
 class ListsView(drf_views.APIView):
     """Lists view."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     def get(self, request):
         """Retrieve the lists for the authenticated user."""
         user = request.user
@@ -373,6 +364,11 @@ class ListsView(drf_views.APIView):
 
     def post(self, request):
         """Create a new custom list for the authenticated user."""
+        if getattr(request.auth, "writable_list_ids", None):
+            return Response(
+                {"detail": "This token may only write to its bound lists."},
+                status=HTTP.FORBIDDEN,
+            )
         user = request.user
         body = request.data
 
@@ -464,8 +460,6 @@ class ListsView(drf_views.APIView):
 class ListDetailView(drf_views.APIView):
     """List detail view."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     def delete(self, request, list_id):
         """Delete a specific custom list."""
         user = request.user
@@ -497,7 +491,7 @@ class ListDetailView(drf_views.APIView):
             # TODO: move to lists/models.py
             user_list = (
                 CustomList.objects.select_related("owner")
-                .prefetch_related("collaborators", "items")
+                .prefetch_related("collaborators")
                 .get(id=list_id)
             )
         except CustomList.DoesNotExist:
@@ -514,46 +508,9 @@ class ListDetailView(drf_views.APIView):
                 status=HTTP.FORBIDDEN,
             )
 
-        items = user_list.items.all()
-
-        search_query = request.GET.get("search", "")
-        sort_filter = request.GET.get("sort", "")
-        # TODO: move to lists/models.py
-        if search_query:
-            items = items.filter(title__icontains=search_query)
-
-        limit, offset, err = parse_limit_offset(request)
+        paginated_data, err = paginate_list_items(request, user, user_list)
         if err:
             return err
-
-        media_objects = []
-        for item in items:
-            # Shows info about the last consumption of the media if it's tracked
-            media = BasicMedia.objects.filter_media_prefetch(
-                user,
-                item.media_id,
-                item.media_type,
-                item.source,
-                season_number=item.season_number,
-                episode_number=item.episode_number,
-            ).first()
-
-            media_objects.append(media if media is not None else item)
-
-        if sort_filter:
-            sort, sort_order = parse_sort_filter(sort_filter)
-            if sort not in get_sorts(None, sort_type="all"):
-                return Response(
-                    {"detail": "Invalid sorting"},
-                    status=HTTP.NOT_FOUND,
-                )
-            media_objects = apply_aggregated_sort(media_objects, sort)
-            if isinstance(media_objects, Response):
-                return media_objects
-            if sort_order == "desc":
-                media_objects.reverse()
-
-        paginated_data = paginate_data(request, media_objects, limit, offset)
         lists_by_item_id = build_lists_by_item_id(user, paginated_data["results"])
         serialized_list = serialize_data(
             user_list,
@@ -658,11 +615,9 @@ class ListItemsView(drf_views.APIView):
 
         try:
             # TODO: move to lists/models.py
-            user_list = (
-                CustomList.objects.select_related("owner")
-                .prefetch_related("items")
-                .get(id=list_id)
-            )
+            # No items prefetch: this view paginates the list at the database
+            # layer, so hydrating every item up front is work it never reads.
+            user_list = CustomList.objects.select_related("owner").get(id=list_id)
         except CustomList.DoesNotExist:
             return Response(
                 {"detail": "List not found."},
@@ -677,46 +632,9 @@ class ListItemsView(drf_views.APIView):
                 status=HTTP.FORBIDDEN,
             )
 
-        items = user_list.items.all()
-
-        search_query = request.GET.get("search", "")
-        sort_filter = request.GET.get("sort", "")
-        # TODO: move to lists/models.py
-        if search_query:
-            items = items.filter(title__icontains=search_query)
-
-        limit, offset, err = parse_limit_offset(request)
+        paginated_data, err = paginate_list_items(request, user, user_list)
         if err:
             return err
-
-        media_objects = []
-        for item in items:
-            # Shows info about the last consumption of the media if it's tracked
-            media = BasicMedia.objects.filter_media_prefetch(
-                user,
-                item.media_id,
-                item.media_type,
-                item.source,
-                season_number=item.season_number,
-                episode_number=item.episode_number,
-            ).first()
-
-            media_objects.append(media if media is not None else item)
-
-        if sort_filter:
-            sort, sort_order = parse_sort_filter(sort_filter)
-            if sort not in get_sorts(None, sort_type="all"):
-                return Response(
-                    {"detail": "Invalid sorting"},
-                    status=HTTP.NOT_FOUND,
-                )
-            media_objects = apply_aggregated_sort(media_objects, sort)
-            if isinstance(media_objects, Response):
-                return media_objects
-            if sort_order == "desc":
-                media_objects.reverse()
-
-        paginated_data = paginate_data(request, media_objects, limit, offset)
         lists_by_item_id = build_lists_by_item_id(user, paginated_data["results"])
         serialized_data = serialize_data(
             paginated_data["results"],
@@ -895,6 +813,10 @@ def _media_list_response(request, media_type=None):
     _rehydrate_deferred_items(page_entries)
     lists_by_item_id = build_lists_by_item_id(request.user, page_entries)
     next_episode_by_item_id = get_next_episode_map(page_entries)
+    BasicMedia.objects.annotate_episode_progress(
+        [entry.media for entry in page_entries if entry.media is not None],
+        media_type,
+    )
     serializer_context = {
         "request": request,
         "lists_by_item_id": lists_by_item_id,
@@ -915,7 +837,6 @@ class MediaListView(drf_views.APIView):
     """List media with the shared web/API filter contract."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         parameters=MEDIA_LIST_ROOT_PARAMS,
@@ -932,7 +853,6 @@ class MediaTypeListView(drf_views.APIView):
     """List media by type with the shared web/API filter contract."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         parameters=[MEDIA_TYPE_COMPLETE_PARAM, *MEDIA_LIST_FILTER_PARAMS],
@@ -974,6 +894,19 @@ class MediaTypeListView(drf_views.APIView):
         if not check_valid_type(media_type, complete=True):
             return Response(
                 {"detail": "Unsupported media type."},
+                status=HTTP.BAD_REQUEST,
+            )
+
+        if media_type == MediaTypes.VIDEO.value:
+            # No provider can look a video up, so a new one is created by its
+            # first play instead.
+            return Response(
+                {
+                    "detail": (
+                        "Videos are created by posting a play to "
+                        "/api/v1/videos/{source}/{media_id}/plays/."
+                    ),
+                },
                 status=HTTP.BAD_REQUEST,
             )
 
@@ -1056,8 +989,25 @@ class MediaTypeListView(drf_views.APIView):
 
             media_form.save()
             apply_image_url(item, media_form.cleaned_data.get("image_url"))
+            BasicMedia.objects.annotate_episode_progress(
+                [media_form.instance],
+                media_type,
+            )
             serialized_data = serialize_data(media_form.instance)
             return Response(serialized_data, status=HTTP.CREATED)
+
+        if media_type == MediaTypes.EPISODE.value:
+            return Response(
+                {
+                    "detail": (
+                        "Provider episodes are recorded as plays "
+                        "(POST /media/tv/{source}/{media_id}/{season_number}"
+                        "/episodes/{episode_number}/watch/) or rated with "
+                        "PATCH .../episodes/{episode_number}/score/."
+                    ),
+                },
+                status=HTTP.BAD_REQUEST,
+            )
 
         media_id = body.get("media_id")
         if not media_id:
@@ -1145,6 +1095,13 @@ class MediaTypeListView(drf_views.APIView):
 
         media_form.save()
         apply_image_url(item, media_form.cleaned_data.get("image_url"))
+        episode_count_fields = metadata_utils.apply_provider_episode_count(item, metadata)
+        if episode_count_fields:
+            item.save(update_fields=episode_count_fields)
+        BasicMedia.objects.annotate_episode_progress(
+            [media_form.instance],
+            media_type,
+        )
         serialized_data = serialize_data(media_form.instance)
         return Response(serialized_data, status=HTTP.CREATED)
 
@@ -1154,7 +1111,6 @@ class MediaDetailView(drf_views.APIView):
     """Media view."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def delete(self, request, media_type, source, media_id):
@@ -1278,6 +1234,7 @@ class MediaDetailView(drf_views.APIView):
                 media_type,
                 source,
                 library_media_type=library_media_type,
+                annotate_progress=False,
             )
         except Exception:
             logger.exception(HTTP.INTERNAL_SERVER_ERROR.phrase)
@@ -1287,6 +1244,8 @@ class MediaDetailView(drf_views.APIView):
                 },
                 status=HTTP.INTERNAL_SERVER_ERROR,
             )
+
+        BasicMedia.objects.annotate_episode_progress(user_medias, media_type)
 
         if (
             "related" in media_metadata
@@ -1303,7 +1262,12 @@ class MediaDetailView(drf_views.APIView):
                     media_id,
                     source,
                     library_media_type=library_media_type,
+                    annotate_progress=False,
                 ),
+            )
+            BasicMedia.objects.annotate_episode_progress(
+                serie_seasons,
+                MediaTypes.SEASON.value,
             )
             season_lists_by_number = (
                 BasicMedia.objects.get_serie_season_lists_by_number(
@@ -1395,6 +1359,10 @@ class MediaDetailView(drf_views.APIView):
             "lists": lists,
             "item": top_level_item,
             "library_media_type": library_media_type,
+            "media_type_status": get_media_type_availability(
+                user,
+                library_media_type or media_type,
+            ),
         }
 
         serialized = serialize_data(
@@ -1508,6 +1476,7 @@ class MediaDetailView(drf_views.APIView):
 
         apply_image_url(media.item, image_url)
         media.refresh_from_db()
+        BasicMedia.objects.annotate_episode_progress(user_medias, media_type)
 
         try:
             media_metadata = services.get_media_metadata(
@@ -1551,8 +1520,6 @@ class MediaDetailView(drf_views.APIView):
 # /api/v1/media/[media_type]/[source]/[media_id]/changes_history/
 class MediaChangesHistoryView(drf_views.APIView):
     """Media changes history view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id):
@@ -1610,7 +1577,6 @@ class MediaConsumptionHistoryView(drf_views.APIView):
     """Media consumption history view."""
 
     serializer_class = HistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id):
@@ -1688,7 +1654,6 @@ class MediaConsumptionEntryDetailView(drf_views.APIView):
     """Media consumption history entry detail view."""
 
     serializer_class = HistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def delete(self, request, media_type, source, media_id, consumption_id):
@@ -1723,15 +1688,14 @@ class MediaConsumptionEntryDetailView(drf_views.APIView):
                 status=HTTP.INTERNAL_SERVER_ERROR,
             )
 
-        consumption = user_medias.filter(id=consumption_id).first()
-        if not consumption:
-            # FORK: movie rewatch support (issue #577) — the id may belong to
-            # a MoviePlay rather than the Movie tracker row.
-            consumption = fork_helpers.resolve_movie_play_consumption(
-                user_medias,
-                media_type,
-                consumption_id,
-            )
+        # FORK: movie rewatch support (issue #577) — resolve the entry the same
+        # way `.../history/` lists it, so a colliding Movie id cannot shadow a
+        # MoviePlay id and delete the whole movie.
+        consumption = fork_helpers.resolve_consumption_entry(
+            user_medias,
+            media_type,
+            consumption_id,
+        )
         if not consumption:
             return Response(
                 {"detail": "Consumption entry not found."},
@@ -1775,15 +1739,14 @@ class MediaConsumptionEntryDetailView(drf_views.APIView):
                 status=HTTP.INTERNAL_SERVER_ERROR,
             )
 
-        consumption = user_medias.filter(id=consumption_id).first()
-        if not consumption:
-            # FORK: movie rewatch support (issue #577) — the id may belong to
-            # a MoviePlay rather than the Movie tracker row.
-            consumption = fork_helpers.resolve_movie_play_consumption(
-                user_medias,
-                media_type,
-                consumption_id,
-            )
+        # FORK: movie rewatch support (issue #577) — resolve the entry the same
+        # way `.../history/` lists it, so a colliding Movie id cannot shadow a
+        # MoviePlay id.
+        consumption = fork_helpers.resolve_consumption_entry(
+            user_medias,
+            media_type,
+            consumption_id,
+        )
         if not consumption:
             return Response(
                 {"detail": " Consumption entry not found."},
@@ -1840,15 +1803,14 @@ class MediaConsumptionEntryDetailView(drf_views.APIView):
                 status=HTTP.INTERNAL_SERVER_ERROR,
             )
 
-        consumption = user_medias.filter(id=consumption_id).first()
-        if not consumption:
-            # FORK: movie rewatch support (issue #577) — the id may belong to
-            # a MoviePlay rather than the Movie tracker row.
-            consumption = fork_helpers.resolve_movie_play_consumption(
-                user_medias,
-                media_type,
-                consumption_id,
-            )
+        # FORK: movie rewatch support (issue #577) — resolve the entry the same
+        # way `.../history/` lists it, so a colliding Movie id cannot shadow a
+        # MoviePlay id.
+        consumption = fork_helpers.resolve_consumption_entry(
+            user_medias,
+            media_type,
+            consumption_id,
+        )
         if not consumption:
             return Response(
                 {"detail": "Consumption entry not found."},
@@ -2056,7 +2018,6 @@ class MediaRecommendationsView(drf_views.APIView):
     """Media recommendations view."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id):
@@ -2105,8 +2066,6 @@ class MediaRecommendationsView(drf_views.APIView):
 # /api/v1/media/[media_type]/[source]/[media_id]/seasons/
 class MediaSeasonsView(drf_views.APIView):
     """Media seasons view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id):
@@ -2212,6 +2171,7 @@ class MediaSeasonsView(drf_views.APIView):
                 source,
                 season_numbers=season_numbers,
                 library_media_type=season_bucket,
+                annotate_progress=False,
             )
             for tracked in tracked_seasons:
                 item = getattr(tracked, "item", None)
@@ -2267,6 +2227,11 @@ class MediaSeasonsView(drf_views.APIView):
                 )(),
             )
 
+        BasicMedia.objects.annotate_episode_progress(
+            [entry for entry in season_media_entries if getattr(entry, "id", None)],
+            MediaTypes.SEASON.value,
+        )
+
         paginated_data["results"] = serialize_data(
             season_media_entries,
             many=True,
@@ -2275,14 +2240,16 @@ class MediaSeasonsView(drf_views.APIView):
             },
             serializer_class=MediaSerializer,
         )
+        paginated_data["media_type_status"] = get_media_type_availability(
+            user,
+            season_bucket or media_type,
+        )
         return Response(paginated_data, status=HTTP.OK)
 
 
 # /api/v1/media/[media_type]/[source]/[media_id]/sync/
 class MediaSyncView(drf_views.APIView):
     """Sync media view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def post(self, request, media_type, source, media_id):  # FORK: was `_`
@@ -2318,10 +2285,12 @@ class MediaSyncView(drf_views.APIView):
                     status=HTTP.ACCEPTED,
                 )
 
+        language = metadata_resolution.metadata_language_default(request.user)
         provider_cache_keys = metadata_utils.provider_metadata_cache_keys(
             source,
             media_type,
             media_id,
+            language=language,
         )
         cache_key = provider_cache_keys[0]
 
@@ -2345,7 +2314,7 @@ class MediaSyncView(drf_views.APIView):
                 media_type,
                 media_id,
                 source,
-                language=metadata_resolution.metadata_language_default(request.user),
+                language=language,
             )
 
             # FORK: bucket-aware resolution + localized title fields, mirroring
@@ -2412,7 +2381,6 @@ class MediaSeasonDetailView(drf_views.APIView):
     """Season view."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def delete(self, request, media_type, source, media_id, season_number):
@@ -2540,6 +2508,7 @@ class MediaSeasonDetailView(drf_views.APIView):
                 source,
                 season_number=season_number,
                 library_media_type=library_media_type,
+                annotate_progress=False,
             )
         except Exception:
             logger.exception(HTTP.INTERNAL_SERVER_ERROR.phrase)
@@ -2549,6 +2518,11 @@ class MediaSeasonDetailView(drf_views.APIView):
                 },
                 status=HTTP.INTERNAL_SERVER_ERROR,
             )
+
+        BasicMedia.objects.annotate_episode_progress(
+            user_medias,
+            MediaTypes.SEASON.value,
+        )
 
         season_episodes = list(
             BasicMedia.objects.get_season_episodes(
@@ -2604,6 +2578,10 @@ class MediaSeasonDetailView(drf_views.APIView):
             "lists": lists,
             "item": season_item,
             "library_media_type": library_media_type,
+            "media_type_status": get_media_type_availability(
+                user,
+                library_media_type or media_type,
+            ),
         }
 
         serialized = serialize_data(
@@ -2705,6 +2683,11 @@ class MediaSeasonDetailView(drf_views.APIView):
                 status=HTTP.INTERNAL_SERVER_ERROR,
             )
 
+        BasicMedia.objects.annotate_episode_progress(
+            user_medias,
+            MediaTypes.SEASON.value,
+        )
+
         lists = get_item_lists(
             user,
             media_id,
@@ -2730,8 +2713,6 @@ class MediaSeasonDetailView(drf_views.APIView):
 # /api/v1/media/[media_type]/[source]/[media_id]/[season_number]/changes_history/
 class MediaSeasonChangesHistoryView(drf_views.APIView):
     """Changes history season view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id, season_number):
@@ -2797,8 +2778,6 @@ class MediaSeasonChangesHistoryView(drf_views.APIView):
 # /api/v1/media/[media_type]/[source]/[media_id]/[season_number]/episodes/
 class MediaSeasonEpisodesView(drf_views.APIView):
     """Season episodes view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id, season_number):
@@ -2905,6 +2884,10 @@ class MediaSeasonEpisodesView(drf_views.APIView):
             },
             serializer_class=EpisodeSerializer,
         )
+        paginated["media_type_status"] = get_media_type_availability(
+            user,
+            request.query_params.get("library_media_type") or media_type,
+        )
         return Response(paginated, status=HTTP.OK)
 
 
@@ -2913,7 +2896,6 @@ class MediaSeasonConsumptionHistoryView(drf_views.APIView):
     """Season consumption history view."""
 
     serializer_class = HistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def get(self, request, media_type, source, media_id, season_number):
@@ -2989,7 +2971,6 @@ class MediaSeasonConsumptionEntryDetailView(drf_views.APIView):
     """Season consumption history entry detail view."""
 
     serializer_class = HistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def delete(
@@ -3402,8 +3383,6 @@ class MediaSeasonListDetailView(drf_views.APIView):
 class MediaSeasonSyncView(drf_views.APIView):
     """Sync season."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     # FORK: request arg was `_` upstream
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def post(self, request, media_type, source, media_id, season_number):
@@ -3437,11 +3416,13 @@ class MediaSeasonSyncView(drf_views.APIView):
                 status=HTTP.BAD_REQUEST,
             )
 
+        language = metadata_resolution.metadata_language_default(request.user)
         provider_cache_keys = metadata_utils.provider_metadata_cache_keys(
             source,
             MediaTypes.SEASON.value,
             media_id,
             season_number=season_number,
+            language=language,
         )
         cache_key = provider_cache_keys[0]
 
@@ -3466,7 +3447,7 @@ class MediaSeasonSyncView(drf_views.APIView):
                 media_id,
                 source,
                 [season_number],
-                language=metadata_resolution.metadata_language_default(request.user),
+                language=language,
             )
 
             # FORK: bucket-aware resolution + localized title fields, mirroring
@@ -3539,6 +3520,7 @@ class MediaSeasonSyncView(drf_views.APIView):
             }
 
             episodes_to_update = []
+            episode_item_ids_with_title_changes = set()
 
             for episode_data in metadata["episodes"]:
                 episode_number = episode_data["episode_number"]
@@ -3546,10 +3528,15 @@ class MediaSeasonSyncView(drf_views.APIView):
                     episode_item = existing_episodes[episode_number]
                     episode_title_fields = Item.title_fields_from_episode_metadata(
                         episode_data,
-                        fallback_title=item.title,
                     )
-                    for field, value in episode_title_fields.items():
-                        setattr(episode_item, field, value)
+                    if episode_title_fields["title"]:
+                        if any(
+                            getattr(episode_item, field) != value
+                            for field, value in episode_title_fields.items()
+                        ):
+                            episode_item_ids_with_title_changes.add(episode_item.pk)
+                        for field, value in episode_title_fields.items():
+                            setattr(episode_item, field, value)
                     episode_item.image = episode_data["image"]
                     episodes_to_update.append(episode_item)
 
@@ -3559,6 +3546,17 @@ class MediaSeasonSyncView(drf_views.APIView):
                     ["title", "original_title", "localized_title", "image"],
                     batch_size=100,
                 )
+
+            if episode_item_ids_with_title_changes:
+                history_user_ids = (
+                    Episode.objects.filter(
+                        item_id__in=episode_item_ids_with_title_changes,
+                    )
+                    .values_list("related_season__user_id", flat=True)
+                    .distinct()
+                )
+                for user_id in history_user_ids:
+                    history_cache.invalidate_history_cache(user_id, force=True)
 
             item.fetch_releases(delay=False)
 
@@ -3582,7 +3580,6 @@ class MediaEpisodeDetailView(drf_views.APIView):
     """Episode view."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         parameters=[MEDIA_TYPE_PARAM],
@@ -3726,6 +3723,7 @@ class MediaEpisodeDetailView(drf_views.APIView):
                 season_number=season_number,
                 episode_number=episode_number,
                 library_media_type=request.query_params.get("library_media_type"),
+                annotate_progress=False,
             )
         except Exception:
             logger.exception("An error occurred while fetching user media.")
@@ -3768,6 +3766,10 @@ class MediaEpisodeDetailView(drf_views.APIView):
             "user_medias": user_medias,
             "lists": lists,
             "item": episode_item,
+            "media_type_status": get_media_type_availability(
+                user,
+                request.query_params.get("library_media_type") or media_type,
+            ),
         }
 
         serialized = serialize_data(
@@ -3947,7 +3949,6 @@ class MediaEpisodeChangesHistoryView(drf_views.APIView):
     """Changes history episode view."""
 
     serializer_class = ChangesHistoryEntrySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         parameters=[MEDIA_TYPE_PARAM],
@@ -4030,7 +4031,6 @@ class MediaEpisodeConsumptionHistoryView(drf_views.APIView):
     """Episode consumption history view."""
 
     serializer_class = HistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         parameters=[MEDIA_TYPE_PARAM],
@@ -4121,7 +4121,6 @@ class MediaEpisodeConsumptionEntryDetailView(drf_views.APIView):
     """Episode consumption history entry detail view."""
 
     serializer_class = HistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         parameters=[MEDIA_TYPE_PARAM],
@@ -4603,8 +4602,6 @@ class MediaEpisodeListDetailView(drf_views.APIView):
 class MediaEpisodeSyncView(drf_views.APIView):
     """Sync episode view."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     @extend_schema(parameters=[MEDIA_TYPE_PARAM])
     def post(
         self,
@@ -4631,7 +4628,6 @@ class SearchProviderView(drf_views.APIView):
     """Search view."""
 
     serializer_class = MediaSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     @extend_schema(
         operation_id="searchMedia",
@@ -4828,8 +4824,6 @@ class SearchProviderView(drf_views.APIView):
 # /api/v1/statistics/
 class StatisticsView(drf_views.APIView):
     """Statistics view."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         """Retrieve statistics for the authenticated user."""

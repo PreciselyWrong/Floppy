@@ -1,20 +1,22 @@
 (function () {
-  "use strict";
+  if (typeof window === "undefined" || window.__floppyHorizontalDragBound) {
+    return;
+  }
+  window.__floppyHorizontalDragBound = true;
 
-  if (window.__floppyHorizontalScrollBound) return;
-  window.__floppyHorizontalScrollBound = true;
-
-  const rowSelector = '[data-horizontal-scroll="true"]';
+  const rowSelector = '[data-horizontal-drag="true"]';
   let drag = null;
   let suppressedSurface = null;
   let suppressionTimer = null;
 
   function finishDrag(event) {
-    if (!drag || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) return;
+    if (!drag || (event.pointerId !== undefined && event.pointerId !== drag.pointerId)) {
+      return;
+    }
 
     const { pointerId, surface, moved } = drag;
     drag = null;
-    surface.classList.remove("is-dragging");
+    surface.classList.remove("is-horizontal-dragging");
     if (typeof surface.releasePointerCapture === "function") {
       try {
         if (typeof surface.hasPointerCapture !== "function" || surface.hasPointerCapture(pointerId)) {
@@ -37,7 +39,7 @@
 
     const target = event.target;
     if (!target || typeof target.closest !== "function") return;
-    if (target.closest("button, input, select, textarea, [contenteditable], [role='button']")) return;
+    if (target.closest("button, input, select, textarea, [role='button']")) return;
 
     const surface = target.closest(rowSelector);
     if (!surface) return;
@@ -65,7 +67,7 @@
       if (Math.abs(deltaX) <= 6) return;
 
       drag.moved = true;
-      drag.surface.classList.add("is-dragging");
+      drag.surface.classList.add("is-horizontal-dragging");
       if (typeof drag.surface.setPointerCapture === "function") {
         try {
           drag.surface.setPointerCapture(event.pointerId);
@@ -103,9 +105,8 @@
     event.preventDefault();
     const distance = Math.round((surface.clientWidth || 0) * 0.85);
     const delta = event.key === "ArrowRight" ? distance : -distance;
-    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "auto"
-      : "smooth";
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const behavior = prefersReducedMotion ? "auto" : "smooth";
 
     if (typeof surface.scrollBy === "function") {
       surface.scrollBy({ left: delta, behavior });

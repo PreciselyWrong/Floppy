@@ -44,6 +44,19 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.person_known_for_limit, 3)
 
+    def test_preferences_post_can_disable_ratings(self):
+        """Disabled is a rating scale choice and does not change the max used for stored scores."""
+        response = self.client.post(reverse("preferences"), {"rating_scale": "0"})
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.rating_scale, "0")
+        self.assertFalse(self.user.ratings_enabled)
+        self.assertEqual(self.user.rating_scale_max, 10)
+        self.assertEqual(self.user.scale_score_for_display(8), 8)
+
+        response = self.client.get(reverse("preferences"))
+        self.assertContains(response, "Disabled")
+
     def test_preferences_post_persists_theme(self):
         """POSTing a new theme should persist to the DB."""
         response = self.client.post(reverse("preferences"), {"theme": "light"})
@@ -87,14 +100,14 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.theme, "system")
 
-    def test_preferences_manage_home_media_type_chip_appearance(self):
-        response = self.client.get(reverse("preferences"))
+    def test_home_settings_manage_media_type_chip_appearance(self):
+        response = self.client.get(reverse("home_screen"))
         self.assertContains(response, 'name="home_media_type_chips_enabled"')
         self.assertContains(response, 'name="home_media_type_chip_style"')
-        self.assertContains(response, 'name="home_media_type_chip_color_movie"')
+        self.assertContains(response, "home_media_type_chip_color_' + section.media_type")
 
         response = self.client.post(
-            reverse("preferences"),
+            reverse("home_screen"),
             {
                 "home_media_type_chips_present": "1",
                 "home_media_type_chips_enabled": "1",
@@ -104,7 +117,7 @@ class PreferencesViewTests(TestCase):
             },
         )
 
-        self.assertRedirects(response, reverse("preferences"))
+        self.assertRedirects(response, reverse("home_screen"))
         self.user.refresh_from_db()
         self.assertTrue(self.user.home_media_type_chips_enabled)
         self.assertEqual(self.user.home_media_type_chip_style, "soft")
@@ -230,4 +243,3 @@ class PreferencesViewTests(TestCase):
         live_region = save_bar.find("div", attrs={"aria-live": "polite"})
         self.assertIsNotNone(live_region, "aria-live region not found in save bar")
         self.assertEqual(live_region.get("aria-atomic"), "true")
-

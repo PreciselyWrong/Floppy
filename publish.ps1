@@ -34,7 +34,7 @@ if ($Plan) {
     Write-Output "Image : $ImmutableImage"
     Write-Output "Secrets requis : GITHUB_TOKEN fourni par GitHub ; configuration privée conservée sur Unraid"
     Write-Output "Activation : sauvegarde, remplacement du conteneur Floppy, contrôle de santé"
-    Write-Output "Retour : ghcr.io/dannyvfilms/floppy:latest et sauvegarde pre-custom"
+    Write-Output "Retour : image précédente et restauration de la base pre-custom (repli manuel : ghcr.io/dannyvfilms/floppy:latest)"
     exit 0
 }
 

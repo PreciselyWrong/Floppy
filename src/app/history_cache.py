@@ -62,35 +62,44 @@ from app.history_cache_utils import (  # noqa: F401
     HISTORY_DAY_PREFIX,
     HISTORY_DAYS_PER_PAGE,
     HISTORY_ENTRIES_PER_DAY_PAGE,
+    HISTORY_ERA_TIMEOUT,
     HISTORY_INDEX_PREFIX,
     HISTORY_REFRESH_LOCK_MAX_AGE,
     HISTORY_REFRESH_LOCK_PREFIX,
     HISTORY_STALE_AFTER,
     HISTORY_WARM_DAYS,
+    _bump_history_era,
     _cache_key,
     _coerce_genre_list,
     _coerce_timedelta,
     _coverage_repair_key,
+    _current_history_era,
     _date_from_day_key,
     _day_cache_key,
     _day_key_for_date,
     _day_key_from_value,
     _get_rss_kb,
+    _history_era_key,
     _localize_datetime,
     _music_history_user_q,
     _normalize_logging_style,
     _refresh_lock_key,
     _resolve_genres,
     _resolve_music_genres,
+    _touch_history_era,
+    _typed_history_index_key,
+    _typed_history_index_registry_key,
     expand_history_media_types,
     history_day_key,
     history_day_keys_for_range,
+    history_deferred_item_fields,
 )
 from app.history_entry_builders import (  # noqa: F401
     _attach_entry_score,
     _build_episode_entry,
     _build_movie_entry,
     _build_music_album_entries,
+    _build_video_play_entry,
     _format_boardgame_plays,
     _format_game_hours,
     _get_episode_display_title,
@@ -152,19 +161,39 @@ def _fetch_episode_data(
     ):
         return []
 
-    episodes = Episode.objects.filter(related_season__user=user)
+    episodes = Episode.all_objects.filter(related_season__user=user)
     if not include_undated:
-        episodes = episodes.filter(end_date__isnull=False)
-    episodes = episodes.select_related(
-        "item",
-        "related_season__item",
-        "related_season__related_tv__item",
-    ).order_by("-end_date")
+        # An open play has no end date yet; like a movie, it is listed on the
+        # day it started (issue #1278).
+        episodes = episodes.filter(
+            models.Q(end_date__isnull=False) | models.Q(start_date__isnull=False),
+        )
+    episodes = (
+        episodes.select_related(
+            "item",
+            "related_season__item",
+            "related_season__related_tv__item",
+        )
+        .defer(
+            *history_deferred_item_fields(
+                "item",
+                "related_season__item",
+                "related_season__related_tv__item",
+            ),
+        )
+        .order_by("-end_date", "-start_date")
+    )
 
     if start_date:
-        episodes = episodes.filter(end_date__gte=start_date)
+        episodes = episodes.filter(
+            models.Q(end_date__gte=start_date)
+            | (models.Q(end_date__isnull=True) & models.Q(start_date__gte=start_date))
+        )
     if end_date:
-        episodes = episodes.filter(end_date__lte=end_date)
+        episodes = episodes.filter(
+            models.Q(end_date__lte=end_date)
+            | (models.Q(end_date__isnull=True) & models.Q(start_date__lte=end_date))
+        )
     if filters.get("tv"):
         episodes = episodes.filter(related_season__related_tv_id=filters["tv"])
     if filters.get("season"):
@@ -307,7 +336,11 @@ def _fetch_movie_data(
     include_undated=False,
 ):
     """Query and return movies queryset and play-count map for history."""
-    movies_qs = Movie.objects.filter(user=user).select_related("item")
+    movies_qs = (
+        Movie.objects.filter(user=user)
+        .select_related("item")
+        .defer(*history_deferred_item_fields("item"))
+    )
     if not include_undated:
         movies_qs = movies_qs.filter(
             models.Q(end_date__isnull=False) | models.Q(start_date__isnull=False),
@@ -407,10 +440,14 @@ def _build_reading_entries(
             and not media_type_filter
         ):
             continue
-        queryset = model.objects.filter(
-            user=user,
-            item__media_type=reading_media_type,
-        ).select_related("item")
+        queryset = (
+            model.objects.filter(
+                user=user,
+                item__media_type=reading_media_type,
+            )
+            .select_related("item")
+            .defer(*history_deferred_item_fields("item"))
+        )
         if not include_undated:
             queryset = queryset.filter(
                 status=Status.COMPLETED.value,
@@ -918,6 +955,7 @@ def build_history_days(
         "comics": 0,
         "manga": 0,
         "anime": 0,
+        "videos": 0,
     }
 
     # Parse date filters
@@ -1095,12 +1133,14 @@ def build_history_days(
         games = (
             Game.objects.filter(user=user)
             .select_related("item")
+            .defer(*history_deferred_item_fields("item"))
             .order_by("-end_date", "-created_at")
         )
     if process_boardgames:
         boardgames = (
             BoardGame.objects.filter(user=user)
             .select_related("item")
+            .defer(*history_deferred_item_fields("item"))
             .order_by("-end_date", "-created_at")
         )
     if target_media_id and target_source:
@@ -1145,6 +1185,7 @@ def build_history_days(
         music_entries = (
             Music.objects.filter(user=user, end_date__isnull=False)
             .select_related("item", "album", "album__artist", "track")
+            .defer(*history_deferred_item_fields("item"))
             .order_by("-end_date")
         )
     if filters.get("album"):
@@ -1203,7 +1244,9 @@ def build_history_days(
             p.id: p
             for p in Podcast.objects.filter(
                 id__in=podcast_ids, user=user
-            ).select_related("item", "episode", "episode__show", "show")
+            )
+            .select_related("item", "episode", "episode__show", "show")
+            .defer(*history_deferred_item_fields("item"))
         }
     if (
         target_media_id
@@ -1341,42 +1384,51 @@ def build_history_days(
                 getattr(ep.item, "source", None),
                 getattr(ep.item, "season_number", None),
                 getattr(ep.item, "episode_number", None),
+                getattr(ep.item, "library_media_type", None),
             )
             for ep in episodes
             if getattr(ep, "item", None)
         ]
-        episode_keys = [k for k in episode_keys if all(k)]
+        episode_keys = [k for k in episode_keys if all(k[:4])]
         episode_title_map = {}
         if episode_keys:
             media_ids = {k[0] for k in episode_keys}
             sources = {k[1] for k in episode_keys}
             season_numbers = {k[2] for k in episode_keys}
             episode_numbers = {k[3] for k in episode_keys}
-            for item in (
+            library_media_types = {k[4] for k in episode_keys}
+            # Only the key and the title are used, and there is one row per
+            # episode played, so selecting whole items here would reintroduce
+            # the cost the deferred fetch above removes.
+            for row in (
                 Item.objects.filter(
                     media_type=MediaTypes.EPISODE.value,
                     media_id__in=media_ids,
                     source__in=sources,
                     season_number__in=season_numbers,
                     episode_number__in=episode_numbers,
+                    library_media_type__in=library_media_types,
                 )
                 .exclude(title__isnull=True)
                 .exclude(title="")
-            ):
-                key = (
-                    item.media_id,
-                    item.source,
-                    item.season_number,
-                    item.episode_number,
+                .values_list(
+                    "media_id",
+                    "source",
+                    "season_number",
+                    "episode_number",
+                    "library_media_type",
+                    "title",
                 )
+            ):
+                key = row[:5]
                 if key not in episode_title_map:
-                    episode_title_map[key] = item.title
+                    episode_title_map[key] = row[5]
         for episode in episodes:
             if genre_filters and not matches_genre(episode, MediaTypes.EPISODE.value):
                 continue
             entry = _build_episode_entry(episode, episode_title_map)
             if entry:
-                if include_undated and not episode.end_date:
+                if include_undated and not episode.end_date and not episode.start_date:
                     entry["played_at_local"] = None
                 entries.append(entry)
                 entry_counts["episodes"] += 1
@@ -1395,6 +1447,26 @@ def build_history_days(
             entry["play_count"] = play_count
             entries.append(entry)
             entry_counts["movies"] += 1
+
+    if process_all or MediaTypes.VIDEO.value in media_type_filter:
+        from app.models import VideoPlay
+
+        plays = (
+            VideoPlay.objects.filter(video__user=user)
+            .select_related("video__item")
+            .defer(*history_deferred_item_fields("video__item"))
+        )
+        if start_date:
+            plays = plays.filter(end_date__gte=start_date)
+        if end_date:
+            plays = plays.filter(end_date__lte=end_date)
+        if target_media_id:
+            plays = plays.filter(video__item__media_id=target_media_id)
+        for play in plays:
+            entry = _build_video_play_entry(play)
+            if entry:
+                entries.append(entry)
+                entry_counts["videos"] += 1
 
     reading_entries = (
         _build_reading_entries(

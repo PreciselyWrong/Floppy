@@ -4,9 +4,13 @@ import re
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 from django.test import tag
+from django.urls import reverse
 from playwright.sync_api import expect, sync_playwright
+
+from app.models import Item, MediaTypes
+from app.tests.live_server import SerialStaticLiveServerTestCase
+from lists.models import CustomList, CustomListItem
 
 PERFECT_BLUE_MEDIA_ID = "437"
 
@@ -59,7 +63,7 @@ PERFECT_BLUE_METADATA = {
 
 
 @tag("slow", "playwright")
-class IntegrationTest(StaticLiveServerTestCase):
+class IntegrationTest(SerialStaticLiveServerTestCase):
     """Integration tests for the application."""
 
     @classmethod
@@ -132,6 +136,17 @@ class IntegrationTest(StaticLiveServerTestCase):
         button.scroll_into_view_if_needed()
         button.dispatch_event("click")
 
+    def wait_for_htmx_settle(self, locator):
+        """Wait until htmx has wired the content it just swapped into ``locator``.
+
+        htmx processes a swap's new ``hx-*`` attributes in its settle step,
+        ``defaultSettleDelay`` (20 ms) after the content appears, and marks the
+        target ``htmx-settling`` until then. A click in that window lands on a
+        button with no ``hx-post`` bound yet and is dropped without a request,
+        so a test that clicks as soon as the text is visible must wait here.
+        """
+        expect(locator).not_to_have_class(re.compile(r"\bhtmx-(swapping|settling)\b"))
+
     def search_and_submit(self, query):
         """Run a global search via the submit button.
 
@@ -162,7 +177,7 @@ class IntegrationTest(StaticLiveServerTestCase):
         self.page.locator("li").filter(has_text=re.compile(r"^Anime$")).click()
         self.search_and_submit("perfect blue")
         self.click_card_lists_action()
-        expect(self.page.locator("#lists-anime-437")).to_contain_text(
+        expect(self.page.locator('[id^="lists-anime-437-"]')).to_contain_text(
             "You haven't created any lists yet.",
         )
 
@@ -182,10 +197,11 @@ class IntegrationTest(StaticLiveServerTestCase):
         self.page.locator("li").filter(has_text=re.compile(r"^Anime$")).click()
         self.search_and_submit("perfect blue")
         self.click_card_lists_action()
-        expect(self.page.locator("#lists-anime-437")).to_contain_text("Lists test Add")
+        expect(self.page.locator('[id^="lists-anime-437-"]')).to_contain_text("Lists test Add")
+        self.wait_for_htmx_settle(self.page.locator('[id^="lists-anime-437-"]'))
         self.page.get_by_role("button", name="Add item to test", exact=True).click()
-        expect(self.page.locator("#lists-anime-437")).to_contain_text("Remove")
-        self.page.locator("#lists-anime-437").get_by_role("button").first.click()
+        expect(self.page.locator('[id^="lists-anime-437-"]')).to_contain_text("Remove")
+        self.page.locator('[id^="lists-anime-437-"]').get_by_role("button").first.click()
 
         # Edit list
         self.page.get_by_role("link", name="Lists").click()
@@ -196,3 +212,138 @@ class IntegrationTest(StaticLiveServerTestCase):
         self.page.locator("#id_1_name").click()
         self.page.locator("#id_1_name").fill("test rename")
         self.page.get_by_role("button", name="Save").click()
+
+    def test_list_toggle_refreshes_header_count_once_desktop_and_mobile(self):
+        """A successful toggle refreshes the grid and count exactly once."""
+        item = Item.objects.create(
+            media_id=PERFECT_BLUE_MEDIA_ID,
+            source="mal",
+            media_type=MediaTypes.ANIME.value,
+            title="Perfect Blue",
+            image=PERFECT_BLUE_SEARCH_RESULT["image"],
+        )
+
+        for index, viewport in enumerate(
+            (
+                {"width": 1280, "height": 800},
+                {"width": 390, "height": 844},
+            ),
+        ):
+            page = self.context.new_page()
+            self.addCleanup(page.close)
+            refresh_requests = []
+            toggle_requests = []
+            toggle_statuses = []
+
+            def record_refresh_request(request, requests=refresh_requests):
+                if (
+                    request.method == "GET"
+                    and request.headers.get("hx-request") == "true"
+                    and "/list/" in request.url.split("?", 1)[0]
+                ):
+                    requests.append(request)
+
+            page.on("request", record_refresh_request)
+            self.addCleanup(page.remove_listener, "request", record_refresh_request)
+
+            def record_toggle_request(request, requests=toggle_requests):
+                if request.method == "POST" and "list_item_toggle" in request.url:
+                    requests.append(request)
+
+            page.on("request", record_toggle_request)
+            self.addCleanup(page.remove_listener, "request", record_toggle_request)
+
+            def record_toggle_response(response, statuses=toggle_statuses):
+                if response.request.method == "POST" and "list_item_toggle" in response.url:
+                    statuses.append(response.status)
+
+            page.on("response", record_toggle_response)
+            self.addCleanup(page.remove_listener, "response", record_toggle_response)
+
+            custom_list = CustomList.objects.create(
+                name=f"count-test-{index}",
+                owner=self.user,
+            )
+            CustomListItem.objects.create(custom_list=custom_list, item=item)
+            list_url = (
+                f"{self.live_server_url}"
+                f"{reverse('list_detail', args=[custom_list.public_reference])}"
+            )
+            page.set_viewport_size(viewport)
+            page.goto(list_url)
+
+            count = page.locator("[data-list-item-count]")
+            expect(count).to_have_text("1 item")
+            page.evaluate(
+                """
+                () => {
+                    window.__listCountUpdates = 0;
+                    document.body.addEventListener(
+                        'listCountUpdated',
+                        () => { window.__listCountUpdates += 1; },
+                    );
+                }
+                """,
+            )
+
+            page.locator(
+                '.media-card-overlay button[title="Add to custom lists"]',
+            ).first.dispatch_event("click")
+            modal = page.locator('[id^="lists-anime-437-"]')
+            expect(modal).to_contain_text("Remove")
+            toggle_button = modal.locator(
+                f'button[aria-label="Remove item from {custom_list.name}"]'
+            )
+            expect(toggle_button).to_be_visible()
+            toggle_button.evaluate(
+                """
+                async (element) => {
+                    await htmx.ajax('POST', element.getAttribute('hx-post'), {
+                        source: element,
+                        target: element,
+                        swap: 'outerHTML',
+                        values: JSON.parse(element.getAttribute('hx-vals')),
+                        headers: JSON.parse(element.getAttribute('hx-headers')),
+                    });
+                }
+                """,
+            )
+
+            self.assertEqual(len(toggle_requests), 1)
+            self.assertEqual(toggle_statuses, [200])
+            self.assertEqual(len(refresh_requests), 1)
+            # listCountUpdated fires when the refresh response is swapped in,
+            # which is after the request this assertion follows. Reading the
+            # counter without waiting raced that swap and saw 0. Wait for the
+            # event, let the count settle, and only then assert it fired
+            # exactly once - which is what this test is actually about.
+            page.wait_for_function("window.__listCountUpdates >= 1")
+            expect(count).to_have_text("0 items")
+            self.assertEqual(page.evaluate("window.__listCountUpdates"), 1)
+
+    def test_ticking_a_card_checkbox_selects_the_item(self):
+        """In Select Items mode the card's own checkbox selects the item."""
+        item = Item.objects.create(
+            media_id=PERFECT_BLUE_MEDIA_ID,
+            source="mal",
+            media_type=MediaTypes.ANIME.value,
+            title="Perfect Blue",
+            image=PERFECT_BLUE_SEARCH_RESULT["image"],
+        )
+        custom_list = CustomList.objects.create(name="Select test", owner=self.user)
+        CustomListItem.objects.create(custom_list=custom_list, item=item)
+        list_url = (
+            f"{self.live_server_url}"
+            f"{reverse('list_detail', args=[custom_list.public_reference])}"
+        )
+        self.page.goto(list_url)
+
+        self.page.get_by_role("button", name="Select Items").click()
+        checkbox = self.page.locator("#items-view input[type=checkbox]").first
+        checkbox.click()
+
+        # The checkbox sits inside the card's link; a click on it used to be
+        # cancelled, so it never ticked (the rest of the card still worked).
+        expect(checkbox).to_be_checked()
+        expect(self.page.get_by_text("1 selected")).to_be_visible()
+        self.assertEqual(self.page.url, list_url)

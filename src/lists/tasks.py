@@ -70,11 +70,10 @@ def import_mdblist_lists_task(user_id):
     """Celery task syncing all of a user's MDBList lists (also runs on a schedule)."""
     user = User.objects.get(pk=user_id)
     account = getattr(user, "mdblist_account", None)
-    if not account or account.connection_broken:
-        logger.info(
-            "Skipping MDBList sync for user %s (no account or connection broken)",
-            user.username,
-        )
+    # A broken account still runs: the sync is the probe, and it clears the
+    # flag when the key works again.
+    if not account or not account.api_key:
+        logger.info("Skipping MDBList sync for user %s (no account)", user.username)
         return
     try:
         mdblist_lists.import_mdblist_lists(user)
@@ -112,16 +111,17 @@ def import_trakt_lists_task(user_id, access_token, client_id=None):
 def import_list_csv_task(user_id, file_bytes, mode):
     """Celery task importing a single custom list from a CSV file."""
     from integrations.imports import yamtrack as yamtrack_imports
-    from integrations.tasks._import_helpers import _coerce_uploaded_file
+    from integrations.upload_staging import open_import_file
 
     user = User.objects.get(pk=user_id)
     try:
-        yamtrack_imports.importer(
-            _coerce_uploaded_file(file_bytes),
-            user,
-            mode,
-            lists_only=True,
-        )
+        with open_import_file(file_bytes) as uploaded_file:
+            yamtrack_imports.importer(
+                uploaded_file,
+                user,
+                mode,
+                lists_only=True,
+            )
         logger.info("Successfully imported list CSV for user %s", user.username)
     except Exception:
         logger.exception("Failed to import list CSV for user %s", user.username)

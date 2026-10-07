@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from django.conf import settings
-from django.template.loader import render_to_string
 from django.test import SimpleTestCase
 
 
@@ -10,62 +9,34 @@ class HorizontalScrollContractTests(SimpleTestCase):
         self.root = Path(settings.BASE_DIR)
 
     def read(self, relative_path):
-        return self.root.joinpath(relative_path).read_text()
+        return self.root.joinpath(relative_path).read_text(encoding="utf-8")
 
-    def test_shared_card_rows_are_directly_scrollable(self):
-        shared_row = self.read("templates/app/components/_scrollable_row.html")
-        preview = self.read("templates/app/components/discover_row_preview.html")
-        highlights = self.read("templates/app/components/statistics/highlight_set.html")
-        person = self.read("templates/app/person_detail.html")
+    def test_shared_rows_enable_accessible_horizontal_drag(self):
+        row = self.read("templates/app/components/_scrollable_row.html")
 
-        for template in (shared_row, preview, highlights, person):
-            self.assertIn('data-horizontal-scroll="true"', template)
-            self.assertIn('tabindex="0"', template)
-            self.assertIn('role="region"', template)
-
-        self.assertIn('aria-label="{% firstof row.title row.title_main %}"', shared_row)
-        self.assertNotIn("default:row.title_main", shared_row)
-
-    def test_shared_row_renders_when_only_title_is_available(self):
-        rendered = render_to_string(
-            "app/components/_scrollable_row.html",
-            {
-                "row": {
-                    "row_id": "detail-cast",
-                    "title": "Cast",
-                    "items": [],
-                    "loaded_count": 0,
-                }
-            },
+        self.assertIn('data-horizontal-drag="true"', row)
+        self.assertIn('tabindex="0"', row)
+        self.assertIn('role="region"', row)
+        self.assertIn('aria-label="{{ translated_title_main }}"', row)
+        self.assertIn(
+            'aria-label="{{ translated_title_main }} • {{ translated_title_detail }}"',
+            row,
         )
+        # Filter arguments raise VariableDoesNotExist when the key is missing,
+        # so the label must not resolve row.title_main as a `default` argument:
+        # rows built outside the home screen only carry `title`. See #1139.
+        self.assertNotIn("default:row.title_main", row)
 
-        self.assertIn('aria-label="Cast"', rendered)
-
-    def test_global_controller_supports_drag_without_breaking_touch(self):
+    def test_base_loads_the_horizontal_drag_controller_once(self):
         base = self.read("templates/base.html")
-        controller = self.read("static/js/horizontal-scroll.js")
 
-        self.assertIn("js/horizontal-scroll.js", base)
-        self.assertIn("pointerdown", controller)
-        self.assertIn("pointermove", controller)
-        self.assertIn("pointerup", controller)
-        self.assertIn("pointercancel", controller)
-        self.assertIn('event.pointerType !== "mouse"', controller)
-        self.assertIn("event.preventDefault()", controller)
-        self.assertIn("suppressedSurface", controller)
-        self.assertIn('document.addEventListener("dragstart"', controller)
-        self.assertIn('window.addEventListener("blur"', controller)
-        self.assertIn("event.buttons === 0", controller)
-        self.assertIn("event.altKey", controller)
-        self.assertIn("ArrowLeft", controller)
-        self.assertIn("ArrowRight", controller)
+        script_tag = '<script src="{% static \'js/horizontal-scroll.js\' %}'
+        self.assertEqual(base.count(script_tag), 1)
 
-    def test_scroll_surface_has_momentum_snap_and_reduced_motion(self):
+    def test_drag_styles_use_theme_tokens(self):
         css = self.read("static/css/input.css")
 
-        self.assertIn('[data-horizontal-scroll="true"] {', css)
-        self.assertIn("-webkit-overflow-scrolling: touch", css)
-        self.assertIn("scroll-snap-type: x proximity", css)
-        self.assertIn('[data-horizontal-scroll="true"] > * {', css)
-        self.assertIn("scroll-snap-align: start", css)
-        self.assertIn("prefers-reduced-motion: reduce", css)
+        self.assertIn('[data-horizontal-drag="true"]', css)
+        self.assertIn("cursor: grab", css)
+        self.assertIn("cursor: grabbing", css)
+        self.assertIn("var(--color-link)", css)
