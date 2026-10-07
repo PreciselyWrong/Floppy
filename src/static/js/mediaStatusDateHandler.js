@@ -226,7 +226,10 @@ function trackModalSetOpen(target, isOpen) {
   }
 
   if (!isOpen && overlay) {
-    if (overlay._modalOriginParent?.isConnected) {
+    if (overlay._x_teleportBack?.isConnected) {
+      // Native Alpine portals must stay attached while HTMX submits the form.
+      overlay.style.display = "none";
+    } else if (overlay._modalOriginParent?.isConnected) {
       Alpine.mutateDom(() => {
         overlay._modalOriginParent.appendChild(overlay);
         overlay.style.display = "none";

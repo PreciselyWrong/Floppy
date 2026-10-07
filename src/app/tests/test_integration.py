@@ -101,7 +101,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             provider_patch.start()
             self.addCleanup(provider_patch.stop)
 
-        self.context = self.browser.new_context()
+        self.context = self.browser.new_context(locale="en-US")
         self.page = self.context.new_page()
         self.page.goto(f"{self.live_server_url}/")
         self.page.get_by_placeholder("Enter your username").fill(
@@ -248,7 +248,12 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
                 lambda request: "lists_modal" in request.url,
             ):
                 card.get_by_title("Add to custom lists").click()
-            lists_modal = card.locator("[x-show='listsOpen']")
+            lists_target = card.get_by_title("Add to custom lists").get_attribute(
+                "hx-target"
+            )
+            lists_modal = touch_page.locator(lists_target).locator(
+                "xpath=ancestor::div[@x-show='listsOpen']"
+            )
             expect(lists_modal).to_be_visible()
             expect(lists_modal.locator(".list-modal-root")).to_be_visible()
         finally:
@@ -298,7 +303,12 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             expect(card).to_be_visible()
             card.locator(".media-card-poster").click()
             card.get_by_title("Add to custom lists").click()
-            modal = card.locator("[x-show='listsOpen']")
+            lists_target = card.get_by_title("Add to custom lists").get_attribute(
+                "hx-target"
+            )
+            modal = page.locator(lists_target).locator(
+                "xpath=ancestor::div[@x-show='listsOpen']"
+            )
             expect(modal.locator(".list-modal-root")).to_be_visible()
             box = modal.bounding_box()
             self.assertIsNotNone(box)
@@ -313,8 +323,13 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             )
             modal.locator(".list-modal-root button").first.click()
             expect(modal).not_to_be_visible()
+            # Closing the body-level modal also dismisses the touch overlay.
+            card.locator(".media-card-poster").click()
             card.get_by_title("Add to tracker").click()
-            track_modal = card.locator("[x-show='trackOpen']")
+            track_target = card.get_by_title("Add to tracker").get_attribute("hx-target")
+            track_modal = page.locator(track_target).locator(
+                "xpath=ancestor::div[@x-show='trackOpen']"
+            )
             expect(track_modal.locator("[data-track-modal-root]")).to_be_visible()
             page.keyboard.press("Escape")
             expect(track_modal).not_to_be_visible()
@@ -705,11 +720,14 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
 
         create_modal = self.page.locator("[data-track-modal-root]:visible").first
         expect(create_modal).to_be_visible()
+        previous_form_id = create_modal.locator("form[hx-post]").first.get_attribute("id")
         create_modal.locator("button[type='button']").first.click()
         expect(self.page.locator("[data-track-modal-root]:visible")).to_have_count(0)
 
         self.page.get_by_role("button", name="More tracking actions").click()
         self.page.get_by_role("button", name="Add new entry").click()
+        # A reopened native portal shows its old content until HTMX replaces it.
+        expect(self.page.locator(f"#{previous_form_id}")).to_have_count(0)
         expect(create_modal).to_be_visible()
 
         end_date_input = create_modal.locator('input[name="end_date"]')

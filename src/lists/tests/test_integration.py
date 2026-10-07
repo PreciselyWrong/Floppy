@@ -185,6 +185,14 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         """Test the flow of adding an item to a list and editing the list."""
         # Create list
         self.page.get_by_role("link", name="Lists").click()
+        expect(self.page.get_by_role("button", name="New List")).to_be_visible()
+        self.wait_for_htmx_settle(self.page.locator("body"))
+        # Boosted HTML can appear before Alpine binds the new button.
+        self.page.wait_for_function(
+            """() => [...document.querySelectorAll('button')].some(button =>
+                button.textContent.trim() === 'New List'
+                && button._x_attributeCleanups?.['@click'])"""
+        )
         self.page.get_by_role("button", name="New List").click()
         expect(self.page.locator("h2", has_text="Create New List")).to_be_visible()
         self.page.locator("#id_name").click()
@@ -208,7 +216,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         expect(self.page.locator("#lists-grid")).to_contain_text("test")
         expect(self.page.locator("#lists-grid")).to_contain_text("1 item")
         self.page.get_by_role("button", name="Edit test", exact=True).click()
-        expect(self.page.locator("#lists-grid")).to_contain_text("Edit List")
+        expect(self.page.get_by_role("heading", name="Edit List", exact=True)).to_be_visible()
         self.page.locator("#id_1_name").click()
         self.page.locator("#id_1_name").fill("test rename")
         self.page.get_by_role("button", name="Save").click()
