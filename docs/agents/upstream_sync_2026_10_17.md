@@ -2,7 +2,7 @@
 
 ## State
 
-Local integration into `custom` requested by Nicolas on 2026-10-18. The tested merge preserves both histories and the fork customizations. This supersedes the earlier preparation-only/no-commit scope. No push, PR or deployment is authorized or performed. The remaining gates below apply before deployment/release; full-suite success is not claimed.
+Integrated locally into `custom` on 2026-10-18 at Nicolas’s request: merge `5e67af1b7d119aea863f5b148a7226928510203d`, followed by a documentation-only delivery record. `custom` advanced by fast-forward; both previous custom and captured upstream are verified ancestors. The tested merge preserves the fork customizations. This supersedes the earlier preparation-only/no-commit scope. No push, PR or deployment is authorized or performed. The remaining gates below apply before deployment/release; full-suite success is not claimed.
 
 - Worktree: `.worktrees/fix-upstream-sync-2026-10-17`.
 - Branch: `fix/upstream-sync-2026-10-17`, based on upstream `e56a5f669` (2026-10-16), with the resolved merge of previous `custom` `cca4cf8c3`. The integration commit is recorded in `CONTRIBUTIONS.md`.
