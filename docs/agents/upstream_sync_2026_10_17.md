@@ -2,7 +2,7 @@
 
 ## State
 
-Integrated locally into `custom` on 2026-10-18 at Nicolas’s request: merge `5e67af1b7d119aea863f5b148a7226928510203d`, followed by a documentation-only delivery record. `custom` advanced by fast-forward; both previous custom and captured upstream are verified ancestors. The tested merge preserves the fork customizations. This supersedes the earlier preparation-only/no-commit scope. No push, PR or deployment is authorized or performed. The remaining gates below apply before deployment/release; full-suite success is not claimed.
+Integrated locally into `custom` on 2026-10-18 at Nicolas’s request: merge `5e67af1b7d119aea863f5b148a7226928510203d`, followed by a documentation-only delivery record. `custom` advanced by fast-forward; both previous custom and captured upstream are verified ancestors. The tested merge preserves the fork customizations. This supersedes the earlier preparation-only/no-commit scope. Nicolas subsequently requested deployment on 2026-10-18; `custom` was pushed as part of that request. No PR is authorized or created. Deployment follows the checks below. The remaining gates below apply before deployment/release; full-suite success is not claimed.
 
 - Worktree: `.worktrees/fix-upstream-sync-2026-10-17`.
 - Branch: `fix/upstream-sync-2026-10-17`, based on upstream `e56a5f669` (2026-10-16), with the resolved merge of previous `custom` `cca4cf8c3`. The integration commit is recorded in `CONTRIBUTIONS.md`.
@@ -121,3 +121,12 @@ Comparaison du contenu final avec `upstream/latest` `e56a5f669`, et non décompt
 | PWA-001 — installation | Pas prête | Installation signalée non fonctionnelle ; corriger et valider une installation réelle avant toute PR. |
 
 Aucune PR créée, rouverte ou modifiée par ce bilan. Les scripts privés de publication, migrations de réconciliation du fork et réglages d’exploitation restent hors des futures PR de fonctionnalités.
+
+
+## Deployment preparation — 2026-10-18
+
+- GitHub refuses workflow dispatch with Actions disabled, despite an active workflow. The server also rejects GHCR authentication. The deployment therefore uses a locally built immutable image, validated by its exact Docker image ID; only the registry download in a temporary copy of the deployment script is replaced. All backup, database, commit, health, recovery and pruning checks remain intact. No repository publication script was modified.
+- Windows `git archive` applied `core.autocrlf=true`; this was caught by the isolated image smoke before activation. Packaging with `git -c core.autocrlf=false archive` matches committed shell scripts byte for byte. The production container was untouched during this failure.
+- Nine real PostgreSQL synthetic upgrade/rollback/preservation tests and 25 Linux deployment/recovery contracts pass. The final image starts healthy on separate synthetic PostgreSQL/Redis services; Home Journal, History, public reviews/spoilers and weighted ratings pass a synthetic runtime probe.
+- The broad Linux fast suite found two CRUD failures. One stale assertion expected the old status-button wording instead of the upstream Check-in actions; saved-state assertions remain. A real regression discarded the invalid form in the new movie/game split button. Commit `922969515` preserves the correct create/edit modal and field values and renders validation errors. A moved hydration mock now targets its actual caller. Four template regression subcases were red before the fix; 121 focused tests pass afterward. Browser fault injection confirms error reopening and successful notes persistence after correction/reload, with no console errors. CSS remains unchanged and stable.
+- This is deployment preparation, not a claim that the new image is already active. The deployment result and immutable SHA are recorded in `CONTRIBUTIONS.md` after verification.
