@@ -1515,7 +1515,8 @@ class EditMedia(TestCase):
         self.assertContains(response, 'hx-swap-oob="outerHTML"', html=False)
         self.assertContains(response, f'id="detail-score-chip-{movie.id}"', html=False)
         self.assertContains(response, "Edit rating")
-        self.assertContains(response, "Completed")
+        self.assertContains(response, "Check-in</span>", html=False)
+        self.assertContains(response, "Add new entry</button>", html=False)
         trigger = json.loads(response["HX-Trigger"])
         self.assertEqual(trigger["closeModal"]["formId"], "track-form-test")
         self.assertEqual(trigger["showToast"]["type"], "success")
@@ -1647,7 +1648,7 @@ class EditMedia(TestCase):
         self.assertIsNone(game.start_date)
 
     @tag("network")
-    @patch("app.views.ensure_item_metadata")
+    @patch("app.save_views.ensure_item_metadata")
     def test_create_movie_htmx_inserts_score_chip_slot(self, ensure_item_metadata_mock):
         """HTMX tracker creation should insert the score chip into the page."""
         item = Item.objects.create(
@@ -1686,7 +1687,8 @@ class EditMedia(TestCase):
             html=False,
         )
         self.assertContains(response, "Edit rating")
-        self.assertContains(response, "Completed")
+        self.assertContains(response, "Check-in</span>", html=False)
+        self.assertContains(response, "Add new entry</button>", html=False)
         trigger = json.loads(response["HX-Trigger"])
         self.assertEqual(trigger["closeModal"]["formId"], "track-form-test")
         self.assertEqual(trigger["showToast"]["type"], "success")
@@ -1738,7 +1740,8 @@ class EditMedia(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "data-track-action-root", html=False)
-        self.assertContains(response, "trackOpen: true", html=False)
+        self.assertContains(response, "editTrackOpen: true", html=False)
+        self.assertContains(response, "Select a valid choice.", html=False)
         self.assertContains(response, "track-form-test")
         self.assertContains(response, "data-track-modal-root", html=False)
         self.assertContains(
