@@ -76,7 +76,8 @@
         <div class="modal-max-height overflow-y-auto px-4 md:px-0 relative z-60 w-full"
              style="width: min(96vw, 72rem)"
              @click.stop>
-          <div id="{% component_id 'track' media current_instance.id %}">
+          <div id="{% component_id 'track' media current_instance.id %}"
+               {% if track_modal_content and current_instance.id %}x-init="$nextTick(() => htmx.process($el))"{% endif %}>
             {% if track_modal_content and current_instance.id %}{{ track_modal_content|safe }}{% endif %}
           </div>
         </div>
@@ -92,7 +93,8 @@
         <div class="modal-max-height overflow-y-auto px-4 md:px-0 relative z-60 w-full"
              style="width: min(96vw, 72rem)"
              @click.stop>
-          <div id="{% component_id 'track' media %}">
+          <div id="{% component_id 'track' media %}"
+               {% if track_modal_content and not current_instance.id %}x-init="$nextTick(() => htmx.process($el))"{% endif %}>
             {% if track_modal_content and not current_instance.id %}{{ track_modal_content|safe }}{% endif %}
           </div>
         </div>
