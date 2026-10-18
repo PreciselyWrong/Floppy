@@ -231,7 +231,7 @@
                             </div>
                           </template>
 
-                          <template x-if="row.row_type !== 'recently_unrated'">
+                          <template x-if="row.row_type !== 'recently_unrated' && row.row_type !== 'watch_history'">
                             <div class="relative filter-control" @click.outside="if (openMenu === 'sort') openMenu = null">
                               <button type="button"
                                       class="home-settings-chip flex items-center px-2 py-2 rounded-md text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors cursor-pointer"
@@ -307,6 +307,20 @@
                                 </div>
                               </template>
                             </div>
+                          </template>
+
+                          <template x-if="row.row_type === 'watch_history'">
+                            <button type="button"
+                                    class="home-settings-chip flex items-center gap-2 px-2 py-2 rounded-md text-sm text-[var(--color-text-secondary)] hover:text-[var(--color-text)] transition-colors cursor-pointer"
+                                    role="switch"
+                                    :aria-checked="row.filters.binge_grouping !== false"
+                                    title="{% translate "Fold consecutive episodes of one show into a single card" %}"
+                                    @click.stop="row.filters = { ...row.filters, binge_grouping: row.filters.binge_grouping === false }">
+                              <span>{% translate "Group episodes" %}</span>
+                              <span class="text-xs font-semibold"
+                                    :class="row.filters.binge_grouping !== false ? 'text-indigo-400' : 'text-[var(--color-text-muted)]'"
+                                    x-text="row.filters.binge_grouping !== false ? gettext('On') : gettext('Off')"></span>
+                            </button>
                           </template>
 
                           <template x-if="row.row_type === 'recently_unrated' && section.media_type !== 'music'">
@@ -389,6 +403,14 @@
                             :class="{ 'opacity-50 cursor-not-allowed': section.rows.some(row => row.row_type === 'recently_unrated') }">
                       {% include "app/icons/history.svg" with classes="mr-2 h-4 w-4" %}
                       {% translate "Recently Played Row" %}
+                    </button>
+                    <button type="button"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="addRow(section, 'watch_history'); section.addRowMenuOpen = false"
+                            :disabled="section.rows.some(row => row.row_type === 'watch_history')"
+                            :class="{ 'opacity-50 cursor-not-allowed': section.rows.some(row => row.row_type === 'watch_history') }">
+                      {% include "app/icons/history.svg" with classes="mr-2 h-4 w-4" %}
+                      {% translate "Activity Journal" %}
                     </button>
                   </div>
                 </div>
@@ -532,6 +554,7 @@
         rowTypeLabel(type) {
           if (type === 'library_query') return gettext('Library Row');
           if (type === 'custom_list') return gettext('List / Smart List');
+          if (type === 'watch_history') return gettext('Activity Journal');
           return gettext('Recently Played');
         },
         rowAutoTitle(section, row) {
@@ -540,6 +563,9 @@
           }
           if (row.row_type === 'recently_unrated') {
             return gettext('Recently Played - Not Rated');
+          }
+          if (row.row_type === 'watch_history') {
+            return gettext('Activity Journal');
           }
           return this.describeFilters(section, row);
         },
@@ -718,7 +744,7 @@
           return statusField?.options || [];
         },
         defaultSortValue(section, rowType) {
-          if (rowType === 'recently_unrated') return 'recent';
+          if (rowType === 'recently_unrated' || rowType === 'watch_history') return 'recent';
           const defaultSortChoices = rowType === 'custom_list'
             ? (section.sort_choices.custom_list || [])
             : (section.sort_choices.library_query || []);
@@ -807,7 +833,7 @@
           return section.sort_choices.library_query || [];
         },
         addRow(section, rowType) {
-          if (rowType === 'recently_unrated' && section.rows.some(row => row.row_type === 'recently_unrated')) {
+          if (['recently_unrated', 'watch_history'].includes(rowType) && section.rows.some(row => row.row_type === rowType)) {
             return;
           }
           const defaultSort = this.defaultSortValue(section, rowType);
@@ -819,8 +845,8 @@
             row_type: rowType,
             custom_list_id: null,
             custom_list_name: '',
-            sort_by: rowType === 'recently_unrated' ? 'recent' : defaultSort,
-            direction: rowType === 'recently_unrated' ? 'desc' : this.defaultSortDirection(defaultSort),
+            sort_by: defaultSort,
+            direction: ['recently_unrated', 'watch_history'].includes(rowType) ? 'desc' : this.defaultSortDirection(defaultSort),
             recent_show: 'album',
             filters: this.defaultFilters(section, rowType),
             editorOpen: rowType === 'custom_list',
@@ -835,6 +861,7 @@
           });
         },
         defaultFilters(section, rowType) {
+          if (rowType === 'watch_history') return { binge_grouping: true };
           if (rowType !== 'library_query') return {};
           const defaults = {
             status: [gettext('In progress')],

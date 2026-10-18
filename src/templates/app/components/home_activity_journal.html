@@ -1,0 +1,171 @@
+{% load i18n %}
+{% load app_tags %}
+{% load user_tags %}
+{% comment %}
+  Activity Journal Home row: recent History days as a vertical timeline.
+
+  Required:
+    row — section from users.home_screen._activity_journal_section
+          (row_id, title, url, summary, days[].items)
+  Each item is either {is_group: False, entry} — one cached History entry —
+  or a binge card {is_group: True, latest, series_title, episode_range,
+  count, runtime_display, episodes}.
+{% endcomment %}
+<div class="home-activity-journal"
+     data-home-row-wrapper="true"
+     data-row-id="{{ row.row_id }}">
+  <div class="mb-3 flex items-start justify-between gap-3">
+    <div class="min-w-0">
+      {% translate row.title as translated_title %}
+      <h3 class="text-lg font-semibold">
+        {% if row.url %}
+          <a href="{{ row.url }}"
+             class="rounded-sm hover:underline focus:outline-none focus:ring-2 focus:ring-indigo-500">{{ translated_title }}</a>
+        {% else %}
+          {{ translated_title }}
+        {% endif %}
+      </h3>
+      {% if row.summary %}
+        <p class="text-sm text-[var(--color-text-muted)]">{% translate row.summary %}</p>
+      {% endif %}
+    </div>
+    {% if row.url %}
+      <a href="{{ row.url }}"
+         class="shrink-0 text-sm font-medium text-[var(--color-link)] hover:text-[var(--color-link-hover)] transition-colors">
+        {% translate "View full history" %}
+      </a>
+    {% endif %}
+  </div>
+
+  <div class="space-y-5">
+    {% for day in row.days %}
+      {% with day_index=forloop.counter %}
+        <section class="home-activity-journal-day">
+          <div class="mb-2 flex items-baseline justify-between gap-3 border-b border-[var(--color-surface-strong)] pb-1.5">
+            <h4 class="text-sm font-semibold text-[var(--color-link)]">
+              {{ day.weekday }}
+              <span class="font-normal text-[var(--color-text-muted)]">· {{ day.date_display }}</span>
+            </h4>
+            {% if day.total_runtime_display %}
+              <span class="text-xs font-medium text-[var(--color-text-muted)]">{{ day.total_runtime_display }}</span>
+            {% endif %}
+          </div>
+
+          <ul class="space-y-2">
+            {% for item in day.items %}
+              {% if item.is_group %}
+                <li class="overflow-hidden rounded-lg border border-[var(--color-surface-strong)] bg-[var(--color-surface)]"
+                    x-data="{ open: false }">
+                  <div class="flex items-center gap-3 p-2.5">
+                    <a href="{{ item.latest.item|media_url }}"
+                       class="block h-[90px] w-[60px] shrink-0 overflow-hidden rounded-md bg-[var(--color-surface-alt)]">
+                      <img src="{{ item.latest.poster|image_url }}"
+                           alt="{{ item.series_title }}"
+                           class="h-full w-full {% if item.latest.poster != IMG_NONE %}object-cover{% endif %}"
+                           loading="lazy"
+                           decoding="async">
+                    </a>
+                    <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <a href="{{ item.latest.item|media_url }}"
+                         class="truncate text-sm font-semibold text-[var(--color-text)] hover:text-[var(--color-link)]">{{ item.series_title }}</a>
+                      {% if item.episode_range %}
+                        <span class="text-xs font-medium text-[var(--color-link)]">{{ item.episode_range }}</span>
+                      {% endif %}
+                      <span class="flex flex-wrap gap-x-1.5 text-xs text-[var(--color-text-muted)]">
+                        <span>{{ item.latest.played_at_local|user_time_format:user }}</span>
+                        {% if item.runtime_display %}<span>· {{ item.runtime_display }}</span>{% endif %}
+                        <span>·
+                          {% blocktranslate trimmed count counter=item.count %}
+                            {{ counter }} episode
+                          {% plural %}
+                            {{ counter }} episodes
+                          {% endblocktranslate %}
+                        </span>
+                      </span>
+                    </div>
+                    <button type="button"
+                            class="shrink-0 rounded-full p-1.5 text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
+                            @click="open = !open"
+                            :aria-expanded="open"
+                            aria-controls="home-journal-{{ row.row_id }}-{{ day_index }}-{{ forloop.counter }}"
+                            aria-label="{% blocktranslate trimmed with title=item.series_title %}Show episodes of {{ title }}{% endblocktranslate %}">
+                      <svg xmlns="http://www.w3.org/2000/svg"
+                           viewBox="0 0 20 20"
+                           class="h-4 w-4 transition-transform duration-200"
+                           :class="{ 'rotate-180': open }"
+                           aria-hidden="true">
+                        <path d="M10 14 L4.5 7 H15.5 Z" fill="currentColor"></path>
+                      </svg>
+                    </button>
+                  </div>
+                  <ul id="home-journal-{{ row.row_id }}-{{ day_index }}-{{ forloop.counter }}"
+                      x-show="open"
+                      x-cloak
+                      class="divide-y divide-[var(--color-surface-strong)] border-t border-[var(--color-surface-strong)]">
+                    {% for episode in item.episodes %}
+                      <li class="flex items-center justify-between gap-3 px-3.5 py-2">
+                        <a href="{{ episode.item|media_url }}"
+                           class="flex min-w-0 items-baseline gap-2 text-xs text-[var(--color-text)] hover:text-[var(--color-link)]">
+                          {% if episode.episode_code %}
+                            <span class="shrink-0 font-semibold text-[var(--color-link)]">{{ episode.episode_code }}</span>
+                          {% endif %}
+                          <span class="truncate">{{ episode.display_title|default:episode.title }}</span>
+                        </a>
+                        <span class="flex shrink-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                          <span>{{ episode.played_at_local|user_time_format:user }}</span>
+                          {% if episode.runtime_display %}<span>{{ episode.runtime_display }}</span>{% endif %}
+                        </span>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                </li>
+              {% else %}
+                {% with entry=item.entry %}
+                  <li>
+                    <a href="{% if entry.media_type == MediaTypes.MUSIC.value and entry.album %}{{ entry.album|music_album_url }}{% elif entry.media_type == MediaTypes.PODCAST.value and entry.show and entry.show.podcast_uuid %}{% url 'media_details' source='pocketcasts' media_type='podcast' media_id=entry.show.podcast_uuid title=entry.show.slug|default:entry.show.title|slug %}{% else %}{{ entry.item|media_url }}{% endif %}"
+                       class="flex items-center gap-3 rounded-lg border border-[var(--color-surface-strong)] bg-[var(--color-surface)] p-2.5 transition-colors hover:border-[var(--color-surface-hover)]">
+                      <span class="block {% if entry.media_type == MediaTypes.MUSIC.value or entry.media_type == MediaTypes.PODCAST.value %}h-[60px]{% else %}h-[90px]{% endif %} w-[60px] shrink-0 overflow-hidden rounded-md bg-[var(--color-surface-alt)]">
+                        <img src="{{ entry.poster|image_url }}"
+                             alt=""
+                             class="h-full w-full {% if entry.poster != IMG_NONE %}object-cover{% endif %}"
+                             loading="lazy"
+                             decoding="async">
+                      </span>
+                      <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+                        <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">{{ entry.media_type|media_type_readable }}</span>
+                        {% if entry.media_type == MediaTypes.EPISODE.value %}
+                          <span class="truncate text-sm font-semibold text-[var(--color-text)]">{{ entry.show.title|default:entry.title }}</span>
+                          <span class="truncate text-xs text-[var(--color-text-secondary)]">
+                            {% if entry.episode_code %}
+                              <span class="font-medium text-[var(--color-link)]">{{ entry.episode_code }}</span>
+                            {% endif %}
+                            {% if entry.display_title != entry.show.title %}{{ entry.display_title|default:"" }}{% endif %}
+                          </span>
+                        {% else %}
+                          {% with entry.item|display_title:user as preferred_title %}
+                            <span class="truncate text-sm font-semibold text-[var(--color-text)]">{{ preferred_title|default:entry.display_title|default:entry.title }}</span>
+                          {% endwith %}
+                        {% endif %}
+                        <span class="flex flex-wrap gap-x-1.5 text-xs text-[var(--color-text-muted)]">
+                          {% if entry.played_at_local %}<span>{{ entry.played_at_local|user_time_format:user }}</span>{% endif %}
+                          {% if entry.runtime_display %}<span>· {{ entry.runtime_display }}</span>{% endif %}
+                        </span>
+                      </span>
+                      {% score_is_visible entry.score entry.media_type as show_score %}
+                      {% if show_score %}
+                        <span class="flex shrink-0 items-center gap-1 pr-1 text-sm font-semibold text-yellow-300">
+                          {% include "app/icons/star.svg" with classes="w-3.5 h-3.5 text-yellow-400 fill-current" %}
+                          {{ entry.score|score_display:user }}
+                        </span>
+                      {% endif %}
+                    </a>
+                  </li>
+                {% endwith %}
+              {% endif %}
+            {% endfor %}
+          </ul>
+        </section>
+      {% endwith %}
+    {% endfor %}
+  </div>
+</div>

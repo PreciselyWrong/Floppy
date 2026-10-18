@@ -21,6 +21,8 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext
 
+from app import helpers
+from app.history_cache_reader import get_cached_history_window
 from app.library_query import FilterValues, LibraryQuery, LibraryQueryExecutor, SortSpec
 from app.library_query.adapters import from_home_row_filters, home_engine_direction
 from app.library_query.filters import NEEDS_MAX_PROGRESS, NEEDS_MEDIA
@@ -60,6 +62,11 @@ MIN_TAG_PARTS = 4
 RECENTLY_UNRATED_DAYS = 7
 RECENTLY_UNRATED_EPISODE_DAYS = 30
 RECENTLY_UNRATED_LABEL = "Recently Played - Not Rated"
+ACTIVITY_JOURNAL_LABEL = "Activity Journal"
+# The journal shows this many history days, read from the History index.
+ACTIVITY_JOURNAL_DAYS = 14
+# Consecutive episodes of one show fold into a single card from this length.
+MIN_BINGE_EPISODES = 2
 # Cap on how many active-filter labels are shown in a row's settings summary.
 MAX_SUMMARY_FILTER_PARTS = 4
 SQUARE_HOME_MEDIA_TYPES = {
@@ -1195,6 +1202,8 @@ def row_title(row: HomeScreenRow, user) -> str:
         return "List / Smart List"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return RECENTLY_UNRATED_LABEL
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return ACTIVITY_JOURNAL_LABEL
     return describe_library_query(row.filters or {}, user, row.media_type)
 
 
@@ -1206,6 +1215,8 @@ def row_summary(row: HomeScreenRow, user) -> str:
         return "Choose a list or smart list"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return "Recent unrated plays from this library"
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return "Recent activity grouped by day"
     sort_choices = {
         choice["value"]: choice["label"]
         for choice in get_allowed_sort_choices(row.media_type, row.row_type)
@@ -1344,9 +1355,12 @@ def _serialize_settings_row(user, row: HomeScreenRow, media_type: str) -> dict:
     raw_filters = {
         key: value for key, value in (row.filters or {}).items() if key != "recent_show"
     }
-    filters = _normalized_filter_payload(raw_filters, media_type)
-    if media_type == HOME_ALL_MEDIA_TYPE:
-        filters["media_types"] = _all_media_type_selection(user, row.filters)
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        filters = {"binge_grouping": journal_binge_grouping(row)}
+    else:
+        filters = _normalized_filter_payload(raw_filters, media_type)
+        if media_type == HOME_ALL_MEDIA_TYPE:
+            filters["media_types"] = _all_media_type_selection(user, row.filters)
     recent_show = ""
     if (
         row.media_type == MediaTypes.MUSIC.value
@@ -1377,11 +1391,11 @@ def _row_payload_to_model(
     if row_type not in HomeScreenRowTypeChoices.values:
         msg = f"Unsupported row type for {media_type}."
         raise HomeScreenValidationError(msg)
-    if (
-        media_type == HOME_ALL_MEDIA_TYPE
-        and row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY
-    ):
-        msg = "All media only supports library rows."
+    if media_type == HOME_ALL_MEDIA_TYPE and row_type not in {
+        HomeScreenRowTypeChoices.LIBRARY_QUERY,
+        HomeScreenRowTypeChoices.WATCH_HISTORY,
+    }:
+        msg = "All media only supports library and Activity Journal rows."
         raise HomeScreenValidationError(msg)
 
     enabled = bool(row_payload.get("enabled", True))
@@ -1404,6 +1418,15 @@ def _row_payload_to_model(
         sort_choices = []
         if media_type == MediaTypes.MUSIC.value:
             filters = {"recent_show": _clean_recent_show(row_payload.get("recent_show"))}
+    elif row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        sort_choices = []
+        raw_filters = row_payload.get("filters")
+        binge_grouping = (
+            raw_filters.get("binge_grouping", True)
+            if isinstance(raw_filters, dict)
+            else True
+        )
+        filters = {"binge_grouping": bool(binge_grouping)}
     else:
         filters = validate_library_row_filters(
             row_payload.get("filters"), media_type, user=user
@@ -1412,7 +1435,10 @@ def _row_payload_to_model(
 
     allowed_sort_values = {choice["value"] for choice in sort_choices}
     sort_by = str(row_payload.get("sort_by") or "").strip()
-    if row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+    if row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.WATCH_HISTORY,
+    }:
         sort_by = HomeSortChoices.RECENT
         direction = _default_recent_row_direction()
     else:
@@ -3157,6 +3183,11 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
             return f"{base}?{query}"
         return base
 
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        if row.media_type == HOME_ALL_MEDIA_TYPE:
+            return reverse("history")
+        return f"{reverse('history')}?{urlencode({'media_type': row.media_type})}"
+
     # A mixed row has no single library destination.
     if row.media_type == HOME_ALL_MEDIA_TYPE:
         return ""
@@ -3200,6 +3231,123 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
     return f"{base}?{urlencode(query_pairs)}"
 
 
+def journal_binge_grouping(row: HomeScreenRow) -> bool:
+    """Return whether an Activity Journal row folds episode runs into one card."""
+    return bool((row.filters or {}).get("binge_grouping", True))
+
+
+def _binge_show_key(entry: dict) -> tuple | None:
+    """Return the show an episode entry belongs to, or None for other entries."""
+    if entry.get("media_type") != MediaTypes.EPISODE.value:
+        return None
+    # An episode item carries its show's provider id.
+    item = entry.get("item") or {}
+    if item.get("source") is None or item.get("media_id") is None:
+        return None
+    return item["source"], str(item["media_id"])
+
+
+def group_journal_entries(entries: list[dict], *, binge_grouping: bool) -> list[dict]:
+    """Fold consecutive episodes of one show into a single binge card.
+
+    History days list entries newest first, so a run is consecutive in that
+    order: anything watched in between (another show, a movie) splits it.
+    """
+    if not binge_grouping:
+        return [{"is_group": False, "entry": entry} for entry in entries]
+
+    items = []
+    index = 0
+    while index < len(entries):
+        show_key = _binge_show_key(entries[index])
+        end = index + 1
+        if show_key is not None:
+            while end < len(entries) and _binge_show_key(entries[end]) == show_key:
+                end += 1
+        run = entries[index:end]
+        if len(run) < MIN_BINGE_EPISODES:
+            items.append({"is_group": False, "entry": run[0]})
+        else:
+            items.append(_binge_group(run))
+        index = end
+    return items
+
+
+def _binge_group(run: list[dict]) -> dict:
+    latest = run[0]
+    seasons = {entry.get("season_number") for entry in run}
+    numbers = [entry.get("episode_number") for entry in run]
+    episode_range = None
+    if len(seasons) == 1 and None not in seasons and None not in numbers:
+        season = next(iter(seasons))
+        episode_range = f"S{season:02d}E{min(numbers):02d}-E{max(numbers):02d}"
+    runtime_minutes = sum(entry.get("runtime_minutes") or 0 for entry in run)
+    return {
+        "is_group": True,
+        "latest": latest,
+        "series_title": (latest.get("show") or {}).get("title") or latest["title"],
+        "episode_range": episode_range,
+        "count": len(run),
+        "runtime_display": helpers.minutes_to_hhmm(runtime_minutes)
+        if runtime_minutes
+        else None,
+        "episodes": run,
+    }
+
+
+def _activity_journal_section(user, row: HomeScreenRow) -> dict | None:
+    """Build an Activity Journal section from the cached History index.
+
+    It reads the same bounded day window the History page pages through, so a
+    Home render never walks the whole history.
+    """
+    filters = None
+    if row.media_type != HOME_ALL_MEDIA_TYPE:
+        filters = {"media_type": [row.media_type]}
+    history_days, _total_days = get_cached_history_window(
+        user,
+        limit=ACTIVITY_JOURNAL_DAYS,
+        offset=0,
+        filters=filters,
+    )
+
+    binge_grouping = journal_binge_grouping(row)
+    days = []
+    for day in history_days:
+        entries = day.get("entries") or []
+        if not entries:
+            continue
+        days.append(
+            {
+                "date_display": day.get("date_display"),
+                "weekday": day.get("weekday"),
+                "total_runtime_display": day.get("total_runtime_display")
+                if day.get("total_minutes")
+                else None,
+                "items": group_journal_entries(entries, binge_grouping=binge_grouping),
+            },
+        )
+    if not days:
+        return None
+
+    title_main, title_detail = home_row_header_title_parts(row, user)
+    total = sum(len(day["items"]) for day in days)
+    return {
+        "row_id": row.id,
+        "is_journal": True,
+        "title": row_title(row, user),
+        "title_main": title_main,
+        "title_detail": title_detail,
+        "url": home_row_destination_url(row, user),
+        "summary": row_summary(row, user),
+        "summary_inline": None,
+        "days": days,
+        "total": total,
+        "loaded_count": total,
+        "poll_for_covers": False,
+    }
+
+
 _HOME_ROW_EMPTY_SENTINEL = "__home_row_empty__"
 
 
@@ -3216,6 +3364,8 @@ def _build_row_section(
     Library shelves load only the requested window; ``seed`` keeps a random
     shelf's order fixed across its load-more requests.
     """
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+        return _activity_journal_section(user, row)
     if seed is None:
         seed = home_row_seed(row)
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:

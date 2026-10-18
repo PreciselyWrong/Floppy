@@ -446,6 +446,8 @@ class HomeScreenRowTypeChoices(models.TextChoices):
     LIBRARY_QUERY = "library_query", _("Library Row")
     CUSTOM_LIST = "custom_list", _("List / Smart List")
     RECENTLY_UNRATED = "recently_unrated", _("Recently Played - Not Rated")
+    # The stored value predates the "Activity Journal" name.
+    WATCH_HISTORY = "watch_history", _("Activity Journal")
 
 
 # kept: unrenamed model field/class names and help_text below (avoids a migration; see plan)
