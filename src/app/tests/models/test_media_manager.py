@@ -3,10 +3,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.db.models import Prefetch
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
+from app.library_query import FilterValues, LibraryQuery, LibraryQueryExecutor
+from app.media_list_filters import media_list_entries_for_items
 from app.models import (
     TV,
     Anime,
@@ -534,6 +538,94 @@ class MediaManagerTests(TestCase):
 
         self.assertEqual(media_list[0], self.movie)
 
+    def test_library_page_limits_hydration_and_aggregates_repeats(self):
+        """A bounded page keeps sorting, repeat totals and scores intact."""
+        manager = MediaManager()
+
+        item_a = Item.objects.create(
+            media_id="lim_a",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Alpha Movie",
+        )
+        item_b = Item.objects.create(
+            media_id="lim_b",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Beta Movie",
+        )
+        item_c = Item.objects.create(
+            media_id="lim_c",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Gamma Movie",
+        )
+
+        # Duplicate tracking rows for item A to verify aggregation on returned rows
+        Movie.objects.create(
+            item=item_a,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            score=8,
+            end_date=datetime(2023, 1, 1, 0, 0, tzinfo=UTC),
+        )
+        Movie.objects.create(
+            item=item_a,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            score=10,
+            end_date=datetime(2023, 2, 1, 0, 0, tzinfo=UTC),
+        )
+
+        Movie.objects.create(
+            item=item_b,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            score=7,
+        )
+        Movie.objects.create(
+            item=item_c,
+            user=self.user,
+            status=Status.COMPLETED.value,
+            progress=1,
+            score=6,
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            page = LibraryQueryExecutor(
+                self.user,
+                LibraryQuery(
+                    media_types=(MediaTypes.MOVIE.value,),
+                    filters=FilterValues(search="Movie"),
+                ),
+            ).page(0, 2)
+            media_list = [
+                entry.media
+                for entry in media_list_entries_for_items(self.user, page.items)
+            ]
+
+        self.assertEqual(page.total, 3)
+
+        self.assertEqual(len(media_list), 2)
+        self.assertEqual(media_list[0].item.title, "Alpha Movie")
+        self.assertEqual(media_list[1].item.title, "Beta Movie")
+        self.assertEqual(media_list[0].repeats, 2)
+        self.assertEqual(media_list[0].aggregated_progress, 2)
+        self.assertEqual(media_list[0].aggregated_score, 10)
+        self.assertTrue(any("LIMIT 2" in query["sql"] for query in queries))
+        self.assertEqual(
+            manager.count_media_list(
+                user=self.user,
+                media_type=MediaTypes.MOVIE.value,
+                status_filter=MediaStatusChoices.ALL,
+                search="Movie",
+            ),
+            3,
+        )
+
     def test_get_media_list_sort_by_regular_field(self):
         """Test the get_media_list method with sorting by regular field."""
         manager = MediaManager()
@@ -960,6 +1052,14 @@ class MediaManagerTests(TestCase):
 
         manager._annotate_tv_released_episodes(tv_list, timezone.now())
         self.assertEqual(tv_list[0].max_progress, 10)
+
+        season_list = list(
+            Season.objects.filter(user=self.user.id).select_related("item")
+        )
+        with patch("app.providers.services.get_media_metadata") as provider_call:
+            manager.annotate_max_progress(season_list, MediaTypes.SEASON.value)
+        self.assertEqual(season_list[0].max_progress, 10)
+        provider_call.assert_not_called()
 
     @patch("app.models.providers.services.get_media_metadata")
     def test_annotate_max_progress_for_books_uses_stored_pages_only(

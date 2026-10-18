@@ -86,7 +86,7 @@
       <span x-show="search && search.trim().length"
             class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]">
         <span class="text-[var(--color-text-muted)]">{% translate "Search:" %}</span>
-        <span>“<span x-text="search"></span>”</span>
+        <span>&ldquo;<span x-text="search"></span>&rdquo;</span>
       </span>
 
       <span class="ml-auto text-xs"
@@ -156,7 +156,7 @@
       {% endif %}
 
       {% if saved_smart_rules.search %}
-        <span class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]"><span class="text-[var(--color-text-muted)]">{% translate "Search:" %}</span> “{{ saved_smart_rules.search }}”</span>
+        <span class="px-2 py-1 rounded-md bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]"><span class="text-[var(--color-text-muted)]">{% translate "Search:" %}</span> &ldquo;{{ saved_smart_rules.search }}&rdquo;</span>
       {% endif %}
     {% endif %}
   </div>

@@ -62,8 +62,14 @@ urlpatterns = [
     path("settings/cards", views.cards, name="cards"),
     path("settings/cards/preview", views.cards_preview, name="cards_preview"),
     path("settings/cards/<str:media_type>", views.cards, name="cards_type"),
+
     path("settings/sidebar", views.sidebar, name="sidebar"),
     path("settings/home-screen", views.home_screen, name="home_screen"),
+    path(
+        "home/pins/<int:item_id>/toggle",
+        views.toggle_home_pin,
+        name="toggle_home_pin",
+    ),
     path(
         "settings/home-screen/lists",
         views.home_screen_list_search,

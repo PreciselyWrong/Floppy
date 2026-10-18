@@ -1,12 +1,57 @@
-from django.test import TestCase
+from datetime import timedelta
+from types import SimpleNamespace
+
+from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from app.detail_builders import (
+    _build_aggregate_rating_context,
     _build_detail_link_sections,
     _build_imdb_rating_context,
     _build_mal_rating_context,
     _build_series_graph_data,
+    enrich_episode_rows,
+    enrich_season_cards,
 )
 from app.models import Item, ItemProviderLink, MediaTypes, Sources
+
+
+class DetailEnrichmentTests(TestCase):
+    def test_episode_enrichment_marks_only_aired_non_special_gaps(self):
+        now = timezone.now()
+        rows = enrich_episode_rows(
+            [
+                {"episode_number": 1, "air_date": now - timedelta(days=3), "history": [{"id": 1}], "title": "One"},
+                {"episode_number": 2, "air_date": now - timedelta(days=2), "history": [], "title": "Two"},
+                {"episode_number": 3, "air_date": now - timedelta(days=1), "history": [{"id": 3}], "title": "Three"},
+                {"episode_number": 4, "air_date": now + timedelta(days=1), "history": [], "title": "Four"},
+            ],
+            season_number=1,
+            now=now,
+            obfuscate_titles=True,
+        )
+        self.assertTrue(rows[1]["is_skipped"])
+        self.assertEqual(rows[1]["display_title"], "Episode 2")
+        self.assertFalse(rows[3]["is_skipped"])
+
+        specials = enrich_episode_rows(
+            [{"episode_number": 1, "air_date": now - timedelta(days=1), "history": []}],
+            season_number=0,
+            now=now,
+        )
+        self.assertFalse(specials[0]["is_skipped"])
+
+    def test_season_cards_mark_resume_and_future(self):
+        now = timezone.now()
+        rows = enrich_season_cards(
+            [
+                {"season_number": 1, "first_air_date": now - timedelta(days=1), "progress": 2, "max_progress": 8},
+                {"season_number": 2, "first_air_date": now + timedelta(days=1), "progress": 0, "max_progress": 8},
+            ],
+            now=now,
+        )
+        self.assertTrue(rows[0]["is_resume"])
+        self.assertTrue(rows[1]["is_upcoming"])
 
 
 class SeriesGraphBuilderTests(TestCase):
@@ -198,6 +243,89 @@ class MalRatingContextTests(TestCase):
         self.assertEqual(
             _build_mal_rating_context(item, MediaTypes.TV.value),
             {"rating": 8.1, "rating_count": 100},
+        )
+
+
+class AggregateRatingContextTests(SimpleTestCase):
+    def test_builds_weighted_rating_and_sorted_source_breakdown(self):
+        item = SimpleNamespace(
+            trakt_rating=6.0,
+            imdb_rating=9.0,
+            mal_rating=None,
+        )
+
+        context = _build_aggregate_rating_context(
+            {
+                "score": 8.0,
+                "score_count": 100,
+                "source_url": "https://www.themoviedb.org/movie/1",
+                "external_links": {
+                    "IMDb": "https://www.imdb.com/title/tt0000001/",
+                },
+            },
+            item,
+            Sources.TMDB.value,
+            trakt_score={"rating": 6.0, "rating_count": 50},
+            imdb_score={"rating": 9.0, "rating_count": 200},
+        )
+
+        self.assertEqual(context["rating"], 8.3)
+        self.assertEqual(context["total_votes"], 350)
+        self.assertEqual(context["source_count"], 3)
+        self.assertEqual(
+            [source["key"] for source in context["sources"]],
+            ["imdb", "tmdb", "trakt"],
+        )
+        self.assertEqual(
+            [source["weight"] for source in context["sources"]],
+            [57.1, 28.6, 14.3],
+        )
+        self.assertEqual(
+            context["sources"][0]["external_url"],
+            "https://www.imdb.com/title/tt0000001/",
+        )
+        self.assertEqual(context["sources"][1]["label"], "The Movie Database")
+
+    def test_excludes_invalid_scores_and_sources_without_votes(self):
+        context = _build_aggregate_rating_context(
+            {"score": 12, "score_count": 100},
+            SimpleNamespace(
+                trakt_rating=8.0,
+                imdb_rating=None,
+                mal_rating=None,
+            ),
+            Sources.TMDB.value,
+            trakt_score={"rating": 8.0, "rating_count": 0},
+        )
+
+        self.assertIsNone(context)
+
+    def test_deduplicates_primary_provider_and_uses_display_source_url(self):
+        context = _build_aggregate_rating_context(
+            {
+                "score": 8.78,
+                "score_count": 1234,
+                "display_source_url": "https://myanimelist.net/anime/52991",
+                "source_url": "https://example.test/fallback",
+                "external_links": {
+                    "MyAnimeList": "https://myanimelist.net/anime/52991",
+                },
+            },
+            SimpleNamespace(
+                trakt_rating=None,
+                imdb_rating=None,
+                mal_rating=8.78,
+            ),
+            Sources.MAL.value,
+            mal_score={"rating": 8.7, "rating_count": 1234},
+        )
+
+        self.assertEqual(context["rating"], 8.8)
+        self.assertEqual(context["source_count"], 1)
+        self.assertEqual(context["sources"][0]["key"], Sources.MAL.value)
+        self.assertEqual(
+            context["sources"][0]["external_url"],
+            "https://myanimelist.net/anime/52991",
         )
 
 

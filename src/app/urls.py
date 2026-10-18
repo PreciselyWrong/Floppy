@@ -1,6 +1,12 @@
 from django.urls import path, register_converter
 
-from app import checkin_views, converters, episode_order_views, views
+from app import (
+    checkin_views,
+    converters,
+    episode_order_views,
+    public_review_views,
+    views,
+)
 from app.discover import feeds as discover_feeds
 
 register_converter(converters.MediaTypeChecker, "media_type")
@@ -8,6 +14,16 @@ register_converter(converters.SourceChecker, "source")
 
 
 urlpatterns = [
+    path(
+        "reviews/preview/<source:source>/<media_type:media_type>/<path:media_id>/<str:title>",
+        public_review_views.public_reviews_preview,
+        name="public_reviews_preview",
+    ),
+    path(
+        "reviews/<source:source>/<media_type:media_type>/<path:media_id>/<str:title>",
+        public_review_views.public_reviews,
+        name="public_reviews",
+    ),
     path(
         "tv/<int:tv_id>/episode-ordering/",
         episode_order_views.episode_ordering_settings,

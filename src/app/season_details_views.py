@@ -14,17 +14,22 @@ from django.views.decorators.http import require_GET
 
 from app import carousel as carousel_media
 from app import config, helpers
+from app import credits as credits_module
 from app.activity_builders import (
     _normalize_detail_episode_actions,
     _paginate_detail_episodes,
     attach_unwatched_ratings,
 )
+from app.db_retry import run_retryable_db_operation
 from app.detail_builders import (
     _build_detail_link_sections,
     _build_detail_person_rows,
     _build_series_graph_data,
     _build_series_graph_from_raw,
     _build_trakt_popularity_context,
+    build_personal_rating_trend,
+    build_remaining_time_summary,
+    enrich_episode_rows,
 )
 from app.detail_related import drop_recommendations_if_hidden
 from app.log_safety import exception_summary
@@ -987,6 +992,26 @@ def season_details(
     )
     episode_load_more = None
     if render_secondary_only and season_metadata.get("episodes"):
+        season_preferences_enabled = bool(
+            public_view
+            or getattr(request.user, "show_season_enrichment", True)
+        )
+        season_metadata["episodes"] = enrich_episode_rows(
+            season_metadata["episodes"],
+            season_number=season_number,
+            show_public_ratings=(
+                public_view
+                or getattr(request.user, "show_episode_public_ratings", True)
+            ),
+            obfuscate_titles=(
+                not public_view
+                and getattr(request.user, "obfuscate_episode_titles", False)
+            ),
+            show_skipped=(
+                season_preferences_enabled
+                and getattr(request.user, "show_skipped_episodes", True)
+            ),
+        )
         season_metadata["episodes"] = _normalize_detail_episode_actions(
             season_metadata["episodes"],
         )
@@ -998,6 +1023,24 @@ def season_details(
         season_metadata["episodes"], episode_load_more = _paginate_detail_episodes(
             request,
             season_metadata["episodes"],
+        )
+
+    if (
+        render_secondary_only
+        and not public_view
+        and season_item
+        and isinstance(season_metadata, dict)
+        and (season_metadata.get("cast") or season_metadata.get("crew"))
+        and not season_item.person_credits.exists()
+    ):
+        run_retryable_db_operation(
+            lambda: credits_module.sync_item_credits_from_metadata(
+                season_item,
+                season_metadata,
+            ),
+            mode="best_effort",
+            operation_name="season detail credits sync",
+            operation_logger=logger,
         )
 
     # Resolve parent media type: anime URL kwarg takes priority, else detect via DB
@@ -1061,6 +1104,17 @@ def season_details(
         "display_provider": source,
         "identity_provider": source,
         "episode_load_more": episode_load_more,
+        "personal_rating_trend": (
+            build_personal_rating_trend(episodes_in_db)
+            if not public_view
+            and getattr(request.user, "show_personal_rating_trend", True)
+            else None
+        ),
+        "remaining_time_summary": (
+            build_remaining_time_summary(season_metadata.get("episodes") or [])
+            if not public_view and getattr(request.user, "show_remaining_time", True)
+            else None
+        ),
         "provider_series_graph_data": _build_series_graph_from_raw(
             season_number, _raw_graph_episodes, source
         ),
@@ -1080,7 +1134,11 @@ def season_details(
         "carousel_supported": carousel_supported,
         "initial_carousel": initial_carousel,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
-        **_build_detail_person_rows(season_metadata),
+        **_build_detail_person_rows(
+            season_metadata,
+            item=season_item,
+            user=request.user,
+        ),
     }
     logger.info(
         "detail_render_complete path=%s phase=%s media_type=%s source=%s duration_ms=%.2f",

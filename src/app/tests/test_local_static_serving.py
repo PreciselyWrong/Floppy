@@ -1,7 +1,7 @@
-from django.test import SimpleTestCase
+from django.test import TestCase
 
 
-class LocalStaticServingTests(SimpleTestCase):
+class LocalStaticServingTests(TestCase):
     """Without nginx, Django serves /static/ for every installed app."""
 
     def test_serves_project_static(self):

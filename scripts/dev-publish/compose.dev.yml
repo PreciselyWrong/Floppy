@@ -1,0 +1,38 @@
+services:
+  floppy:
+    build:
+      context: ../..
+      args:
+        VERSION: local-dev
+        COMMIT_SHA: local
+    image: floppy:local-dev
+    container_name: floppy-dev
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SECRET: local-dev-only
+      REDIS_URL: redis://redis:6379
+      REGISTRATION: "True"
+      DEMO_ACCOUNT_ENABLED: "True"
+      DEBUG: "False"
+      FLOPPY_RESOURCE_TIER: minimal
+    volumes:
+      - floppy_dev_db:/floppy/db
+    ports:
+      - "127.0.0.1:8299:8000"
+
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes --save "" --maxmemory 256mb --maxmemory-policy volatile-lru
+    volumes:
+      - floppy_dev_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  floppy_dev_db:
+  floppy_dev_redis:

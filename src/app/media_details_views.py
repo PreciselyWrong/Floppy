@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from datetime import UTC
+from urllib.parse import urlencode
 
 from django.apps import apps
 from django.conf import settings
@@ -10,6 +11,7 @@ from django.core.cache import cache
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
@@ -36,8 +38,10 @@ from app.activity_builders import (
     _should_queue_game_lengths_refresh,
 )
 from app.db_retry import run_retryable_db_operation
+from app.detail_availability import build_detail_availability
 from app.detail_builders import (
     _apply_cached_hltb_link,
+    _build_aggregate_rating_context,
     _build_detail_link_sections,
     _build_detail_person_rows,
     _build_episode_graph_from_season_cache,
@@ -49,6 +53,7 @@ from app.detail_builders import (
     _build_series_graph_data,
     _build_stored_season_scores_graph,
     _build_trakt_popularity_context,
+    enrich_season_cards,
 )
 from app.detail_related import (
     drop_recommendations_if_hidden,
@@ -72,6 +77,7 @@ from app.models import (
 )
 from app.models.episode_runtimes import build_season_runtime_index
 from app.providers import services, tmdb
+from app.public_reviews import ReviewTarget, providers_for_target
 from app.services import metadata_resolution, opencritic_scores
 from app.services.metadata_fallback import stored_metadata_fallback
 from app.tag_views import (
@@ -86,6 +92,8 @@ from app.view_constants import (
     force_live_metadata_cache_key,
 )
 from lists.views_helpers import get_public_list_for_item
+from users.appearance import detail_layout_family, detail_section_enabled
+from users.models import HomePinnedItem
 
 logger = logging.getLogger(__name__)
 
@@ -1681,6 +1689,14 @@ def media_details(
             media_type=media_type,
             tracking_user=list_owner,
         )
+        if (
+            media_type == MediaTypes.ANIME.value
+            and getattr(request.user, "show_season_enrichment", True)
+            and media_metadata.get("related", {}).get("seasons")
+        ):
+            media_metadata["related"]["seasons"] = enrich_season_cards(
+                media_metadata["related"]["seasons"],
+            )
 
     # For music tracks, get linked artist and album for navigation
     music_artist = None
@@ -1799,6 +1815,14 @@ def media_details(
             pass
 
     has_collection_data = bool(collection_entries) or collection_entry is not None
+    detail_availability = None
+    if render_secondary_only and not public_view and detail_item is not None:
+        detail_availability = build_detail_availability(
+            user=request.user,
+            item=detail_item,
+            media_type=media_type,
+            title=media_metadata.get("title") or detail_item.title,
+        )
 
     if media_type in [
         MediaTypes.TV.value,
@@ -1919,6 +1943,14 @@ def media_details(
         if metadata_resolution_result
         else source
     )
+    aggregate_rating = _build_aggregate_rating_context(
+        media_metadata,
+        detail_item,
+        display_provider,
+        trakt_score=trakt_score,
+        imdb_score=imdb_score,
+        mal_score=mal_score,
+    )
     grouped_preview = (
         metadata_resolution_result.grouped_preview
         if metadata_resolution_result
@@ -1983,6 +2015,47 @@ def media_details(
             media_metadata["episodes"],
         )
 
+    review_external_ids = dict(
+        (getattr(detail_item, "provider_external_ids", None) if detail_item else None)
+        or media_metadata.get("provider_external_ids")
+        or {}
+    )
+    review_target = ReviewTarget(
+        media_type=media_type,
+        source=source,
+        media_id=str(media_id),
+        external_ids=review_external_ids,
+    )
+    review_user = request.user if request.user.is_authenticated else None
+    public_reviews_preview_url = None
+    if (
+        detail_section_enabled(
+            request.user,
+            detail_layout_family(media_type),
+            "content",
+            "reviews",
+        )
+        and providers_for_target(review_target, review_user)
+    ):
+        public_reviews_preview_url = reverse(
+            "public_reviews_preview",
+            kwargs={
+                "source": source,
+                "media_type": media_type,
+                "media_id": media_id,
+                "title": title,
+            },
+        )
+        review_query = urlencode(
+            {
+                key: review_external_ids[key]
+                for key in ("tvdb_id", "imdb_id")
+                if review_external_ids.get(key)
+            }
+        )
+        if review_query:
+            public_reviews_preview_url = f"{public_reviews_preview_url}?{review_query}"
+
     context = {
         "user": request.user,
         "media": media_metadata,
@@ -1994,6 +2067,23 @@ def media_details(
         "studio_detail_keys": studio_detail_keys,
         "user_medias": user_medias,
         "current_instance": current_instance,
+        "detail_item": detail_item,
+        "can_home_pin": bool(
+            request.user.is_authenticated
+            and detail_item
+            and current_instance
+            and media_type in {MediaTypes.TV.value, MediaTypes.ANIME.value}
+        ),
+        "is_home_pinned": bool(
+            request.user.is_authenticated
+            and detail_item
+            and current_instance
+            and media_type in {MediaTypes.TV.value, MediaTypes.ANIME.value}
+            and HomePinnedItem.objects.filter(
+                user=request.user,
+                item=detail_item,
+            ).exists()
+        ),
         "music_artist": music_artist,
         "music_album": music_album,
         "public_view": public_view,
@@ -2001,6 +2091,7 @@ def media_details(
         "show_notes": not public_view or public_notes_view,
         "play_stats": play_stats,
         "activity_subtitle": activity_subtitle,
+        "aggregate_rating": aggregate_rating,
         "trakt_score": trakt_score,
         "imdb_score": imdb_score,
         "mal_score": mal_score,
@@ -2014,6 +2105,7 @@ def media_details(
         "collection_entries": collection_entries,
         "collection_stats": collection_stats,
         "has_collection_data": has_collection_data,
+        "detail_availability": detail_availability,
         "fetching_collection_data": fetching_collection_data
         if not public_view
         else False,
@@ -2094,7 +2186,12 @@ def media_details(
         "carousel_supported": carousel_supported,
         "initial_carousel": initial_carousel,
         "detail_carousel_fragment_url": detail_carousel_fragment_url,
-        **_build_detail_person_rows(media_metadata, item=detail_item),
+        "public_reviews_preview_url": public_reviews_preview_url,
+        **_build_detail_person_rows(
+            media_metadata,
+            item=detail_item,
+            user=request.user,
+        ),
     }
     logger.info(
         "detail_render_complete path=%s phase=%s media_type=%s source=%s duration_ms=%.2f",

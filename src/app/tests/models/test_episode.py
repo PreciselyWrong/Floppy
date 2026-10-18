@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
@@ -407,10 +408,10 @@ class HistoricalEpisodeStatusBackfillTests(TestCase):
     def test_backfill_restores_dropped_and_open_statuses(self, _mock_metadata):
         """Only records whose status is recoverable change."""
         migration = importlib.import_module(
-            "app.migrations.0188_historicalepisode_status",
+            "app.migrations.0182_episodeorder_episodeorderchange_historicalvideo_and_more",
         )
 
-        migration.backfill_status(apps, None)
+        migration.backfill_episode_history_status(apps, connection.schema_editor())
 
         def statuses(episode):
             return set(episode.history.values_list("status", flat=True))

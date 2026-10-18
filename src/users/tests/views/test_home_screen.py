@@ -16,8 +16,6 @@ from app.library_query.filters import _progress_predicate
 from app.library_query.spec import FilterValues
 from app.models import (
     TV,
-    Album,
-    Artist,
     CollectionEntry,
     Episode,
     Game,
@@ -33,6 +31,7 @@ from app.models import (
     Video,
 )
 from app.services.item_merge import dedupe_cross_provider_items
+from events.models import Event
 from lists import smart_rules
 from lists.models import CustomList
 from users import home_screen
@@ -50,6 +49,8 @@ class HomeScreenViewTests(TestCase):
     """Tests for the Home Screen settings page."""
 
     def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.credentials = {"username": "testuser", "password": "testpass123"}
         self.user = get_user_model().objects.create_user(**self.credentials)
         self.client.login(**self.credentials)
@@ -67,6 +68,35 @@ class HomeScreenViewTests(TestCase):
             setattr(self.user, field_name, media_type in enabled_set)
             update_fields.append(field_name)
         self.user.save(update_fields=update_fields)
+
+    def test_resume_shelf_get_respects_disabled_episode_navigation(self):
+        self._set_enabled_media_types(MediaTypes.TV.value)
+        item = Item.objects.create(
+            title="Shelf navigation series",
+            media_id="shelf-navigation",
+            media_type=MediaTypes.TV.value,
+            source=Sources.MANUAL.value,
+        )
+        TV.objects.create(user=self.user, item=item, status=Status.IN_PROGRESS.value)
+        row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=HOME_ALL_MEDIA_TYPE,
+            row_type=HomeScreenRowTypeChoices.SHELF_RESUME,
+            sort_by=HomeSortChoices.RECENT,
+            filters={"progress": "all"},
+            open_last_episode=False,
+        )
+        response = self.client.get(reverse("home"))
+        self.assertEqual(response.status_code, 200)
+        rendered = next(
+            section
+            for group in response.context["home_groups"]
+            for section in group["rows"]
+            if section["row_id"] == row.id
+        )
+        self.assertEqual([entry.item.pk for entry in rendered["items"]], [item.pk])
+        self.assertFalse(rendered["items"][0].resume_navigation)
+        self.assertNotContains(response, 'data-resume-episode-link="true"')
 
     def test_all_media_settings_selection_round_trips_and_rejects_disabled_family(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
@@ -137,11 +167,39 @@ class HomeScreenViewTests(TestCase):
             [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
         )
 
-    def test_all_media_rows_only_allow_library_query(self):
+    def test_home_settings_preserve_disabled_journal_and_binge_choice(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=HOME_ALL_MEDIA_TYPE,
+            row_type=HomeScreenRowTypeChoices.WATCH_HISTORY,
+            enabled=False,
+            filters={"binge_grouping": False},
+            sort_by=HomeSortChoices.RECENT,
+        )
+        sections = home_screen.serialize_settings_sections(self.user)
+        payload = next(
+            section
+            for section in sections
+            if section["media_type"] == HOME_ALL_MEDIA_TYPE
+        )
+        saved = next(entry for entry in payload["rows"] if entry["id"] == row.id)
+        self.assertFalse(saved["enabled"])
+        self.assertFalse(saved["filters"]["binge_grouping"])
+        home_screen.save_home_screen_configuration(self.user, json.dumps([payload]))
+        row = HomeScreenRow.objects.get(
+            user=self.user,
+            media_type=HOME_ALL_MEDIA_TYPE,
+            row_type=HomeScreenRowTypeChoices.WATCH_HISTORY,
+        )
+        self.assertFalse(row.enabled)
+        self.assertFalse(row.filters["binge_grouping"])
+
+    def test_all_media_rows_reject_invalid_list_and_row_type(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
         for row_type in (
             HomeScreenRowTypeChoices.CUSTOM_LIST,
-            HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+            "unsupported_row",
         ):
             payload = [
                 {
@@ -392,10 +450,33 @@ class HomeScreenViewTests(TestCase):
             source=Sources.TMDB.value,
             image="https://example.com/anime.jpg",
         )
-        TV.objects.create(
+        series = TV.objects.create(
             item=item,
             user=self.user,
             status=Status.IN_PROGRESS.value,
+        )
+        season_item = Item.objects.create(
+            title="Grouped Anime Season 1",
+            media_id=item.media_id,
+            media_type=MediaTypes.SEASON.value,
+            library_media_type=MediaTypes.ANIME.value,
+            source=Sources.TMDB.value,
+            season_number=1,
+        )
+        season = Season.objects.create(
+            item=season_item,
+            user=self.user,
+            related_tv=series,
+            status=Status.IN_PROGRESS.value,
+        )
+        Item.objects.create(
+            title="Unwatched anime episode",
+            media_id=item.media_id,
+            media_type=MediaTypes.EPISODE.value,
+            source=Sources.TMDB.value,
+            season_number=1,
+            episode_number=1,
+            release_datetime=timezone.now() - timedelta(days=1),
         )
         HomeScreenRow.objects.create(
             user=self.user,
@@ -451,7 +532,10 @@ class HomeScreenViewTests(TestCase):
         self.assertContains(response, "section-drag-handle")
         self.assertContains(response, 'aria-label="Reorder row"')
         self.assertContains(response, "row-drag-handle")
-        self.assertNotContains(response, "hidden shrink-0 items-center justify-center text-[var(--color-text-muted)]")
+        self.assertNotContains(
+            response,
+            "hidden shrink-0 items-center justify-center text-[var(--color-text-muted)]",
+        )
         self.assertContains(response, "delayOnTouchOnly: true")
         self.assertContains(response, "this.$nextTick(() => this.initSortables())")
         self.assertContains(response, 'aria-label="Delete row"')
@@ -467,56 +551,486 @@ class HomeScreenViewTests(TestCase):
         self.assertNotContains(response, "Add Recently Played Row")
         self.assertNotContains(response, "Enabled")
 
-    def test_home_screen_manages_media_type_label_appearance(self):
-        self._set_enabled_media_types(
-            MediaTypes.MOVIE.value,
-            MediaTypes.ANIME.value,
-            MediaTypes.BOOK.value,
+    def test_open_row_menus_are_promoted_above_neighboring_controls(self):
+        response = self.client.get(reverse("home_screen"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            ":class=\"{ 'z-50': openMenu !== null || row.editorOpen }\"",
         )
-        self.user.home_media_type_chip_colors = {
-            "movie": "#123ABC",
-            "podcast": "#112233",
-        }
-        self.user.save(update_fields=["home_media_type_chip_colors"])
+        self.assertContains(
+            response,
+            ":class=\"{ 'z-50': section.addRowMenuOpen }\"",
+        )
+
+    def test_up_next_row_is_configurable_once_across_episodic_sections(self):
+        self._set_enabled_media_types(MediaTypes.TV.value, MediaTypes.ANIME.value)
+        response = self.client.get(reverse("home_screen"))
+
+        self.assertContains(response, "Up Next Row")
+        row = home_screen._row_payload_to_model(
+            self.user,
+            MediaTypes.TV.value,
+            {
+                "row_type": HomeScreenRowTypeChoices.UP_NEXT,
+                "enabled": True,
+            },
+            0,
+        )
+        self.assertEqual(row.row_type, HomeScreenRowTypeChoices.UP_NEXT)
+        self.assertEqual(row.sort_by, HomeSortChoices.RECENT)
+
+        duplicate_payload = json.dumps(
+            [
+                {
+                    "media_type": MediaTypes.TV.value,
+                    "rows": [{"row_type": HomeScreenRowTypeChoices.UP_NEXT}],
+                },
+                {
+                    "media_type": MediaTypes.ANIME.value,
+                    "rows": [{"row_type": HomeScreenRowTypeChoices.UP_NEXT}],
+                },
+            ]
+        )
+        with self.assertRaises(home_screen.HomeScreenValidationError):
+            home_screen.save_home_screen_configuration(
+                self.user,
+                duplicate_payload,
+            )
+
+    def test_home_screen_offers_configurable_all_media_section_first(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+
+        sections = home_screen.serialize_settings_sections(self.user)
+
+        self.assertEqual(sections[0]["media_type"], "all")
+        self.assertEqual(sections[0]["label"], "All media")
+        self.assertEqual(sections[0]["rows"], [])
+
+    def test_all_media_filter_fields_follow_enabled_media_types(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+
+        with patch.object(
+            smart_rules,
+            "build_rule_filter_data",
+            wraps=smart_rules.build_rule_filter_data,
+        ) as build_filter_data:
+            home_screen.build_filter_field_data(self.user, "all", [])
+            self._set_enabled_media_types(
+                MediaTypes.MOVIE.value,
+                MediaTypes.GAME.value,
+            )
+            home_screen.build_filter_field_data(self.user, "all", [])
+
+        self.assertEqual(build_filter_data.call_count, 2)
+        self.assertEqual(
+            build_filter_data.call_args.args[1],
+            [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
+        )
+
+        filter_fields = home_screen.build_filter_field_data(self.user, "all", [])
+        progress_field = next(
+            field for field in filter_fields if field["key"] == "progress"
+        )
+        self.assertTrue(progress_field["visible"])
+        self.assertEqual(
+            home_screen.validate_library_row_filters(
+                {"progress": "not_caught_up"}, "all"
+            )["progress"],
+            "not_caught_up",
+        )
+
+    def test_all_media_settings_expose_enabled_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={"status": [Status.IN_PROGRESS.value]},
+        )
+
+        section = home_screen.serialize_settings_sections(self.user)[0]
+        self.assertEqual(section["filter_fields"], [])
+
+        filter_fields = home_screen.serialize_settings_filter_fields(self.user, "all")
+        media_types_field = next(
+            field for field in filter_fields if field["key"] == "media_types"
+        )
+
+        self.assertEqual(
+            [option["value"] for option in media_types_field["options"]],
+            [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
+        )
+        self.assertEqual(
+            section["rows"][0]["filters"]["media_types"],
+            [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
+        )
+
+    def test_all_media_settings_preserve_explicit_empty_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [],
+            },
+        )
+
+        section = home_screen.serialize_settings_sections(self.user)[0]
+
+        self.assertEqual(section["rows"][0]["filters"]["media_types"], [])
+
+    def test_all_media_section_respects_saved_position(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        self.user.home_screen_media_type_order = [
+            MediaTypes.MOVIE.value,
+            "all",
+            MediaTypes.GAME.value,
+        ]
+        self.user.save(update_fields=["home_screen_media_type_order"])
+
+        self.assertEqual(
+            home_screen.get_home_configurable_media_types(
+                self.user,
+            ),
+            [MediaTypes.MOVIE.value, "all", MediaTypes.GAME.value],
+        )
+
+    def test_all_media_in_progress_row_mixes_enabled_media_types(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        movie_item = Item.objects.create(
+            title="Current Movie",
+            media_id="all-media-current-movie",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        game_item = Item.objects.create(
+            title="Current Game",
+            media_id="all-media-current-game",
+            media_type=MediaTypes.GAME.value,
+            source=Sources.IGDB.value,
+        )
+        Game.objects.create(
+            item=game_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        completed_item = Item.objects.create(
+            title="Completed Movie",
+            media_id="all-media-completed-movie",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=completed_item,
+            user=self.user,
+            status=Status.COMPLETED.value,
+        )
+        disabled_tv_item = Item.objects.create(
+            title="Disabled TV",
+            media_id="all-media-disabled-tv",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+        )
+        TV.objects.create(
+            item=disabled_tv_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            title="In progress",
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={"status": [Status.IN_PROGRESS.value]},
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+        all_media_group = next(
+            group for group in groups if group["media_type"] == "all"
+        )
+
+        self.assertEqual(all_media_group["label"], "All media")
+        self.assertEqual(all_media_group["rows"][0]["url"], "")
+        self.assertEqual(
+            [entry.item.title for entry in all_media_group["rows"][0]["items"]],
+            ["Current Game", "Current Movie"],
+        )
+
+    def test_all_media_row_only_uses_selected_media_types(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        movie_item = Item.objects.create(
+            title="Excluded Movie",
+            media_id="all-media-excluded-movie",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        game_item = Item.objects.create(
+            title="Included Game",
+            media_id="all-media-included-game",
+            media_type=MediaTypes.GAME.value,
+            source=Sources.IGDB.value,
+        )
+        Game.objects.create(
+            item=game_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [MediaTypes.GAME.value],
+            },
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+        all_media_group = next(
+            group for group in groups if group["media_type"] == "all"
+        )
+
+        self.assertEqual(
+            [entry.item.title for entry in all_media_group["rows"][0]["items"]],
+            ["Included Game"],
+        )
+
+    def test_empty_all_media_type_selection_hides_row(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        movie_item = Item.objects.create(
+            title="Current Movie",
+            media_id="all-media-empty-selection",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [],
+            },
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+
+        self.assertNotIn("all", {group["media_type"] for group in groups})
+
+    def test_all_media_not_caught_up_hides_tv_with_no_released_episodes_left(self):
+        self._set_enabled_media_types(MediaTypes.TV.value, MediaTypes.MOVIE.value)
+        movie_item = Item.objects.create(
+            title="Current Movie",
+            media_id="all-media-current-movie-released-progress",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        Movie.objects.create(
+            item=movie_item,
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+        )
+
+        now = timezone.now()
+
+        def create_show(title, media_id, watched_episodes):
+            tv_item = Item.objects.create(
+                title=title,
+                media_id=media_id,
+                media_type=MediaTypes.TV.value,
+                source=Sources.TMDB.value,
+            )
+            tv = TV.objects.create(
+                item=tv_item,
+                user=self.user,
+                status=Status.IN_PROGRESS.value,
+            )
+            season_item = Item.objects.create(
+                title=f"{title} Season 1",
+                media_id=media_id,
+                media_type=MediaTypes.SEASON.value,
+                source=Sources.TMDB.value,
+                season_number=1,
+            )
+            season = Season.objects.create(
+                item=season_item,
+                user=self.user,
+                related_tv=tv,
+                status=Status.IN_PROGRESS.value,
+            )
+            for episode_number in range(1, 3):
+                episode_item = Item.objects.create(
+                    title=f"{title} S01E{episode_number:02d}",
+                    media_id=media_id,
+                    media_type=MediaTypes.EPISODE.value,
+                    source=Sources.TMDB.value,
+                    season_number=1,
+                    episode_number=episode_number,
+                    release_datetime=now - timedelta(days=episode_number),
+                )
+                if episode_number <= watched_episodes:
+                    Episode.objects.create(
+                        item=episode_item,
+                        related_season=season,
+                        end_date=now - timedelta(days=episode_number),
+                    )
+
+        create_show("Caught Up TV", "all-media-caught-up", watched_episodes=2)
+        create_show(
+            "Released Episode Left TV", "all-media-episode-left", watched_episodes=1
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            title="In progress",
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=MediaSortChoices.TITLE,
+            direction=DirectionChoices.ASC,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "progress": "not_caught_up",
+            },
+        )
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+        all_media_group = next(
+            group for group in groups if group["media_type"] == "all"
+        )
+
+        self.assertEqual(
+            [entry.item.title for entry in all_media_group["rows"][0]["items"]],
+            ["Current Movie", "Released Episode Left TV"],
+        )
+
+    def test_empty_all_media_section_is_not_rendered_on_home(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+
+        groups = home_screen.build_home_page_groups(self.user, items_limit=10)
+
+        self.assertNotIn("all", {group["media_type"] for group in groups})
+
+    def test_in_progress_episode_navigation_option_defaults_on_and_can_be_disabled(
+        self,
+    ):
+        default_row = home_screen._row_payload_to_model(
+            self.user,
+            MediaTypes.TV.value,
+            {
+                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                "filters": {"status": [Status.IN_PROGRESS.value]},
+                "sort_by": HomeSortChoices.COMPLETION,
+            },
+            0,
+        )
+        disabled_row = home_screen._row_payload_to_model(
+            self.user,
+            MediaTypes.TV.value,
+            {
+                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                "filters": {"status": [Status.IN_PROGRESS.value]},
+                "sort_by": HomeSortChoices.COMPLETION,
+                "open_last_episode": False,
+            },
+            0,
+        )
+
+        self.assertTrue(default_row.open_last_episode)
+        self.assertFalse(disabled_row.open_last_episode)
+
+        home_screen.save_home_screen_configuration(
+            self.user,
+            json.dumps(
+                [
+                    {
+                        "media_type": MediaTypes.TV.value,
+                        "rows": [
+                            {
+                                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                                "filters": {
+                                    "status": [Status.IN_PROGRESS.value],
+                                },
+                                "sort_by": HomeSortChoices.COMPLETION,
+                                "open_last_episode": False,
+                            }
+                        ],
+                    }
+                ]
+            ),
+        )
+
+        saved_row = HomeScreenRow.objects.get(
+            user=self.user,
+            media_type=MediaTypes.TV.value,
+        )
+        self.assertFalse(saved_row.open_last_episode)
+        sections = home_screen.serialize_settings_sections(self.user)
+        tv_section = next(
+            section
+            for section in sections
+            if section["media_type"] == MediaTypes.TV.value
+        )
+        self.assertFalse(tv_section["rows"][0]["open_last_episode"])
+
+    def test_home_screen_renders_in_progress_episode_navigation_row_option(self):
+        self._set_enabled_media_types(MediaTypes.TV.value)
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=home_screen.HOME_ALL_MEDIA_TYPE,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "media_types": [MediaTypes.TV.value, MediaTypes.MOVIE.value],
+            },
+        )
 
         response = self.client.get(reverse("home_screen"))
 
+        self.assertContains(response, "Open episode on card click")
+        self.assertContains(response, "isInProgressEpisodeRow(section, row)")
+        self.assertContains(
+            response,
+            "selectedTypes.some(mediaType => ['tv', 'anime', 'season'].includes(mediaType))",
+        )
         sections = json.loads(response.context["home_screen_sections_json"])
-        movie_section = next(
+        all_media_section = next(
             section
             for section in sections
-            if section["media_type"] == MediaTypes.MOVIE.value
-        )
-        self.assertEqual(movie_section["media_type_chip_color"], "#123ABC")
-        self.assertContains(response, 'name="home_media_type_chips_enabled"')
-        self.assertContains(response, 'name="home_media_type_chip_style"')
-        self.assertContains(response, "home_media_type_chip_color_")
-
-        response = self.client.post(
-            reverse("home_screen"),
-            {
-                "home_screen_sections": json.dumps(sections),
-                "home_media_type_chips_present": "1",
-                "home_media_type_chips_enabled": "0",
-                "home_media_type_chip_style": "outline",
-                "home_media_type_chip_color_movie": "#456def",
-                "home_media_type_chip_color_anime": "#ABCDEF",
-                "home_media_type_chip_color_book": "javascript:alert(1)",
-                "home_media_type_chip_color_unknown": "#654321",
-            },
-        )
-
-        self.assertRedirects(response, reverse("home_screen"))
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.home_media_type_chips_enabled)
-        self.assertEqual(self.user.home_media_type_chip_style, "outline")
-        self.assertEqual(
-            self.user.home_media_type_chip_colors,
-            {
-                "movie": "#456DEF",
-                "anime": "#ABCDEF",
-                "podcast": "#112233",
-            },
+            if section["media_type"] == home_screen.HOME_ALL_MEDIA_TYPE
         )
 
     def test_home_dropdowns_expose_open_state_and_escape_controls(self):
@@ -1282,47 +1796,96 @@ class HomeScreenViewTests(TestCase):
             [entry.item.title for entry in entries], ["Home Action Comedy"]
         )
 
-    def test_library_query_entries_track_falls_back_to_album_cover(self):
-        """Issue #974: Home's music track row should fall back to the album's
-        cover when the track's own Item.image is stale/missing, matching History.
-        """
-        self._set_enabled_media_types(MediaTypes.MUSIC.value)
-        artist = Artist.objects.create(name="Home Fallback Artist")
-        album_image = "http://example.com/home-fallback-album.jpg"
-        album = Album.objects.create(
-            title="Home Fallback Album", artist=artist, image=album_image
+    def test_home_stale_filter_keeps_only_inactive_in_progress_media(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        old_item = Item.objects.create(
+            title="Neglected Movie",
+            media_id="home-stale-old",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
         )
-        item = Item.objects.create(
-            media_id="home-fallback-track-1",
-            source=Sources.MUSICBRAINZ.value,
-            media_type=MediaTypes.MUSIC.value,
-            title="Home Fallback Track",
-            image=settings.IMG_NONE,
+        recent_item = Item.objects.create(
+            title="Recently Progressed Movie",
+            media_id="home-stale-recent",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
         )
-        Music.objects.create(
-            item=item,
-            user=self.user,
-            artist=artist,
-            album=album,
-            status=Status.COMPLETED.value,
-            progress=1,
+        old_movie = Movie.objects.create(
+            item=old_item, user=self.user, status=Status.IN_PROGRESS.value
+        )
+        recent_movie = Movie.objects.create(
+            item=recent_item, user=self.user, status=Status.IN_PROGRESS.value
+        )
+        Movie.objects.filter(pk=old_movie.pk).update(
+            progressed_at=timezone.now() - timedelta(days=22)
+        )
+        Movie.objects.filter(pk=recent_movie.pk).update(
+            progressed_at=timezone.now() - timedelta(days=2)
         )
         row = HomeScreenRow.objects.create(
             user=self.user,
-            media_type=MediaTypes.MUSIC.value,
+            media_type=MediaTypes.MOVIE.value,
             position=0,
             enabled=True,
             row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
             sort_by=MediaSortChoices.TITLE,
             direction=DirectionChoices.ASC,
-            filters={"subview": "tracks", "status": [Status.COMPLETED.value]},
+            filters={
+                "status": [Status.IN_PROGRESS.value],
+                "stale_days": "21",
+            },
         )
 
         entries = home_screen._library_row_window(self.user, row, 0, 1000, seed=0)[0]
 
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].media.card_image_override, album_image)
-        self.assertEqual(entries[0].media.card_image_source, "fallback")
+        self.assertEqual([entry.item.title for entry in entries], ["Neglected Movie"])
+        old_movie.refresh_from_db()
+        recent_movie.refresh_from_db()
+        self.assertEqual(old_movie.status, Status.IN_PROGRESS.value)
+        self.assertEqual(recent_movie.status, Status.IN_PROGRESS.value)
+
+    def test_home_stale_filter_includes_media_without_progress_date(self):
+        item = Item.objects.create(
+            title="Never Progressed Movie",
+            media_id="home-stale-undated",
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+        )
+        entry = home_screen.HomeRowEntry(
+            item=item,
+            media=SimpleNamespace(progressed_at=None),
+        )
+
+        entries = home_screen._apply_stale_filter([entry], "21")
+
+        self.assertEqual(
+            [entry.item.title for entry in entries],
+            ["Never Progressed Movie"],
+        )
+
+    def test_home_stale_filter_is_configurable_and_validated(self):
+        fields = home_screen.build_filter_field_data(
+            self.user,
+            MediaTypes.MOVIE.value,
+        )
+
+        stale_field = next(field for field in fields if field["key"] == "stale_days")
+        self.assertIn(
+            {"value": "21", "label": "No progress for 21 days"},
+            stale_field["options"],
+        )
+        self.assertEqual(
+            home_screen.validate_library_row_filters(
+                {"stale_days": "21"},
+                MediaTypes.MOVIE.value,
+            )["stale_days"],
+            "21",
+        )
+        with self.assertRaises(home_screen.HomeScreenValidationError):
+            home_screen.validate_library_row_filters(
+                {"stale_days": "61"},
+                MediaTypes.MOVIE.value,
+            )
 
     def test_home_screen_settings_do_not_expose_no_status_option(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
@@ -1945,6 +2508,215 @@ class HomeScreenViewTests(TestCase):
         self.assertEqual(rows[1].custom_list_id, custom_list.id)
         self.assertEqual(rows[1].sort_by, "date_added")
         self.assertEqual(rows[2].sort_by, HomeSortChoices.RECENT)
+
+    def test_home_screen_post_persists_reorders_and_deletes_all_media_rows(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        payload = [
+            {"media_type": MediaTypes.MOVIE.value, "rows": []},
+            {
+                "media_type": "all",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "custom_title": "In progress",
+                        "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                        "sort_by": MediaSortChoices.TITLE,
+                        "direction": DirectionChoices.ASC,
+                        "filters": {"status": Status.IN_PROGRESS.value},
+                    }
+                ],
+            },
+            {"media_type": MediaTypes.GAME.value, "rows": []},
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {"home_screen_sections": json.dumps(payload)},
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        row = HomeScreenRow.objects.get(user=self.user, media_type="all")
+        self.assertEqual(row.title, "In progress")
+        self.assertEqual(row.filters["status"], [Status.IN_PROGRESS.value])
+        self.assertEqual(row.filters["progress"], "not_caught_up")
+        self.user.refresh_from_db()
+        self.assertEqual(
+            self.user.home_screen_media_type_order,
+            [MediaTypes.MOVIE.value, "all", MediaTypes.GAME.value],
+        )
+
+        payload[1]["rows"] = []
+        self.client.post(
+            reverse("home_screen"),
+            {"home_screen_sections": json.dumps(payload)},
+        )
+
+        self.assertFalse(
+            HomeScreenRow.objects.filter(user=self.user, media_type="all").exists()
+        )
+
+    def test_home_screen_post_persists_all_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
+        payload = [
+            {
+                "media_type": "all",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                        "sort_by": HomeSortChoices.RECENT,
+                        "direction": DirectionChoices.DESC,
+                        "filters": {
+                            "status": [Status.IN_PROGRESS.value],
+                            "media_types": [MediaTypes.GAME.value],
+                        },
+                    }
+                ],
+            }
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {"home_screen_sections": json.dumps(payload)},
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        row = HomeScreenRow.objects.get(user=self.user, media_type="all")
+        self.assertEqual(row.filters["media_types"], [MediaTypes.GAME.value])
+
+    def test_home_screen_post_allows_all_media_row_types(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        custom_list = CustomList.objects.create(name="All List", owner=self.user)
+
+        rows_payload = [
+            {
+                "row_type": HomeScreenRowTypeChoices.CUSTOM_LIST,
+                "custom_list_id": custom_list.id,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.WATCH_HISTORY,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_RESUME,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_STALE,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_UNSTARTED,
+                "sort_by": MediaSortChoices.DATE_ADDED,
+                "direction": DirectionChoices.DESC,
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.SHELF_FINISHED,
+                "sort_by": HomeSortChoices.RECENT,
+                "direction": DirectionChoices.DESC,
+            },
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {
+                "home_screen_sections": json.dumps(
+                    [
+                        {
+                            "media_type": "all",
+                            "rows": rows_payload,
+                        }
+                    ]
+                )
+            },
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        saved_rows = HomeScreenRow.objects.filter(
+            user=self.user,
+            media_type="all",
+        ).order_by("position")
+        self.assertEqual(saved_rows.count(), 7)
+
+    def test_home_screen_post_rejects_disabled_all_media_type_selection(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        payload = [
+            {
+                "media_type": "all",
+                "rows": [
+                    {
+                        "enabled": True,
+                        "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                        "sort_by": HomeSortChoices.RECENT,
+                        "direction": DirectionChoices.DESC,
+                        "filters": {
+                            "status": [Status.IN_PROGRESS.value],
+                            "media_types": [MediaTypes.GAME.value],
+                        },
+                    }
+                ],
+            }
+        ]
+
+        response = self.client.post(
+            reverse("home_screen"),
+            {"home_screen_sections": json.dumps(payload)},
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        self.assertFalse(
+            HomeScreenRow.objects.filter(user=self.user, media_type="all").exists()
+        )
+        self.assertIn(
+            "not enabled",
+            str(next(iter(get_messages(response.wsgi_request)))),
+        )
+
+    def test_home_screen_post_rejects_invalid_all_media_filter_and_sort(self):
+        self._set_enabled_media_types(MediaTypes.MOVIE.value)
+        invalid_rows = (
+            {
+                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                "sort_by": MediaSortChoices.TITLE,
+                "direction": DirectionChoices.ASC,
+                "filters": {"platform": "Steam"},
+            },
+            {
+                "row_type": HomeScreenRowTypeChoices.LIBRARY_QUERY,
+                "sort_by": HomeSortChoices.UPCOMING,
+                "direction": DirectionChoices.ASC,
+                "filters": {},
+            },
+        )
+
+        for row_payload in invalid_rows:
+            with self.subTest(row_payload=row_payload):
+                response = self.client.post(
+                    reverse("home_screen"),
+                    {
+                        "home_screen_sections": json.dumps(
+                            [{"media_type": "all", "rows": [row_payload]}]
+                        )
+                    },
+                )
+
+                self.assertRedirects(response, reverse("home_screen"))
+                self.assertFalse(
+                    HomeScreenRow.objects.filter(
+                        user=self.user,
+                        media_type="all",
+                    ).exists()
+                )
 
     def test_home_screen_post_persists_custom_title_and_headers_toggle(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
@@ -2720,3 +3492,573 @@ class CrossProviderDedupTests(TestCase):
         entries = home_screen._library_row_window(self.user, row, 0, 1000, seed=0)[0]
 
         self.assertEqual([entry.item.pk for entry in entries], [tvdb_item.pk])
+
+
+class HomeScreenCompanionParityTests(TestCase):
+    """Tests for Floppy Companion parity shelves, Activity Journal and settings."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.user = get_user_model().objects.create_user(
+            username="parity-user",
+            password="test-password-123",
+            home_binge_grouping_enabled=True,
+            home_stale_days_threshold=21,
+        )
+        self.client.force_login(self.user)
+
+    def test_group_watch_entries_by_binge_groups_consecutive_episodes(self):
+        item = Item.objects.create(
+            title="Breaking Bad",
+            media_id="1396",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+        )
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 4,
+                "episode_title": "Cancer Man",
+                "runtime_minutes": 48,
+            },
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 3,
+                "episode_title": "...And the Bag's in the River",
+                "runtime_minutes": 48,
+            },
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 2,
+                "episode_title": "Cat's in the Bag...",
+                "runtime_minutes": 48,
+            },
+            {
+                "media_type": "movie",
+                "title": "Inception",
+                "runtime_minutes": 148,
+            },
+        ]
+
+        grouped = home_screen.group_watch_entries_by_binge(episodes, enable_binge=True)
+        self.assertEqual(len(grouped), 2)
+        binge_group = grouped[0]
+        self.assertTrue(binge_group["is_group"])
+        self.assertEqual(binge_group["count"], 3)
+        self.assertEqual(binge_group["episode_range"], "S01E02-E04")
+        self.assertEqual(binge_group["total_runtime_minutes"], 144)
+        self.assertEqual(binge_group["series_title"], "Breaking Bad")
+
+        movie_item = grouped[1]
+        self.assertFalse(movie_item["is_group"])
+        self.assertEqual(movie_item["entry"]["title"], "Inception")
+
+    def test_group_watch_entries_by_binge_accepts_cached_episode_payloads(self):
+        show = {"id": 42, "title": "Great Show", "image": "show.jpg"}
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": {
+                    "media_id": "100",
+                    "source": Sources.TMDB.value,
+                    "title": f"Episode {number}",
+                },
+                "show": show,
+                "season_number": 1,
+                "episode_number": number,
+                "runtime_minutes": 45,
+            }
+            for number in (3, 2)
+        ]
+
+        grouped = home_screen.group_watch_entries_by_binge(episodes)
+
+        self.assertEqual(len(grouped), 1)
+        self.assertTrue(grouped[0]["is_group"])
+        self.assertEqual(grouped[0]["series_title"], "Great Show")
+        self.assertEqual(grouped[0]["count"], 2)
+
+    def test_group_watch_entries_by_binge_expands_cached_episode_group(self):
+        show = {"id": 42, "title": "Great Show", "image": "show.jpg"}
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": {
+                    "media_id": "100",
+                    "source": Sources.TMDB.value,
+                    "title": f"Episode {number}",
+                },
+                "show": show,
+                "season_number": 3,
+                "episode_number": number,
+                "runtime_minutes": runtime,
+            }
+            for number, runtime in ((3, 51), (2, 51), (1, 49))
+        ]
+        cached_group = {
+            **episodes[0],
+            "is_episode_group": True,
+            "group_count": 3,
+            "group_entries": episodes,
+            "runtime_minutes": 151,
+        }
+
+        grouped = home_screen.group_watch_entries_by_binge([cached_group])
+
+        self.assertEqual(len(grouped), 1)
+        self.assertTrue(grouped[0]["is_group"])
+        self.assertEqual(grouped[0]["count"], 3)
+        self.assertEqual(grouped[0]["episode_range"], "S03E01-E03")
+        self.assertEqual(grouped[0]["total_runtime_minutes"], 151)
+        self.assertEqual(len(grouped[0]["episodes"]), 3)
+
+        ungrouped = home_screen.group_watch_entries_by_binge(
+            [cached_group],
+            enable_binge=False,
+        )
+        self.assertEqual(len(ungrouped), 3)
+        self.assertEqual(
+            [item["entry"]["runtime_minutes"] for item in ungrouped],
+            [51, 51, 49],
+        )
+
+    def test_group_watch_entries_by_binge_disabled(self):
+        item = Item.objects.create(
+            title="Breaking Bad",
+            media_id="1396",
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+        )
+        episodes = [
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 2,
+            },
+            {
+                "media_type": "episode",
+                "item": item,
+                "media_id": "1396",
+                "source": Sources.TMDB.value,
+                "season_number": 1,
+                "episode_number": 1,
+            },
+        ]
+        ungrouped = home_screen.group_watch_entries_by_binge(
+            episodes, enable_binge=False
+        )
+        self.assertEqual(len(ungrouped), 2)
+        self.assertFalse(ungrouped[0]["is_group"])
+        self.assertFalse(ungrouped[1]["is_group"])
+
+    @patch("users.home_screen._entry_activity_timestamp", return_value=0)
+    @patch("users.home_screen._library_query_entries")
+    def test_stale_shelf_only_keeps_series_with_unwatched_aired_regular_episodes(
+        self,
+        library_entries,
+        _activity_timestamp,
+    ):
+        def create_show(title, media_id, released_regular_episodes, watched_episodes):
+            tv_item = Item.objects.create(
+                title=title,
+                media_id=media_id,
+                media_type=MediaTypes.TV.value,
+                source=Sources.TMDB.value,
+            )
+            tv = TV.objects.create(
+                item=tv_item,
+                user=self.user,
+                status=Status.IN_PROGRESS.value,
+            )
+            season_item = Item.objects.create(
+                title=f"{title} Season 1",
+                media_id=media_id,
+                media_type=MediaTypes.SEASON.value,
+                source=Sources.TMDB.value,
+                season_number=1,
+            )
+            season = Season.objects.create(
+                item=season_item,
+                user=self.user,
+                related_tv=tv,
+                status=Status.IN_PROGRESS.value,
+            )
+            for episode_number in range(1, released_regular_episodes + 1):
+                Event.objects.create(
+                    item=season_item,
+                    content_number=episode_number,
+                    datetime=timezone.now() - timedelta(days=episode_number),
+                )
+                if episode_number <= watched_episodes:
+                    episode_item = Item.objects.create(
+                        title=f"{title} S01E{episode_number:02d}",
+                        media_id=media_id,
+                        media_type=MediaTypes.EPISODE.value,
+                        source=Sources.TMDB.value,
+                        season_number=1,
+                        episode_number=episode_number,
+                    )
+                    Episode.objects.bulk_create(
+                        [Episode(item=episode_item, related_season=season)]
+                    )
+
+            specials_item = Item.objects.create(
+                title=f"{title} Specials",
+                media_id=media_id,
+                media_type=MediaTypes.SEASON.value,
+                source=Sources.TMDB.value,
+                season_number=0,
+            )
+            Season.objects.create(
+                item=specials_item,
+                user=self.user,
+                related_tv=tv,
+                status=Status.IN_PROGRESS.value,
+            )
+            Event.objects.create(
+                item=specials_item,
+                content_number=1,
+                datetime=timezone.now() - timedelta(days=1),
+            )
+            return home_screen.HomeRowEntry(item=tv_item, media=tv)
+
+        caught_up = create_show("Caught Up", "stale-caught-up", 1, 1)
+        still_unwatched = create_show("Still Unwatched", "stale-unwatched", 2, 1)
+        library_entries.return_value = [caught_up, still_unwatched]
+        row = HomeScreenRow(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_STALE,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        entries = home_screen._shelf_stale_entries(self.user, row)
+
+        self.assertEqual([entry.item.title for entry in entries], ["Still Unwatched"])
+
+    @patch(
+        "app.history_cache.get_cached_history_window",
+        autospec=True,
+        return_value=([], 0),
+    )
+    def test_activity_journal_home_uses_the_bounded_history_cache(self, cached_window):
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.WATCH_HISTORY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={"binge_grouping": True},
+        )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        cached_window.assert_called_once()
+        self.assertEqual(cached_window.call_args.kwargs["limit"], 14)
+        self.assertEqual(cached_window.call_args.kwargs["offset"], 0)
+
+    @patch("app.history_cache.get_cached_history_window", autospec=True)
+    def test_activity_journal_renders_cached_entries_without_an_image_key(
+        self,
+        cached_window,
+    ):
+        cached_window.return_value = (
+            [
+                {
+                    "day_key": "2026-08-25",
+                    "date_display": "25 August 2026",
+                    "weekday": "Tuesday",
+                    "total_runtime_display": "48min",
+                    "entries": [
+                        {
+                            "id": 6284,
+                            "media_type": MediaTypes.EPISODE.value,
+                            "media_id": "103516",
+                            "source": Sources.TMDB.value,
+                            "title": "An Adventure Hour in Space",
+                            "season_number": 0,
+                            "episode_number": 4,
+                            "played_at_local": timezone.now(),
+                            "item": {
+                                "id": 6284,
+                                "media_type": MediaTypes.EPISODE.value,
+                                "media_id": "103516",
+                                "source": Sources.TMDB.value,
+                                "title": "An Adventure Hour in Space",
+                                "season_number": 0,
+                                "episode_number": 4,
+                            },
+                        }
+                    ],
+                }
+            ],
+            1,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.WATCH_HISTORY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={"binge_grouping": True},
+        )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "An Adventure Hour in Space")
+        self.assertContains(response, "S00E04")
+        self.assertContains(
+            response,
+            'class="home-row-heading-title text-lg font-semibold leading-none '
+            'text-[var(--color-text)] flex items-center gap-x-2"',
+            html=False,
+        )
+
+    def test_activity_journal_respects_display_preferences_and_specials(self):
+        template_path = (
+            settings.BASE_DIR / "templates/app/components/home_activity_journal.html"
+        )
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertNotIn('time:"H:i"', template)
+        self.assertIn("user_time_format:user", template)
+        self.assertIn("show_media_score:user", template)
+        self.assertIn("score_display:user", template)
+        self.assertIn("season_number != None", template)
+        self.assertNotIn("x-collapse", template)
+        self.assertIn('aria-label="Toggle episodes for', template)
+        self.assertIn('aria-controls="activity-journal-group-', template)
+
+    def test_home_screen_settings_saves_binge_on_the_activity_journal_row(self):
+        response = self.client.post(
+            reverse("home_screen"),
+            {
+                "home_screen_sections": json.dumps(
+                    [
+                        {
+                            "media_type": "all",
+                            "rows": [
+                                {
+                                    "enabled": True,
+                                    "row_type": HomeScreenRowTypeChoices.WATCH_HISTORY,
+                                    "sort_by": HomeSortChoices.RECENT,
+                                    "direction": DirectionChoices.DESC,
+                                    "filters": {"binge_grouping": False},
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                "home_stale_days_threshold": "14",
+            },
+        )
+        self.assertRedirects(response, reverse("home_screen"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.home_binge_grouping_enabled)
+        self.assertEqual(self.user.home_stale_days_threshold, 14)
+        activity_row = HomeScreenRow.objects.get(
+            user=self.user,
+            row_type=HomeScreenRowTypeChoices.WATCH_HISTORY,
+        )
+        self.assertIs(activity_row.filters["binge_grouping"], False)
+
+    def test_binge_setting_is_only_rendered_in_the_activity_journal_menu(self):
+        response = self.client.get(reverse("home_screen"))
+
+        self.assertContains(response, 'x-model="row.filters.binge_grouping"')
+        self.assertNotContains(response, 'name="home_binge_grouping_enabled"')
+
+    def test_toggle_home_row_direction_works_on_shelf_rows(self):
+        shelf_row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_STALE,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+        updated = home_screen.toggle_home_row_direction(self.user, shelf_row.id)
+        self.assertEqual(updated.direction, DirectionChoices.ASC)
+
+        shelf_row.refresh_from_db()
+        self.assertEqual(shelf_row.direction, DirectionChoices.ASC)
+
+    def test_all_media_shelves_exclude_standalone_season_items(self):
+        self.user.tv_enabled = True
+        self.user.season_enabled = True
+        self.user.movie_enabled = True
+        self.user.save()
+        show_item = Item.objects.create(
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+            media_id="all-media-tv-show",
+            title="Upload",
+        )
+        season_item = Item.objects.create(
+            media_type=MediaTypes.SEASON.value,
+            source=Sources.TMDB.value,
+            media_id="all-media-tv-season-4",
+            title="Season 4",
+            season_number=4,
+        )
+        show_media = TV.objects.create(
+            user=self.user,
+            item=show_item,
+            status=Status.COMPLETED.value,
+        )
+        Season.objects.create(
+            user=self.user,
+            item=season_item,
+            related_tv=show_media,
+            status=Status.COMPLETED.value,
+        )
+        shelf_row = HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_FINISHED,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+        entries = home_screen._shelf_finished_entries(self.user, shelf_row)
+        item_ids = [entry.item.id for entry in entries]
+        self.assertIn(show_item.id, item_ids)
+        self.assertNotIn(season_item.id, item_ids)
+
+    def test_all_media_in_progress_and_finished_cards_show_media_type_chips(self):
+        self.user.movie_enabled = True
+        self.user.tv_enabled = True
+        self.user.save(update_fields=["movie_enabled", "tv_enabled"])
+        HomeScreenRow.objects.filter(user=self.user).delete()
+
+        movie_item = Item.objects.create(
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+            media_id="all-media-chip-movie",
+            title="In Progress Movie",
+            image="https://example.com/movie.jpg",
+        )
+        Movie.objects.create(
+            user=self.user,
+            item=movie_item,
+            status=Status.IN_PROGRESS.value,
+        )
+        tv_item = Item.objects.create(
+            media_type=MediaTypes.TV.value,
+            source=Sources.TMDB.value,
+            media_id="all-media-chip-tv",
+            title="Finished Series",
+            image="https://example.com/tv.jpg",
+        )
+        TV.objects.create(
+            user=self.user,
+            item=tv_item,
+            status=Status.COMPLETED.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            title="In progress",
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+            filters={"status": [Status.IN_PROGRESS.value]},
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=1,
+            row_type=HomeScreenRowTypeChoices.SHELF_FINISHED,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertContains(response, 'data-media-type-chip="movie"')
+        self.assertContains(response, ">Movie</span>", html=False)
+        self.assertContains(response, 'data-media-type-chip="tv"')
+        self.assertContains(response, ">TV Show</span>", html=False)
+
+    def test_all_media_stale_row_shows_media_type_chips(self):
+        self.user.home_media_type_chips_enabled = True
+        self.user.save(update_fields=["home_media_type_chips_enabled"])
+        row = HomeScreenRow(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_STALE,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        self.assertTrue(home_screen._show_media_type_chip(self.user, row, "all"))
+
+    def test_all_media_type_chips_follow_user_appearance_preferences(self):
+        self.user.movie_enabled = True
+        self.user.home_media_type_chips_enabled = True
+        self.user.home_media_type_chip_style = "outline"
+        self.user.home_media_type_chip_colors = {"movie": "#123ABC"}
+        self.user.save(
+            update_fields=[
+                "movie_enabled",
+                "home_media_type_chips_enabled",
+                "home_media_type_chip_style",
+                "home_media_type_chip_colors",
+            ]
+        )
+        HomeScreenRow.objects.filter(user=self.user).delete()
+        item = Item.objects.create(
+            media_type=MediaTypes.MOVIE.value,
+            source=Sources.TMDB.value,
+            media_id="styled-chip-movie",
+            title="Styled Movie",
+            image="https://example.com/movie.jpg",
+        )
+        Movie.objects.create(
+            user=self.user,
+            item=item,
+            status=Status.IN_PROGRESS.value,
+        )
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type="all",
+            position=0,
+            row_type=HomeScreenRowTypeChoices.SHELF_RESUME,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertContains(response, 'data-media-type-chip-style="outline"')
+        self.assertContains(response, "--media-type-chip-color: #123ABC")
+
+        self.user.home_media_type_chips_enabled = False
+        self.user.save(update_fields=["home_media_type_chips_enabled"])
+        cache.clear()
+        response = self.client.get(reverse("home"))
+        self.assertNotContains(response, 'data-media-type-chip="movie"')

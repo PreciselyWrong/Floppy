@@ -22,7 +22,13 @@ from django.core.exceptions import ValidationError
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError
 from django.db.models import Count, Q
-from django.http import Http404, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.http import (
+    Http404,
+    HttpResponse,
+    HttpResponseForbidden,
+    JsonResponse,
+    StreamingHttpResponse,
+)
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.defaultfilters import pluralize
 from django.urls import reverse
@@ -35,13 +41,14 @@ from django_celery_beat.models import PeriodicTask
 from django_celery_results.models import TaskResult
 
 from api import scopes as api_scopes
-from app import cache_utils, history_cache, image_cache, statistics_cache
+from app import cache_utils, config, history_cache, image_cache, statistics_cache
 from app import helpers as app_helpers
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
 from app.models import (
     Album,
     AlbumTracker,
+    ApplicationSettings,
     Artist,
     ArtistTracker,
     Item,
@@ -51,6 +58,7 @@ from app.models import (
     Status,
 )
 from app.providers import credentials, tmdb
+from app.services import metadata_resolution
 from app.templatetags import app_tags
 from config import run_state
 from integrations import exports, plex, seerr_api, stremio_catalog, tasks
@@ -71,7 +79,7 @@ from integrations.models import (
 )
 from integrations.plex_watchlist import WATCHLIST_TASK_NAME
 from users import appearance as appearance_config
-from users import cache_management
+from users import branding, cache_management
 from users.forms import (
     AuthenticatorSetupForm,
     NotificationSettingsForm,
@@ -98,14 +106,23 @@ from users.media_type_chips import (
 )
 from users.models import (
     HISTORY_VIEW_TYPE,
+    LOGO_TEXT_INPUT_MAX_LENGTH,
+    LOGO_TEXT_STORAGE_MAX_LENGTH,
+    PERSON_KNOWN_FOR_LIMIT_MAX,
     ActivityHistoryViewChoices,
+    AnimeLibraryModeChoices,
     DateFormatChoices,
     DurationFormatChoices,
     GameLoggingStyleChoices,
+    HomePinnedItem,
     ImportFrequencyChoices,
     ImportModeChoices,
     LogoStyleChoices,
+    LogoTextFillChoices,
+    LogoTextFontChoices,
+    LogoTextWeightChoices,
     MediaStatusChoices,
+    MetadataSourceDefaultChoices,
     MobileGridLayoutChoices,
     PlannedHomeDisplayChoices,
     RatingScaleChoices,
@@ -160,6 +177,32 @@ class CustomSocialSignupView(SocialSignupView):
     def get_success_url(self):
         """Send a newly created account into guided setup instead of Home."""
         return reverse("onboarding_media_types")
+
+
+@login_required
+@require_POST
+def toggle_home_pin(request, item_id):
+    """Toggle one tracked episodic title in the user's Up Next row."""
+    item = get_object_or_404(
+        Item,
+        id=item_id,
+        media_type__in=[MediaTypes.TV.value, MediaTypes.ANIME.value],
+    )
+    tracker_model = apps.get_model("app", item.media_type)
+    if not tracker_model.objects.filter(user=request.user, item=item).exists():
+        return HttpResponse(status=404)
+
+    pin, created = HomePinnedItem.objects.get_or_create(
+        user=request.user,
+        item=item,
+    )
+    if not created:
+        pin.delete()
+    return render(
+        request,
+        "app/components/home_pin_button.html",
+        {"item": item, "is_home_pinned": created},
+    )
 
 
 DEFAULT_AUTO_PAUSE_WEEKS = 16
@@ -733,6 +776,14 @@ def sidebar(request):
 
         fields_to_update = []
 
+        if request.POST.get("sidebar_navigation_present") is not None:
+            sidebar_history_enabled = (
+                request.POST.get("sidebar_history_enabled") == "on"
+            )
+            if request.user.sidebar_history_enabled != sidebar_history_enabled:
+                request.user.sidebar_history_enabled = sidebar_history_enabled
+                fields_to_update.append("sidebar_history_enabled")
+
         show_discover = request.POST.get("show_discover") == "on"
         if request.user.show_discover != show_discover:
             request.user.show_discover = show_discover
@@ -792,6 +843,15 @@ def home_screen(request):
                 request.user.home_show_media_type_headers = show_media_type_headers
                 fields_to_update.append("home_show_media_type_headers")
 
+            try:
+                stale_days = int(request.POST.get("home_stale_days_threshold", 21))
+            except (TypeError, ValueError):
+                stale_days = 21
+            stale_days = max(1, stale_days)
+            if request.user.home_stale_days_threshold != stale_days:
+                request.user.home_stale_days_threshold = stale_days
+                fields_to_update.append("home_stale_days_threshold")
+
             if request.POST.get("home_media_type_chips_present") is not None:
                 chips_enabled = request.POST.get("home_media_type_chips_enabled") == "1"
                 chip_style = request.POST.get("home_media_type_chip_style")
@@ -843,6 +903,7 @@ def home_screen(request):
     context = {
         "home_screen_sections_json": json.dumps(sections, cls=DjangoJSONEncoder),
         "show_media_type_headers": request.user.home_show_media_type_headers,
+        "home_stale_days_threshold": request.user.home_stale_days_threshold,
         "media_type_chip_styles": (
             ("solid", "Solid"),
             ("soft", "Soft"),
@@ -860,7 +921,6 @@ def home_screen(request):
     return render(request, "users/home_screen.html", context)
 
 
-@require_GET
 def home_screen_list_search(request):
     """Return accessible list suggestions for the Home screen settings page."""
     return JsonResponse(
@@ -981,23 +1041,99 @@ def ui_preferences(request):
 
 @require_http_methods(["GET", "POST"])
 def appearance(request):
-    """Configure application colors and detail page composition."""
+    """Configure branding, application colors, and detail page composition."""
     if request.method == "POST":
         if request.user.is_demo:
             messages.error(request, "This section is view-only for demo accounts.")
             return redirect("appearance")
 
+        public_action = request.POST.get("public_branding_action")
+        if public_action is not None:
+            if not branding.can_publish_public_appearance(request.user):
+                return HttpResponseForbidden()
+            if public_action not in {"publish", "reset"}:
+                return HttpResponse(status=400)
+            if public_action == "reset":
+                ApplicationSettings.objects.update_or_create(
+                    pk=1,
+                    defaults={"public_branding": {}},
+                )
+                messages.success(request, "Original sign-in logo restored")
+                return redirect("appearance")
+            if "theme" not in request.POST:
+                ApplicationSettings.objects.update_or_create(
+                    pk=1,
+                    defaults={
+                        "public_branding": branding.public_branding_snapshot(
+                            request.user
+                        )
+                    },
+                )
+                messages.success(request, "Sign-in branding updated")
+                return redirect("appearance")
+
         theme = request.POST.get("theme")
         if theme not in ThemeChoices.values:
             messages.error(request, "Unsupported theme.")
             return redirect("appearance")
+        logo_style = request.POST.get("logo_style", request.user.logo_style)
+        if logo_style not in LogoStyleChoices.values:
+            messages.error(request, "Unsupported logo style.")
+            return redirect("appearance")
+        logo_upload = request.FILES.get("logo_upload")
+        if (
+            logo_style == LogoStyleChoices.CUSTOM
+            and logo_upload is None
+            and not request.user.custom_logo_data
+        ):
+            messages.error(request, "Choose an image for the custom logo.")
+            return redirect("appearance")
         try:
-            custom_theme = appearance_config.parse_custom_theme(
-                request.POST.get("custom_theme")
+            raw_custom_theme = request.POST.get("custom_theme")
+            custom_theme = (
+                appearance_config.parse_custom_theme(raw_custom_theme)
+                if raw_custom_theme is not None
+                else request.user.custom_theme
             )
             detail_layouts = appearance_config.parse_detail_layouts(
                 request.POST.get("detail_layouts")
             )
+            posted_logo_text = request.POST.get("logo_text", request.user.logo_text)
+            logo_text = branding.normalize_logo_text(
+                posted_logo_text,
+                max_length=(
+                    LOGO_TEXT_STORAGE_MAX_LENGTH
+                    if posted_logo_text == request.user.logo_text
+                    else LOGO_TEXT_INPUT_MAX_LENGTH
+                ),
+            )
+            (
+                logo_text_font,
+                logo_text_size,
+                logo_text_weight,
+                logo_text_spacing,
+            ) = branding.normalize_logo_text_style(
+                request.POST.get("logo_text_font", request.user.logo_text_font),
+                request.POST.get("logo_text_size", request.user.logo_text_size),
+                request.POST.get("logo_text_weight", request.user.logo_text_weight),
+                request.POST.get("logo_text_spacing", request.user.logo_text_spacing),
+            )
+            (
+                logo_text_fill,
+                logo_text_color_start,
+                logo_text_color_end,
+            ) = branding.normalize_logo_text_fill(
+                request.POST.get("logo_text_fill", request.user.logo_text_fill),
+                request.POST.get(
+                    "logo_text_color_start", request.user.logo_text_color_start
+                ),
+                request.POST.get(
+                    "logo_text_color_end", request.user.logo_text_color_end
+                ),
+            )
+            custom_logo_data = request.user.custom_logo_data
+            if logo_style == LogoStyleChoices.CUSTOM and logo_upload is not None:
+                custom_logo_data = branding.normalize_logo_upload(logo_upload)
         except ValidationError as exc:
             messages.error(request, exc.messages[0])
             return redirect("appearance")
@@ -1005,14 +1141,54 @@ def appearance(request):
         request.user.theme = theme
         request.user.custom_theme = custom_theme
         request.user.detail_page_layouts = detail_layouts
+        request.user.show_public_reviews = any(
+            "reviews" in family_layout.get("content", [])
+            for family_layout in detail_layouts.values()
+        )
+        request.user.logo_style = logo_style
+        request.user.logo_text = logo_text
+        request.user.logo_text_font = logo_text_font
+        request.user.logo_text_size = logo_text_size
+        request.user.logo_text_weight = logo_text_weight
+        request.user.logo_text_spacing = logo_text_spacing
+        request.user.logo_text_fill = logo_text_fill
+        request.user.logo_text_color_start = logo_text_color_start
+        request.user.logo_text_color_end = logo_text_color_end
+        request.user.custom_logo_data = custom_logo_data
         request.user.save(
             update_fields=[
                 "theme",
                 "custom_theme",
                 "detail_page_layouts",
+                "show_public_reviews",
+                "logo_style",
+                "logo_text",
+                "logo_text_font",
+                "logo_text_size",
+                "logo_text_weight",
+                "logo_text_spacing",
+                "logo_text_fill",
+                "logo_text_color_start",
+                "logo_text_color_end",
+                "custom_logo_data",
             ]
         )
-        messages.success(request, "Appearance updated")
+        publishes_public = branding.can_publish_public_appearance(request.user)
+        if public_action == "publish" or publishes_public:
+            ApplicationSettings.objects.update_or_create(
+                pk=1,
+                defaults={
+                    "public_branding": branding.public_branding_snapshot(request.user)
+                },
+            )
+            messages.success(
+                request,
+                "Sign-in branding updated"
+                if public_action == "publish"
+                else "Appearance and sign-in updated",
+            )
+        else:
+            messages.success(request, "Appearance updated")
         return redirect("appearance")
 
     saved_palette = (
@@ -1033,6 +1209,21 @@ def appearance(request):
         "custom_theme_colors": appearance_config.CUSTOM_THEME_COLORS,
         "custom_theme_effects": appearance_config.CUSTOM_THEME_EFFECTS,
         "appearance_theme": request.user.theme,
+        "logo_style_choices": LogoStyleChoices.choices,
+        "logo_text_max_length": LOGO_TEXT_INPUT_MAX_LENGTH,
+        "logo_text_font_choices": LogoTextFontChoices.choices,
+        "logo_text_weight_choices": LogoTextWeightChoices.choices,
+        "logo_text_fill_choices": LogoTextFillChoices.choices,
+        "can_publish_public_appearance": branding.can_publish_public_appearance(
+            request.user
+        ),
+        "public_branding_active": bool(
+            ApplicationSettings.objects.filter(pk=1)
+            .values_list("public_branding", flat=True)
+            .first()
+        )
+        if branding.can_publish_public_appearance(request.user)
+        else False,
         "custom_theme_json": palette,
         "detail_layout_families_json": appearance_config.DETAIL_LAYOUT_FAMILIES,
         "detail_layouts_json": appearance_config.resolved_detail_layouts(
@@ -1083,7 +1274,9 @@ def cards(request, media_type=None):
         )
         fields = ["card_metadata"]
         if "clickable_media_cards" in request.POST:
-            request.user.clickable_media_cards = request.POST.get("clickable_media_cards") == "on"
+            request.user.clickable_media_cards = (
+                request.POST.get("clickable_media_cards") == "on"
+            )
             fields.append("clickable_media_cards")
         request.user.save(update_fields=fields)
         messages.success(request, "Media cards updated")
@@ -1374,7 +1567,7 @@ def preferences(request):
         "": gettext("Disabled"),
     }
     watch_provider_regions = [
-        (code, gettext(region_option_labels.get(code, label)))
+        (code, region_option_labels.get(code, label))
         for code, label in watch_provider_regions
     ]
     metadata_language_choices = [
@@ -1386,6 +1579,25 @@ def preferences(request):
         )
         for code, label in metadata_language_choices
     ]
+    tv_metadata_source_choices = [
+        (choice.value, choice.label)
+        for choice in metadata_resolution.available_metadata_sources(
+            MediaTypes.TV.value,
+        )
+    ]
+    anime_metadata_source_choices = [
+        (choice.value, choice.label)
+        for choice in metadata_resolution.available_metadata_sources(
+            MediaTypes.ANIME.value,
+        )
+    ]
+    tvdb_enabled = metadata_resolution.provider_is_enabled(
+        MetadataSourceDefaultChoices.TVDB,
+    )
+    saved_chip_colors = normalize_media_type_chip_colors(
+        request.user.home_media_type_chip_colors
+    )
+
     if request.method == "POST":
         # Prevent demo users from updating preferences
         if request.user.is_demo:
@@ -1397,7 +1609,6 @@ def preferences(request):
         date_format = request.POST.get("date_format")
         theme = request.POST.get("theme")
         ui_language = request.POST.get("ui_language")
-        logo_style = request.POST.get("logo_style")
         time_format = request.POST.get("time_format")
         activity_history_view = request.POST.get("activity_history_view")
         game_logging_style = request.POST.get("game_logging_style")
@@ -1405,10 +1616,36 @@ def preferences(request):
         title_display_preference = request.POST.get("title_display_preference")
         top_talent_sort_by = request.POST.get("top_talent_sort_by")
         rating_scale = request.POST.get("rating_scale")
+        tv_metadata_source_default = request.POST.get("tv_metadata_source_default")
+        anime_metadata_source_default = request.POST.get(
+            "anime_metadata_source_default"
+        )
+        anime_library_mode = request.POST.get("anime_library_mode")
+        anime_provider_changed = False
         hide_completed_recommendations_raw = request.POST.get(
             "hide_completed_recommendations"
         )
         show_recommendations_raw = request.POST.get("show_recommendations")
+        season_enrichment_raw = request.POST.get("show_season_enrichment")
+        episode_public_ratings_raw = request.POST.get("show_episode_public_ratings")
+        personal_rating_trend_raw = request.POST.get("show_personal_rating_trend")
+        obfuscate_episode_titles_raw = request.POST.get("obfuscate_episode_titles")
+        skipped_episodes_raw = request.POST.get("show_skipped_episodes")
+        remaining_time_raw = request.POST.get("show_remaining_time")
+        person_sections_order_raw = request.POST.get("person_sections_order")
+        person_hidden_sections_raw = request.POST.get("person_hidden_sections")
+        show_up_next_episode_code_raw = request.POST.get("show_up_next_episode_code")
+        now_playing_open_episode_raw = request.POST.get("now_playing_open_episode")
+        person_known_for_limit_raw = request.POST.get("person_known_for_limit")
+        home_media_type_chips_present = request.POST.get(
+            "home_media_type_chips_present"
+        )
+        detail_availability_fields = (
+            "detail_availability_enabled",
+            "detail_availability_plex_enabled",
+            "detail_availability_radarr_enabled",
+            "detail_availability_sonarr_enabled",
+        )
         # Read these as None-when-absent. The header theme toggle posts only
         # `theme` to this endpoint, so defaulting an absent field to its
         # "off" value silently reset preferences the user never touched.
@@ -1458,13 +1695,29 @@ def preferences(request):
             request.user.theme = theme
             fields_to_update.append("theme")
 
-        if (
-            logo_style
-            and logo_style in LogoStyleChoices.values
-            and request.user.logo_style != logo_style
-        ):
-            request.user.logo_style = logo_style
-            fields_to_update.append("logo_style")
+        if home_media_type_chips_present is not None:
+            chips_enabled = request.POST.get("home_media_type_chips_enabled") == "1"
+            chip_style = request.POST.get("home_media_type_chip_style")
+            submitted_colors = normalize_media_type_chip_colors(
+                {
+                    media_type: request.POST.get(
+                        f"home_media_type_chip_color_{media_type}"
+                    )
+                    for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+                }
+            )
+            if request.user.home_media_type_chips_enabled != chips_enabled:
+                request.user.home_media_type_chips_enabled = chips_enabled
+                fields_to_update.append("home_media_type_chips_enabled")
+            if (
+                chip_style in HOME_MEDIA_TYPE_CHIP_STYLES
+                and request.user.home_media_type_chip_style != chip_style
+            ):
+                request.user.home_media_type_chip_style = chip_style
+                fields_to_update.append("home_media_type_chip_style")
+            if request.user.home_media_type_chip_colors != submitted_colors:
+                request.user.home_media_type_chip_colors = submitted_colors
+                fields_to_update.append("home_media_type_chip_colors")
 
         if (
             ui_language
@@ -1528,6 +1781,18 @@ def preferences(request):
             request.user.mobile_grid_layout = mobile_grid_layout
             fields_to_update.append("mobile_grid_layout")
 
+        if show_up_next_episode_code_raw is not None:
+            show_up_next_episode_code = show_up_next_episode_code_raw == "1"
+            if request.user.show_up_next_episode_code != show_up_next_episode_code:
+                request.user.show_up_next_episode_code = show_up_next_episode_code
+                fields_to_update.append("show_up_next_episode_code")
+
+        if now_playing_open_episode_raw is not None:
+            now_playing_open_episode = now_playing_open_episode_raw == "1"
+            if request.user.now_playing_open_episode != now_playing_open_episode:
+                request.user.now_playing_open_episode = now_playing_open_episode
+                fields_to_update.append("now_playing_open_episode")
+
         if (
             title_display_preference
             and title_display_preference
@@ -1572,6 +1837,76 @@ def preferences(request):
             if request.user.show_recommendations != show_recommendations:
                 request.user.show_recommendations = show_recommendations
                 fields_to_update.append("show_recommendations")
+
+        for field_name, raw_value in (
+            ("show_season_enrichment", season_enrichment_raw),
+            ("show_episode_public_ratings", episode_public_ratings_raw),
+            ("show_personal_rating_trend", personal_rating_trend_raw),
+            ("obfuscate_episode_titles", obfuscate_episode_titles_raw),
+            ("show_skipped_episodes", skipped_episodes_raw),
+            ("show_remaining_time", remaining_time_raw),
+        ):
+            if raw_value is None:
+                continue
+            value = raw_value == "1"
+            if getattr(request.user, field_name) != value:
+                setattr(request.user, field_name, value)
+                fields_to_update.append(field_name)
+
+        if person_known_for_limit_raw is not None:
+            try:
+                person_known_for_limit = int(person_known_for_limit_raw)
+            except (TypeError, ValueError):
+                person_known_for_limit = None
+            if (
+                person_known_for_limit is not None
+                and 0 <= person_known_for_limit <= PERSON_KNOWN_FOR_LIMIT_MAX
+                and request.user.person_known_for_limit != person_known_for_limit
+            ):
+                request.user.person_known_for_limit = person_known_for_limit
+                fields_to_update.append("person_known_for_limit")
+
+        valid_person_sections = {
+            "tracked",
+            "cast",
+            "guest",
+            "crew",
+            "biography",
+            "details",
+        }
+        if person_sections_order_raw is not None:
+            requested_order = [
+                value.strip()
+                for value in person_sections_order_raw.split(",")
+                if value.strip() in valid_person_sections
+            ]
+            requested_order = list(dict.fromkeys(requested_order))
+            for value in valid_person_sections:
+                if value not in requested_order:
+                    requested_order.append(value)
+            if request.user.person_sections_order != requested_order:
+                request.user.person_sections_order = requested_order
+                fields_to_update.append("person_sections_order")
+        if person_hidden_sections_raw is not None:
+            hidden_sections = list(
+                dict.fromkeys(
+                    value.strip()
+                    for value in person_hidden_sections_raw.split(",")
+                    if value.strip() in valid_person_sections
+                )
+            )
+            if request.user.person_hidden_sections != hidden_sections:
+                request.user.person_hidden_sections = hidden_sections
+                fields_to_update.append("person_hidden_sections")
+
+        for field_name in detail_availability_fields:
+            raw_value = request.POST.get(field_name)
+            if raw_value is None:
+                continue
+            enabled = raw_value == "1"
+            if getattr(request.user, field_name) != enabled:
+                setattr(request.user, field_name, enabled)
+                fields_to_update.append(field_name)
 
         if (
             quick_season_update_mobile is not None
@@ -1633,6 +1968,31 @@ def preferences(request):
                 request.user.metadata_language = metadata_language
                 fields_to_update.append("metadata_language")
 
+        if (
+            tv_metadata_source_default
+            in {choice[0] for choice in tv_metadata_source_choices}
+            and request.user.tv_metadata_source_default != tv_metadata_source_default
+        ):
+            request.user.tv_metadata_source_default = tv_metadata_source_default
+            fields_to_update.append("tv_metadata_source_default")
+
+        if anime_metadata_source_default in {
+            choice[0] for choice in anime_metadata_source_choices
+        } and (
+            request.user.anime_metadata_source_default != anime_metadata_source_default
+        ):
+            request.user.anime_metadata_source_default = anime_metadata_source_default
+            fields_to_update.append("anime_metadata_source_default")
+            anime_provider_changed = True
+
+        if (
+            anime_library_mode
+            in [choice[0] for choice in AnimeLibraryModeChoices.choices]
+            and request.user.anime_library_mode != anime_library_mode
+        ):
+            request.user.anime_library_mode = anime_library_mode
+            fields_to_update.append("anime_library_mode")
+
         session_duration = request.POST.get("session_duration")
         if session_duration is not None:
             try:
@@ -1670,6 +2030,16 @@ def preferences(request):
                     request.user.id,
                     debounce_seconds=0,
                 )
+        if anime_provider_changed:
+            # Switching provider only decides the shape of newly added shows.
+            # Existing ones are left alone unless the user asks, because the
+            # MAL-to-series mapping is N:1 and cannot be re-derived in bulk.
+            from app.tasks_anime_library_repair import anime_rows_needing_conversion
+
+            convertible = anime_rows_needing_conversion(request.user)
+            if convertible:
+                request.session["anime_shape_prompt_count"] = len(convertible)
+
         success_message = (
             gettext("Settings updated successfully.")
             if "media_types_checkboxes" in request.POST
@@ -1680,6 +2050,7 @@ def preferences(request):
 
     context = {
         "media_types": media_types,
+        "theme_presets": appearance_config.THEME_PRESETS,
         "active_libraries": active_libraries,
         "auto_pause_enabled": request.user.auto_pause_in_progress_enabled,
         "auto_pause_rules_json": json.dumps(request.user.auto_pause_rules or []),
@@ -1687,13 +2058,82 @@ def preferences(request):
         "watch_provider_choices": watch_provider_regions,
         "metadata_language_choices": metadata_language_choices,
         "ui_language_choices": UiLanguageChoices.choices,
+        "tv_metadata_source_choices": tv_metadata_source_choices,
+        "anime_metadata_source_choices": anime_metadata_source_choices,
+        "anime_library_mode_choices": AnimeLibraryModeChoices.choices,
         "session_duration_choices": SessionDurationChoices.choices,
         "week_start_day_choices": WeekStartDayChoices.choices,
+        "tvdb_enabled": tvdb_enabled,
+        "season_display_preferences": (
+            (
+                "show_season_enrichment",
+                "Season progress and upcoming indicators",
+                request.user.show_season_enrichment,
+            ),
+            (
+                "show_episode_public_ratings",
+                "Public episode ratings",
+                request.user.show_episode_public_ratings,
+            ),
+            (
+                "show_personal_rating_trend",
+                "Personal rating trend",
+                request.user.show_personal_rating_trend,
+            ),
+            (
+                "obfuscate_episode_titles",
+                "Hide unseen episode titles",
+                request.user.obfuscate_episode_titles,
+            ),
+            (
+                "show_skipped_episodes",
+                "Skipped episode warnings",
+                request.user.show_skipped_episodes,
+            ),
+            (
+                "show_remaining_time",
+                "Remaining time and estimated finish",
+                request.user.show_remaining_time,
+            ),
+        ),
+        "person_sections_order_text": ", ".join(
+            value
+            for value in request.user.person_sections_order or []
+            if value != "known_for"
+        ),
+        "person_hidden_sections_text": ", ".join(
+            value
+            for value in request.user.person_hidden_sections or []
+            if value != "known_for"
+        ),
+        "media_type_chip_styles": (
+            ("solid", "Solid"),
+            ("soft", "Soft"),
+            ("outline", "Outline"),
+        ),
+        "media_type_chip_options": [
+            {
+                "value": media_type,
+                "label": app_tags.media_type_readable(media_type),
+                "color": saved_chip_colors.get(
+                    media_type,
+                    default_media_type_chip_color(media_type),
+                ),
+            }
+            for media_type in HOME_MEDIA_TYPE_CHIP_TYPES
+            if config.get_config(media_type)
+        ],
+        "anime_shape_prompt_count": request.session.pop(
+            "anime_shape_prompt_count",
+            None,
+        ),
     }
 
     return render(request, "users/preferences.html", context)
 
 
+@login_required
+@require_POST
 @login_required
 @require_POST
 def convert_anime_library(request):

@@ -6,6 +6,13 @@ from django.contrib.auth import get_user_model
 _EXPORT_MODULES = {
     "export_tmdb_ratings": "integrations.tasks._ratings",
     **dict.fromkeys(
+        (
+            "refresh_all_plex_library_indexes",
+            "refresh_plex_library_index",
+        ),
+        "integrations.tasks._plex_library_index",
+    ),
+    **dict.fromkeys(
         ("COMPACT_CHANGE_LOG_TASK_NAME", "compact_watch_state_changes"),
         "integrations.tasks._change_log",
     ),
@@ -288,6 +295,8 @@ __all__ = [
     "pull_jellyfin_history",
     "push_jellyfin_watched",
     "reconcile_watched_state",
+    "refresh_all_plex_library_indexes",
+    "refresh_plex_library_index",
     "refresh_plex_sections",
     "sweep_watched_state_deliveries",
     "sync_plex_mark_watched",

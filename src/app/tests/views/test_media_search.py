@@ -1,7 +1,9 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from app.media_list_filters import media_list_entries_for_items
@@ -295,6 +297,39 @@ class MediaSearchViewTests(TestCase):
             Sources.TVDB.value,
             language="en",
             user=self.user,
+        )
+
+    @patch("app.providers.services.search")
+    def test_local_search_returns_a_bounded_page_and_the_full_total(self, mock_search):
+        mock_search.return_value = {
+            "page": 1,
+            "total_results": 0,
+            "total_pages": 0,
+            "results": [],
+        }
+        for number in range(31):
+            Movie.objects.create(
+                user=self.user,
+                item=Item.objects.create(
+                    media_id=f"search-bound-{number}",
+                    source=Sources.MANUAL.value,
+                    media_type=MediaTypes.MOVIE.value,
+                    title=f"UpgradeBounded {number:02d}",
+                ),
+                status=Status.COMPLETED.value,
+            )
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get(
+                reverse("search") + "?media_type=movie&q=upgradebounded"
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["local_results_total"], 31)
+        self.assertEqual(len(response.context["local_results"]), 24)
+        self.assertTrue(
+            any(
+                "app_item" in query["sql"] and "LIMIT 24" in query["sql"]
+                for query in queries
+            )
         )
 
     @override_settings(HARDCOVER_API="")

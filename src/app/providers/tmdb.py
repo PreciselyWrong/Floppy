@@ -14,6 +14,7 @@ from app import backdrops, helpers
 from app.log_safety import exception_summary
 from app.models import MediaTypes, Sources
 from app.providers import credentials, services
+from app.public_reviews import ProviderReviewPage
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ TMDB_MOVIE_CACHE_VERSION = 3
 # entry, independent of the movie/tv/season append_to_response payloads above.
 CAROUSEL_CACHE_TTL_SUCCESS = 60 * 60 * 24 * 7
 CAROUSEL_CACHE_TTL_ABSENT = 60 * 60 * 24
+PUBLIC_REVIEWS_CACHE_TIMEOUT = 60 * 60 * 6
 
 
 def base_params(language=None):
@@ -65,6 +67,52 @@ def base_params(language=None):
         "api_key": credentials.get("tmdb", "api_key"),
         "language": language or settings.TMDB_LANG,
     }
+
+
+def public_reviews(media_type, media_id, *, page=1, page_size=20, language=None):
+    """Return normalized public movie or series reviews."""
+    if media_type not in {MediaTypes.MOVIE.value, MediaTypes.TV.value, MediaTypes.ANIME.value}:
+        return ProviderReviewPage([])
+    tmdb_type = MediaTypes.TV.value if media_type == MediaTypes.ANIME.value else media_type
+    page = max(int(page), 1)
+    page_size = max(1, min(int(page_size), 20))
+    cache_key = (
+        f"tmdb_public_reviews_v2_{tmdb_type}_{media_id}_"
+        f"{language or settings.TMDB_LANG}_{page}_{page_size}"
+    )
+    data = cache.get(cache_key)
+    if data is None:
+        params = base_params(language)
+        params["page"] = page
+        response = services.api_request(
+            Sources.TMDB.value,
+            "GET",
+            f"{base_url}/{tmdb_type}/{media_id}/reviews",
+            params=params,
+        )
+        if not response.get("results") and language:
+            response = services.api_request(
+                Sources.TMDB.value,
+                "GET",
+                f"{base_url}/{tmdb_type}/{media_id}/reviews",
+                params={"api_key": settings.TMDB_API, "page": page},
+            )
+        data = {
+            "reviews": [
+                {
+                    "author": item.get("author") or "Anonymous",
+                    "body": item.get("content") or "",
+                    "published_at": item.get("created_at"),
+                    "score": (item.get("author_details") or {}).get("rating"),
+                    "url": item.get("url"),
+                }
+                for item in (response.get("results") or [])[:page_size]
+            ],
+            "total": response.get("total_results"),
+            "has_more": page < int(response.get("total_pages") or 1),
+        }
+        cache.set(cache_key, data, PUBLIC_REVIEWS_CACHE_TIMEOUT)
+    return ProviderReviewPage(**data)
 
 
 def _language_suffix(language=None):
@@ -2473,12 +2521,15 @@ def process_episodes(season_metadata, episodes_in_db, season=None):
                 "image_source": image_source,
                 "title": episode.get("name") or episode.get("title") or "",
                 "overview": episode.get("overview") or "",
+                "score": episode.get("score") or episode.get("vote_average"),
+                "score_count": episode.get("score_count") or episode.get("vote_count"),
                 # Plays in the current rewatch pass — everything watched
                 # when no pass is open — so the row renders unwatched again
                 # while a rewatch is under way.
                 "history": pass_plays,
                 "all_history": all_plays,
                 "runtime": get_readable_duration(episode.get("runtime")),
+                "runtime_minutes": episode.get("runtime"),
             },
         )
     return episodes_metadata
@@ -2600,7 +2651,10 @@ def episode(media_id, season_number, episode_number, language=None):
             "episode_title": response.get("name") or f"Episode {episode_number}",
             "score": round(vote_average, 1) if vote_average else None,
             "score_count": vote_count or None,
-            "cast": get_cast_credits({"cast": cast_rows}),
+            "cast": [
+                {**row, "credit_type": "guest"}
+                for row in get_cast_credits({"cast": cast_rows})
+            ],
             "crew": get_crew_credits({"crew": crew_rows}),
         }
         tvdb_episode_images = get_tvdb_episode_image_map(

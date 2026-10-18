@@ -303,7 +303,7 @@ class TV(Media):
             if is_explicit_start
             and season._would_be_immediately_complete(
                 started_at,
-                getattr(season, "max_progress", None),
+                season._resolve_max_progress(getattr(season, "max_progress", None)),
             )
         ]
         openable = [season for season in seasons if season not in skipped]
@@ -1223,6 +1223,23 @@ class Season(Media):
             self.rewatch_started_at = original_started_at
             self._invalidate_episode_stats()
 
+    def _resolve_max_progress(self, max_progress=None):
+        """Resolve a season length, retaining watched legacy episodes as fallback."""
+        if max_progress is None:
+            from app.models.media import BasicMedia  # avoid a module-load cycle
+
+            BasicMedia.objects.annotate_max_progress([self], MediaTypes.SEASON.value)
+            max_progress = getattr(self, "max_progress", None)
+        if max_progress is None:
+            max_progress = Item.objects.filter(
+                media_id=self.item.media_id,
+                source=self.item.source,
+                media_type=MediaTypes.EPISODE.value,
+                season_number=self.item.season_number,
+            ).aggregate(value=Max("episode_number"))["value"]
+        self.max_progress = max_progress
+        return max_progress
+
     def derived_status_from_episode_progress(
         self,
         max_progress=None,
@@ -1357,11 +1374,7 @@ class Season(Media):
             return
         is_explicit_start = started_at is not None
         started_at = started_at or timezone.now()
-        if max_progress is None:
-            from app.models.media import BasicMedia  # avoid a module-load cycle
-
-            BasicMedia.objects.annotate_max_progress([self], MediaTypes.SEASON.value)
-            max_progress = getattr(self, "max_progress", None)
+        max_progress = self._resolve_max_progress(max_progress)
 
         if is_explicit_start and self._would_be_immediately_complete(started_at, max_progress):
             already_complete_msg = "Every episode is already watched from that date."
@@ -1386,11 +1399,7 @@ class Season(Media):
         """
         if self.rewatch_started_at is None:
             return
-        if max_progress is None:
-            from app.models.media import BasicMedia  # avoid a module-load cycle
-
-            BasicMedia.objects.annotate_max_progress([self], MediaTypes.SEASON.value)
-            max_progress = getattr(self, "max_progress", None)
+        max_progress = self._resolve_max_progress(max_progress)
         self.rewatch_started_at = None
         self._invalidate_episode_stats()
         if self._is_fully_watched(max_progress):

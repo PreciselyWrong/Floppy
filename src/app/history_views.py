@@ -24,6 +24,7 @@ from app import (
     helpers,
     history_cache,
     history_cache_reader,
+    history_timeline,
 )
 from app import statistics as stats
 from app.models import (
@@ -595,6 +596,12 @@ def _cached_history_entry_matches_filters(entry, filters):
     album = entry.get("album") or {}
     show = entry.get("show") or {}
     entry_media_type = entry.get("media_type")
+    timeline_family = filters.get("family")
+    if (
+        timeline_family
+        and history_timeline.get_timeline_family(entry_media_type) != timeline_family
+    ):
+        return False
     media_type_filter_raw = filters.get("media_type")
     if media_type_filter_raw:
         media_type_filters = {
@@ -734,6 +741,7 @@ def _annotate_history_day_for_template(day):
                 entry_count - entry_offset - len(entries),
                 0,
             ),
+            "timeline_entries": history_timeline.group_day_timeline_entries(entries),
         },
     )
     return annotated_day
@@ -917,6 +925,9 @@ def _prepare_history_day_page(day, user, filters, offset=0):
     window_offset = day.get("_entry_window_offset", 0)
     local_offset = max(offset - window_offset, 0)
     annotated_day["entries"] = entries[local_offset : local_offset + page_size]
+    annotated_day["timeline_entries"] = history_timeline.group_day_timeline_entries(
+        annotated_day["entries"],
+    )
     annotated_day["entry_offset"] = offset
     annotated_day["next_entry_offset"] = offset + len(annotated_day["entries"])
     annotated_day["has_more"] = (
@@ -967,6 +978,10 @@ def _parse_history_filters(request):
         value = request.GET.get(param)
         if value:
             filters[param] = value
+
+    family = request.GET.get("family")
+    if family in history_timeline.TIMELINE_FAMILIES:
+        filters["family"] = family
 
     logging_style = request.GET.get("logging_style")
     if logging_style not in ("sessions", "repeats"):
@@ -1047,6 +1062,8 @@ def history(request):
             history_mode = "activity"
 
         filters, logging_style = _parse_history_filters(request)
+        if history_mode == "release":
+            filters.pop("family", None)
 
         date_filters = {}
         start_date_str = request.GET.get("start-date")
@@ -1182,6 +1199,11 @@ def history(request):
                 history_days_all,
                 request.user,
             )
+            if history_mode == "activity" and filters.get("family"):
+                history_days_all = _filter_cached_history_days(
+                    history_days_all,
+                    {"family": filters["family"]},
+                )
 
             paginator = Paginator(history_days_all, history_cache.HISTORY_DAYS_PER_PAGE)
 
@@ -1265,6 +1287,9 @@ def history(request):
             "current_year": now.year,
             "current_month_num": now.month,
             "month_nav_query": month_nav_query,
+            "timeline_family": filters.get("family", "all"),
+            "timeline_family_options": history_timeline.TIMELINE_FAMILY_OPTIONS,
+            "has_active_history_filters": bool(active_filters),
         }
         day_entry_counts = []
         total_entries = 0

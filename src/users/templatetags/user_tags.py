@@ -13,12 +13,16 @@ from users.appearance import (
     custom_theme_css,
     resolved_detail_layouts,
 )
+from users.appearance import (
+    detail_layout_family as resolve_detail_layout_family,
+)
 from users.models import DateFormatChoices, TimeFormatChoices
 
 register = template.Library()
 
 
 _IMPORT_MEDIA_LABELS = {
+
     "TV Show": (gettext_noop("TV Show"), gettext_noop("TV Shows")),
     "TV Season": (gettext_noop("TV Season"), gettext_noop("TV Seasons")),
     "Episode": (gettext_noop("Episode"), gettext_noop("Episodes")),
@@ -345,16 +349,22 @@ def theme_display(theme_value):
 @register.simple_tag
 def custom_theme_style(user):
     """Return validated inline theme tokens for the custom preset."""
-    if not getattr(user, "is_authenticated", False) or user.theme != "custom":
+    theme = user.get("theme") if isinstance(user, dict) else getattr(user, "theme", None)
+    if theme != "custom":
         return ""
-    return custom_theme_css(user.custom_theme)
+    palette = (
+        user.get("custom_theme", {})
+        if isinstance(user, dict)
+        else getattr(user, "custom_theme", {})
+    )
+    return custom_theme_css(palette)
 
 
 @register.simple_tag
 def detail_section_attrs(user, family, zone, section, visibility_only=False):
     """Return safe server-rendered visibility and order attributes."""
     layouts = resolved_detail_layouts(
-        getattr(user, "detail_page_layouts", {}) if user.is_authenticated else {}
+        getattr(user, "detail_page_layouts", {}) if getattr(user, "is_authenticated", False) else {}
     )
     section_order = layouts.get(family, {}).get(zone, [])
     if section not in section_order:
@@ -371,15 +381,8 @@ def detail_section_attrs(user, family, zone, section, visibility_only=False):
 @register.simple_tag
 def detail_layout_family(media_type):
     """Map generic media types to their shared detail layout family."""
-    if media_type in {"tv", "anime", "season"}:
-        return "series"
-    if media_type in {"game", "boardgame"}:
-        return "game"
-    if media_type == "comic":
-        return "comic"
-    if media_type == "podcast":
-        return "podcast"
-    return "media"
+    return resolve_detail_layout_family(media_type)
+
 
 
 @register.filter

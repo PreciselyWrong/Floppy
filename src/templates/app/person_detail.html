@@ -29,6 +29,7 @@
 
     <div class="w-full md:w-3/4">
       <h1 class="text-3xl font-bold mb-4 text-center md:text-start">{{ person.name }}</h1>
+      {% if person.age is not None %}<p class="mb-3 text-sm text-[var(--color-text-secondary)]">Age {{ person.age }}{% if person.death_date %} at death{% endif %}</p>{% endif %}
 
       <div class="flex flex-wrap gap-2 mb-4">
         {% if person.known_for_department %}
@@ -123,6 +124,20 @@
     </div>
   </div>
 
+  {% if tracked_titles and 'tracked' not in person_hidden_sections %}
+    <section class="mb-8">
+      <h2 class="mb-4 text-xl font-bold">Tracked titles</h2>
+      <div class="flex gap-4 overflow-x-auto pb-2 home-row-scrollbar-hidden"
+           data-horizontal-scroll="true"
+           tabindex="0"
+           role="region"
+           aria-label="Tracked titles carousel">
+        {% for entry in tracked_titles|slice:":20" %}
+          {% include "app/components/person_filmography_card.html" with entry=entry user=user source=source IMG_NONE=IMG_NONE show_watched_runtime_chip=True only %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
   {% translate "All" as media_i18n_2 %}{% translate "Rated" as media_i18n_3 %}{% translate "Not Rated" as media_i18n_4 %}{% translate "Collected" as media_i18n_5 %}{% translate "Not Collected" as media_i18n_6 %}{% translate "Any" as media_i18n_7 %}{% translate "Not Caught Up" as media_i18n_8 %}{% translate "Caught Up" as media_i18n_9 %}{% translate "Released" as media_i18n_10 %}{% translate "Not Released" as media_i18n_11 %}<div {% detail_section_attrs user "person" "content" "filmography" %}
        x-data="{
     mediaListUrl: '{{ person_detail_url }}',

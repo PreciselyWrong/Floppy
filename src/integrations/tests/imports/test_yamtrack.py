@@ -1199,4 +1199,3 @@ class ImportYamtrackMediaIdValidation(TestCase):
         mock_search.assert_not_called()
         movie = Movie.objects.get(user=self.user)
         self.assertEqual(movie.item.media_id, "603")
-

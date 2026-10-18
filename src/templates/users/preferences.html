@@ -62,73 +62,15 @@
                  x-transition:leave-start="transform opacity-100 scale-100"
                  x-transition:leave-end="transform opacity-0 scale-95"
                  class="absolute left-0 right-0 mt-2 py-1 bg-[var(--color-panel)] rounded-md shadow-lg overflow-hidden z-10 border border-gray-600">
-              <button type="button"
-                      @click="selectedValue = 'system'; selectedLabel = gettext('System default'); open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                {% translate "System default" %}
-              </button>
-              <button type="button"
-                      @click="selectedValue = 'dark'; selectedLabel = gettext('Dark'); open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                {% translate "Dark" %}
-              </button>
-              <button type="button"
-                      @click="selectedValue = 'light'; selectedLabel = gettext('Light'); open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                {% translate "Light" %}
-              </button>
+              {% for value, preset in theme_presets.items %}
+                <button type="button"
+                        @click="selectedValue = '{{ value }}'; selectedLabel = gettext('{{ preset.label|escapejs }}'); open = false"
+                        class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
+                  {{ preset.label }}
+                </button>
+              {% endfor %}
             </div>
             <input type="hidden" name="theme" x-bind:value="selectedValue">
-          </div>
-        </div>
-
-        <!-- Logo -->
-        <div class="p-3 bg-[var(--color-surface-strong)] rounded-md mb-4">
-          <div class="flex flex-col items-start gap-1 mb-2">
-            <label class="text-[var(--color-text-secondary)] text-sm font-medium">{% translate "Logo" %}</label>
-            <span class="text-[var(--color-text-muted)] text-xs">{% translate "Floppy logo style." %}</span>
-          </div>
-          <div class="relative"
-               x-data="{ open: false, selectedValue: '{{ user.logo_style|default:'colorful' }}', selectedLabel: '' }"
-               x-init="selectedLabel = selectedValue === 'monochrome' ? gettext('Monochrome') : gettext('Colorful')">
-            <button type="button"
-                    @click="open = !open"
-                    @click.outside="open = false"
-                    class="flex items-center justify-between w-full px-3 py-2 bg-[var(--color-panel)] border border-gray-600 rounded-md text-[var(--color-text-secondary)] text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent cursor-pointer">
-              <span x-text="selectedLabel"></span>
-              <svg xmlns="http://www.w3.org/2000/svg"
-                   width="24"
-                   height="24"
-                   viewBox="0 0 24 24"
-                   fill="none"
-                   stroke="currentColor"
-                   stroke-width="2"
-                   stroke-linecap="round"
-                   stroke-linejoin="round"
-                   class="w-4 h-4 text-[var(--color-text-muted)]">
-                <path d="m6 9 6 6 6-6"></path>
-              </svg>
-            </button>
-            <div x-show="open"
-                 x-transition:enter="transition ease-out duration-100"
-                 x-transition:enter-start="transform opacity-0 scale-95"
-                 x-transition:enter-end="transform opacity-100 scale-100"
-                 x-transition:leave="transition ease-in duration-75"
-                 x-transition:leave-start="transform opacity-100 scale-100"
-                 x-transition:leave-end="transform opacity-0 scale-95"
-                 class="absolute left-0 right-0 mt-2 py-1 bg-[var(--color-panel)] rounded-md shadow-lg overflow-hidden z-10 border border-gray-600">
-              <button type="button"
-                      @click="selectedValue = 'colorful'; selectedLabel = gettext('Colorful'); open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                {% translate "Colorful" %}
-              </button>
-              <button type="button"
-                      @click="selectedValue = 'monochrome'; selectedLabel = gettext('Monochrome'); open = false"
-                      class="block w-full px-3 py-2 text-left text-sm transition-colors text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)]">
-                {% translate "Monochrome" %}
-              </button>
-            </div>
-            <input type="hidden" name="logo_style" x-bind:value="selectedValue">
           </div>
         </div>
 
@@ -328,6 +270,57 @@
           <p class="text-sm text-[var(--color-text-secondary)]">
             <a class="text-[var(--color-link)]" href="{% url 'cards' %}">{% translate "Card subtitles, the progress bar, and zero ratings are on the Media Cards page." %}</a>
           </p>
+        </div>
+
+        <!-- Home Playback Links -->
+        <div class="p-3 bg-[var(--color-surface-strong)] rounded-md mt-4">
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-[var(--color-text-secondary)] text-sm font-medium">Home Playback</label>
+            <span class="text-[var(--color-text-muted)] text-xs">Episode details and links.</span>
+          </div>
+          <div class="space-y-3">
+            <label class="flex items-center justify-between gap-3 cursor-pointer">
+              <span>
+                <span class="block text-[var(--color-text-secondary)] text-sm">Show SxxExx in Up Next</span>
+                <span class="block text-[var(--color-text-muted)] text-xs mt-1">Keep the season and episode code visible on the card.</span>
+              </span>
+              <span class="relative inline-flex items-center shrink-0">
+                <input type="hidden" name="show_up_next_episode_code" value="0">
+                <input class="sr-only peer"
+                       type="checkbox"
+                       name="show_up_next_episode_code"
+                       value="1"
+                       {% if user.show_up_next_episode_code %}checked{% endif %}>
+                <span class="w-9 h-5 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-px after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4.5 after:w-4.5 after:transition-all peer-checked:bg-indigo-600"></span>
+              </span>
+            </label>
+            <label class="flex items-center justify-between gap-3 cursor-pointer">
+              <span>
+                <span class="block text-[var(--color-text-secondary)] text-sm">Open Now Playing episode</span>
+                <span class="block text-[var(--color-text-muted)] text-xs mt-1">Open the episode page instead of its season.</span>
+              </span>
+              <span class="relative inline-flex items-center shrink-0">
+                <input type="hidden" name="now_playing_open_episode" value="0">
+                <input class="sr-only peer"
+                       type="checkbox"
+                       name="now_playing_open_episode"
+                       value="1"
+                       {% if user.now_playing_open_episode %}checked{% endif %}>
+                <span class="w-9 h-5 bg-gray-600 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-px after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4.5 after:w-4.5 after:transition-all peer-checked:bg-indigo-600"></span>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-4 space-y-2 rounded-md border border-[var(--color-surface-border)] p-3">
+          <div class="mb-3">
+            <h4 class="text-sm font-semibold text-[var(--color-text)]">Detail Availability</h4>
+            <p class="mt-1 text-xs text-[var(--color-text-muted)]">Show locally synchronized Plex, Radarr, and Sonarr availability on media details.</p>
+          </div>
+          {% include "users/components/settings_toggle.html" with field_name="detail_availability_enabled" label="Availability section" description="Show the section on private media details." enabled=user.detail_availability_enabled only %}
+          {% include "users/components/settings_toggle.html" with field_name="detail_availability_plex_enabled" label="Plex" description="Show Plex presence and direct links." enabled=user.detail_availability_plex_enabled only %}
+          {% include "users/components/settings_toggle.html" with field_name="detail_availability_radarr_enabled" label="Radarr" description="Show movie availability for connected instances." enabled=user.detail_availability_radarr_enabled only %}
+          {% include "users/components/settings_toggle.html" with field_name="detail_availability_sonarr_enabled" label="Sonarr" description="Show series and season availability for connected instances." enabled=user.detail_availability_sonarr_enabled only %}
         </div>
 
         <!-- Title Display Preference -->
@@ -645,6 +638,28 @@
           </div>
         </div>
         <div class="preferences-grid preferences-tracking-grid">
+
+        <div class="col-span-full p-3 bg-[var(--color-surface-strong)] rounded-md mb-4">
+          <h4 class="text-[var(--color-text-secondary)] text-sm font-medium mb-2">Series and person details</h4>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {% for field_name, field_label, field_value in season_display_preferences %}
+              <label class="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+                <input type="hidden" name="{{ field_name }}" value="0">
+                <input type="checkbox" name="{{ field_name }}" value="1" {% if field_value %}checked{% endif %}>
+                <span>{{ field_label }}</span>
+              </label>
+            {% endfor %}
+          </div>
+          <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Person sections order (comma separated)
+            <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" name="person_sections_order" value="{{ person_sections_order_text }}">
+          </label>
+          <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Hidden person sections (comma separated)
+            <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" name="person_hidden_sections" value="{{ person_hidden_sections_text }}">
+          </label>
+          <label class="mt-3 block text-sm text-[var(--color-text-secondary)]">Known for titles under credit cards
+            <input class="mt-1 w-full rounded-md border border-gray-600 bg-[var(--color-panel)] px-3 py-2" type="number" min="0" max="10" name="person_known_for_limit" value="{{ user.person_known_for_limit }}">
+          </label>
+        </div>
 
         <!-- Hide Completed Recommendations -->
         <div class="p-3 bg-[var(--color-surface-strong)] rounded-md mb-4">

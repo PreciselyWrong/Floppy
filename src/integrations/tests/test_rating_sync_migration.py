@@ -13,8 +13,14 @@ class RatingSyncMigrationTests(TransactionTestCase):
     """Exercise real schema operations on the configured database backend."""
 
     def test_watched_delivery_and_local_score_survive_upgrade_and_rollback(self):
-        before = ("integrations", "0058_psn_playtime_snapshots")
-        after = ("integrations", "0059_rating_sync")
+        before = (
+            "integrations",
+            "0038_cataloggrant_embyaccount_externalreference_and_more",
+        )
+        after = (
+            "integrations",
+            "0039_playtimesnapshot_ratingsyncedit_tmdbaccount_and_more",
+        )
         executor = MigrationExecutor(connection)
         latest = executor.loader.graph.leaf_nodes()
         try:

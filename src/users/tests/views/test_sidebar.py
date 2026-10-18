@@ -96,6 +96,32 @@ class SidebarViewTests(TestCase):
             [MediaTypes.ANIME.value, MediaTypes.TV.value, MediaTypes.MOVIE.value],
         )
 
+    def test_history_navigation_can_be_added_or_removed_from_sidebar(self):
+        response = self.client.get(reverse("sidebar"))
+        self.assertContains(response, 'name="sidebar_history_enabled"')
+        self.assertContains(response, 'data-sidebar-nav-item="history"')
+
+        response = self.client.post(
+            reverse("sidebar"),
+            {"sidebar_navigation_present": "1"},
+        )
+        self.assertRedirects(response, reverse("sidebar"))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.sidebar_history_enabled)
+
+        response = self.client.get(reverse("sidebar"))
+        self.assertNotContains(response, 'data-sidebar-nav-item="history"')
+
+        self.client.post(
+            reverse("sidebar"),
+            {
+                "sidebar_navigation_present": "1",
+                "sidebar_history_enabled": "on",
+            },
+        )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.sidebar_history_enabled)
+
     def test_sidebar_post_update_preferences(self):
         """Test POST request to update preferences."""
         self.user.tv_enabled = True

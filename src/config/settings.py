@@ -1113,6 +1113,16 @@ if not FORK_OWNER_URL:
 ADMIN_ENABLED = config("ADMIN_ENABLED", default=False, cast=bool)
 
 TRACK_TIME = config("TRACK_TIME", default=True, cast=bool)
+DETAIL_AVAILABILITY_STALE_HOURS = config(
+    "DETAIL_AVAILABILITY_STALE_HOURS",
+    default=48,
+    cast=int,
+)
+PLEX_LIBRARY_INDEX_STALE_HOURS = config(
+    "PLEX_LIBRARY_INDEX_STALE_HOURS",
+    default=24,
+    cast=int,
+)
 
 BACKUP_DIR = config("BACKUP_DIR", default=str(BASE_DIR / "backups"))
 
@@ -1220,6 +1230,10 @@ TMDB_API = config(
 )
 TMDB_NSFW = config("TMDB_NSFW", default=False, cast=bool)
 TMDB_LANG = config("TMDB_LANG", default="en")
+BETASERIES_API_KEY = config(
+    "BETASERIES_API_KEY",
+    default=secret("BETASERIES_API_KEY_FILE", ""),
+)
 
 SEERR_GLOBAL_WEBHOOK_SECRET = config(
     "SEERR_GLOBAL_WEBHOOK_SECRET",
@@ -1643,9 +1657,8 @@ if not CELERY_TASK_SOFT_TIME_LIMIT:
 # interactive work strands it behind every background batch.
 CELERY_TASK_PRIORITY_INTERACTIVE = 0
 CELERY_TASK_PRIORITY_FOLLOWUP = 3
-# A background Statistics sync yields to webhooks (0) but, on the minimal-tier
-# combined worker, still drains ahead of FOLLOWUP imports and backfills: at 3 a
-# chunk of the old refresh run could wait behind them indefinitely (#1272).
+# A Statistics sync drains ahead of FOLLOWUP imports and backfills within the
+# background worker: at 3 a chunk could wait behind them indefinitely (#1272).
 CELERY_TASK_PRIORITY_STATISTICS_SYNC = 1
 CELERY_TASK_PRIORITY_DEFAULT = 5
 CELERY_TASK_PRIORITY_BACKGROUND = 9

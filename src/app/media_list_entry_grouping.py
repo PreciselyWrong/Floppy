@@ -119,23 +119,21 @@ def _get_separate_media_list(
         list_mode=True,
     )
 
-    if not sort_filter:
-        return list(queryset)
-
-    if (
+    if sort_filter and (
         sort_filter in _POST_SORT_KEYS
         and media_type not in {MediaTypes.TV.value, MediaTypes.SEASON.value}
     ):
         queryset = list(queryset)
 
-    return list(
-        manager._sort_media_list(
+    if sort_filter:
+        queryset = manager._sort_media_list(
             queryset,
             sort_filter,
             media_type,
             direction,
         )
-    )
+
+    return list(queryset)
 
 
 def _install_media_list_policy() -> None:

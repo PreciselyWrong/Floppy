@@ -72,9 +72,7 @@ class ThemeTokenContractTests(SimpleTestCase):
             encoding="utf-8"
         )
         explicit_themes = [theme for theme in THEME_PRESETS if theme != "system"]
-        selector = ":root" + "".join(
-            f":not(.{theme})" for theme in explicit_themes
-        )
+        selector = ":root" + "".join(f":not(.{theme})" for theme in explicit_themes)
 
         self.assertIn(selector, css)
 
@@ -107,7 +105,7 @@ class ThemeTokenContractTests(SimpleTestCase):
         )
 
         self.assertIn(
-            "user.is_authenticated and user.theme != 'system' %}{{ user.theme }}",
+            "appearance.theme != 'system' %}{{ appearance.theme }}",
             template,
         )
 
@@ -156,6 +154,65 @@ class ThemeTokenContractTests(SimpleTestCase):
         self.assertIn("@media (prefers-reduced-motion: reduce)", css)
         self.assertIn("animation-duration: 0.01ms", css)
 
+    def test_sidebar_logo_keeps_its_full_brand_dimensions(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        logo_rule = re.search(
+            r"\.brand-built-in-image\s*\{(?P<body>.*?)\n\}",
+            css,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(logo_rule)
+        self.assertIn("width: 9.875rem", logo_rule.group("body"))
+        self.assertIn("height: 3rem", logo_rule.group("body"))
+        self.assertIn("flex-shrink: 0", logo_rule.group("body"))
+
+    def test_hidden_branding_has_a_visible_keyboard_focus_state(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('.brand-link[data-brand-mode="hidden"]:focus-visible', css)
+        self.assertIn(
+            '.brand-link[data-brand-mode="hidden"]:focus-visible .sr-only',
+            css,
+        )
+
+    def test_wordmark_wraps_instead_of_hiding_the_brand_name(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        rule = re.search(r"\.brand-wordmark\s*\{(?P<body>.*?)\n\}", css, re.DOTALL)
+
+        self.assertIsNotNone(rule)
+        self.assertIn("white-space: normal", rule.group("body"))
+        self.assertNotIn("overflow: hidden", rule.group("body"))
+
+    def test_sidebar_brand_slot_can_grow_for_wrapped_wordmarks(self):
+        template = Path(settings.BASE_DIR, "templates", "base.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('class="min-h-16 border-b', template)
+        self.assertNotIn('class="h-16 border-b', template)
+
+    def test_glass_wordmark_gradient_keeps_text_clipping(self):
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        rule = re.search(
+            r'html\.glass \.brand-wordmark\[data-brand-fill="theme_gradient"\]'
+            r"\s*\{(?P<body>.*?)\n\}",
+            css,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(rule)
+        self.assertIn("background-image:", rule.group("body"))
+        self.assertNotIn("background:", rule.group("body"))
+
     def test_home_rows_reserve_hover_lift_clearance(self):
         css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
             encoding="utf-8"
@@ -173,7 +230,9 @@ class ThemeTokenContractTests(SimpleTestCase):
             row_rule.group("body"),
         )
         self.assertNotIn("padding-left:", row_rule.group("body"))
+        self.assertNotIn("padding-inline:", row_rule.group("body"))
         self.assertNotIn("margin-left:", row_rule.group("body"))
+        self.assertNotIn("margin-inline:", row_rule.group("body"))
 
     def test_media_card_hover_outline_stays_inside_above_progress(self):
         css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
@@ -207,3 +266,55 @@ class ThemeTokenContractTests(SimpleTestCase):
             )
             self.assertIsNotNone(keyframes, animation)
             self.assertIn("transform: none", keyframes.group("body"), animation)
+
+    def test_fullscreen_overlays_are_portaled_to_the_viewport(self):
+        base = Path(settings.BASE_DIR, "templates", "base.html").read_text(
+            encoding="utf-8"
+        )
+        portal = Path(settings.BASE_DIR, "static", "js", "modalPortal.js").read_text(
+            encoding="utf-8"
+        )
+        modal_handler = Path(
+            settings.BASE_DIR, "static", "js", "mediaStatusDateHandler.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("js/modalPortal.js", base)
+        self.assertIn('document.querySelectorAll(".fixed.inset-0")', portal)
+        self.assertIn("Alpine.closestDataStack(overlay)", portal)
+        self.assertIn("overlay._modalDataStack", portal)
+        self.assertIn("overlay._modalOriginParent", portal)
+        self.assertIn("overlay._modalStateHost", portal)
+        self.assertIn("overlay._x_dataStack", portal)
+        self.assertIn("document.body.appendChild(overlay)", portal)
+        self.assertIn("htmx:afterSettle", portal)
+        self.assertIn("node._modalDataStack", modal_handler)
+        self.assertIn("node._modalStateHost", modal_handler)
+        self.assertIn("stateKey in data", modal_handler)
+        self.assertIn("stateTarget.data[stateTarget.stateKey] = isOpen", modal_handler)
+        self.assertIn("overlay._modalOriginParent.appendChild(overlay)", modal_handler)
+        self.assertIn('overlay.style.display = "none"', modal_handler)
+        self.assertIn("overlay.remove()", modal_handler)
+
+    def test_home_screen_row_controls_wrap_inside_their_panel(self):
+        template = Path(
+            settings.BASE_DIR, "templates", "users", "home_screen.html"
+        ).read_text(encoding="utf-8")
+        css = Path(settings.BASE_DIR, "static", "css", "input.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("home-settings-row-body", template)
+        self.assertIn("home-settings-row-controls", template)
+        self.assertIn(".home-settings-row-body > div {\n    flex-wrap: wrap;", css)
+        self.assertIn("min-height: 2.5rem;", css)
+        self.assertIn(".home-settings-row-controls {\n    display: contents;", css)
+        self.assertIn("max-width: 100%;", css)
+
+    def test_episode_picker_truncates_long_titles(self):
+        template = Path(
+            settings.BASE_DIR, "templates", "app", "episode_details.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('class="relative min-w-0 flex-1 md:max-w-xs"', template)
+        self.assertIn(
+            'class="block min-w-0 flex-1 truncate text-sm font-medium"', template
+        )

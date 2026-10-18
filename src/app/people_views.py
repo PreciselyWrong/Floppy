@@ -77,6 +77,23 @@ def attach_card_media(user, entries, source):
             }
 
 
+def _person_age(birth_date, end_date=None, today=None):
+    """Return age at death or today, or None when the date is incomplete."""
+    from datetime import UTC, date, datetime
+
+    if not birth_date:
+        return None
+    if isinstance(birth_date, str):
+        birth_date = date.fromisoformat(birth_date)
+    if isinstance(end_date, str):
+        end_date = date.fromisoformat(end_date)
+    end_date = end_date or today or datetime.now(UTC).date()
+    return credits.person_age_at(birth_date, end_date)
+
+
+_select_known_for = credits.select_known_for
+
+
 @require_GET
 def person_detail(request, source, person_id, name):
     """Render a provider-backed person or author profile page."""
@@ -430,6 +447,10 @@ def person_detail(request, source, person_id, name):
         entry["tracked_item"] = tracked_item_map.get(media_key)
         entry["is_watched"] = media_key in watched_media_keys
 
+    person_data["age"] = _person_age(
+        person_data.get("birth_date"), person_data.get("death_date")
+    )
+
     watched_filmography = []
     if watched_media_keys:
         seen_watched_media = set()
@@ -701,6 +722,21 @@ def person_detail(request, source, person_id, name):
         "watched_show_count": watched_show_count,
         "watched_book_count": watched_book_count,
         "filmography": filmography,
+        "tracked_titles": watched_filmography,
+        "person_sections_order": [
+            value
+            for value in getattr(
+                request.user,
+                "person_sections_order",
+                ["tracked", "cast", "guest", "crew", "biography", "details"],
+            )
+            if value != "known_for"
+        ],
+        "person_hidden_sections": [
+            value
+            for value in getattr(request.user, "person_hidden_sections", [])
+            if value != "known_for"
+        ],
         "history_filter_url": history_filter_url,
         "tracked_plays_count": tracked_plays_count,
         "tracked_hours_count": tracked_hours_count,

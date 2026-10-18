@@ -336,6 +336,18 @@ class MediaManager(models.Manager.from_queryset(ImportScopedQuerySet)):
         if media_status:
             queryset = queryset.filter(item__status=media_status)
 
+        library_media_type = str(filters.get("library_media_type") or "").strip()
+        if library_media_type:
+            queryset = queryset.filter(item__library_media_type=library_media_type)
+
+        excluded_library_media_type = str(
+            filters.get("exclude_library_media_type") or ""
+        ).strip()
+        if excluded_library_media_type:
+            queryset = queryset.exclude(
+                item__library_media_type=excluded_library_media_type
+            )
+
         if media_type in (
             MediaTypes.TV.value,
             MediaTypes.MOVIE.value,
@@ -414,6 +426,66 @@ class MediaManager(models.Manager.from_queryset(ImportScopedQuerySet)):
 
         return queryset
 
+    def _filtered_media_queryset(
+        self,
+        user,
+        media_type,
+        status_filter,
+        search,
+        list_sql_filters,
+    ):
+        """Build the shared filtered queryset before deduplication and sorting."""
+        model = apps.get_model(app_label="app", model_name=media_type)
+        queryset = model.objects.filter(user=user.id)
+
+        if isinstance(status_filter, (list, tuple, set, frozenset)):
+            status_filters = [
+                value
+                for value in status_filter
+                if value and value != users.models.MediaStatusChoices.ALL
+            ]
+        elif status_filter and status_filter != users.models.MediaStatusChoices.ALL:
+            status_filters = [status_filter]
+        else:
+            status_filters = []
+
+        if status_filters:
+            queryset = queryset.filter(status__in=status_filters)
+        else:
+            queryset = queryset.exclude(status__isnull=True)
+
+        if search:
+            queryset = queryset.filter(
+                models.Q(item__title__icontains=search)
+                | models.Q(item__media_id__icontains=search),
+            )
+
+        return self._apply_list_sql_filters(
+            queryset,
+            user,
+            media_type,
+            list_sql_filters or {},
+        )
+
+    def count_media_list(
+        self,
+        user,
+        media_type,
+        status_filter,
+        search=None,
+        *,
+        list_sql_filters=None,
+    ):
+        """Count unique matching library items without materializing them."""
+        queryset = self._filtered_media_queryset(
+            user,
+            media_type,
+            status_filter,
+            search,
+            list_sql_filters,
+        )
+        return queryset.values("item_id").distinct().count()
+
     def get_media_list(
         self,
         user,
@@ -435,38 +507,12 @@ class MediaManager(models.Manager.from_queryset(ImportScopedQuerySet)):
         model = apps.get_model(app_label="app", model_name=media_type)
         direction = self.resolve_direction(sort_filter, direction)
         dup_state = {}
-
-        # Build base queryset
-        queryset = model.objects.filter(user=user.id)
-
-        # Apply status filter. Statusless media (an imported rating with no
-        # tracking state) is never part of a status view, including "All"; it is
-        # surfaced separately by the "No Status" filter.
-        if isinstance(status_filter, (list, tuple, set, frozenset)):
-            status_filters = [
-                value
-                for value in status_filter
-                if value and value != users.models.MediaStatusChoices.ALL
-            ]
-        elif status_filter and status_filter != users.models.MediaStatusChoices.ALL:
-            status_filters = [status_filter]
-        else:
-            status_filters = []
-
-        if status_filters:
-            queryset = queryset.filter(status__in=status_filters)
-        else:
-            queryset = queryset.exclude(status__isnull=True)
-
-        # Apply search filter
-        if search:
-            queryset = queryset.filter(
-                models.Q(item__title__icontains=search)
-                | models.Q(item__media_id__icontains=search),
-            )
-
-        queryset = self._apply_list_sql_filters(
-            queryset, user, media_type, list_sql_filters or {}
+        queryset = self._filtered_media_queryset(
+            user,
+            media_type,
+            status_filter,
+            search,
+            list_sql_filters,
         )
 
         # Handle duplicate entries by selecting the most recent record for each item
@@ -2175,6 +2221,9 @@ class MediaManager(models.Manager.from_queryset(ImportScopedQuerySet)):
 
         for season in season_list:
             item = season.item
+            if item.source == Sources.MANUAL.value:
+                fallback.append(season)
+                continue
             if item.source in batched_sources and item.season_number is not None:
                 seasons_by_show[(item.source, item.media_id)].append(season)
             else:

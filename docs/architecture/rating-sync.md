@@ -81,7 +81,7 @@ cannot be confirmed.
 
 ## Upgrade and validation
 
-Migration `integrations.0059_rating_sync` adds account/edit records and extends
+Migration `integrations.0039_playtimesnapshot_ratingsyncedit_tmdbaccount_and_more` adds account/edit records and extends
 the outbox without rewriting existing tracking scores or watched intents.
 Deploy migrations and restart web/Celery processes together: old processes do
 not understand rating deliveries. Back up the database first. Reversing the

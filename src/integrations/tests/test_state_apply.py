@@ -520,7 +520,7 @@ class JellyfinBindingMigrationMappingTests(TestCase):
         import importlib
 
         return importlib.import_module(
-            "integrations.migrations.0038_backfill_jellyfin_binding",
+            "integrations.migrations.0038_cataloggrant_embyaccount_externalreference_and_more",
         )
 
     def test_push_enabled_without_a_schedule_grants_no_write_direction(self):

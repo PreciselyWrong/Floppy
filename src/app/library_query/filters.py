@@ -644,4 +644,3 @@ def collection_only_allowed(values: FilterValues) -> bool:
         and values.collection != "not_collected"
         and not _rating_active(values)
     )
-

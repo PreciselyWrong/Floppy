@@ -554,4 +554,3 @@ def project_meta(user, stremio_type, imdb_id, *, grant=None):
         return meta
 
     return None
-

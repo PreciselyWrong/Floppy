@@ -7,6 +7,7 @@ from celery import states
 from celery.result import AsyncResult
 from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.models import UserManager as DjangoUserManager
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.urls import reverse
@@ -26,10 +27,19 @@ PLAYBACK_WEBHOOK_SECRET_MAX_LENGTH = 128
 
 EXCLUDED_SEARCH_TYPES = [MediaTypes.SEASON.value, MediaTypes.EPISODE.value]
 HOME_ALL_MEDIA_TYPE = "all"
+PERSON_KNOWN_FOR_LIMIT_DEFAULT = 3
+PERSON_KNOWN_FOR_LIMIT_MAX = 10
+
+
+def default_person_sections_order():
+    """Return the default order for configurable person-page sections."""
+    return ["tracked", "cast", "guest", "crew", "biography", "details"]
+
 
 # Search-bar option that searches every enabled type in the user's own library
 # (tracked, collected or tagged items) instead of one provider (#1160).
 ALL_SEARCH_TYPE = "all"
+
 
 VALID_SEARCH_TYPES = [
     value for value in MediaTypes.values if value not in EXCLUDED_SEARCH_TYPES
@@ -281,6 +291,18 @@ class LogoTextWeightChoices(models.IntegerChoices):
     BLACK = 900, _("Black")
 
 
+class LogoTextFillChoices(models.TextChoices):
+    """Wordmark color treatments with theme-aware and explicit variants."""
+
+    THEME_SOLID = "theme_solid", _("Theme color")
+    CUSTOM_SOLID = "custom_solid", _("Custom color")
+    THEME_GRADIENT = "theme_gradient", _("Theme gradient")
+    CUSTOM_GRADIENT = "custom_gradient", _("Custom gradient")
+
+
+LOGO_TEXT_INPUT_MAX_LENGTH = 20
+LOGO_TEXT_STORAGE_MAX_LENGTH = 32
+
 LOGO_TEXT_SIZES = tuple(range(16, 41))
 LOGO_TEXT_SPACINGS = tuple(range(-2, 7))
 
@@ -446,6 +468,13 @@ class HomeScreenRowTypeChoices(models.TextChoices):
     LIBRARY_QUERY = "library_query", _("Library Row")
     CUSTOM_LIST = "custom_list", _("List / Smart List")
     RECENTLY_UNRATED = "recently_unrated", _("Recently Played - Not Rated")
+    UP_NEXT = "up_next", _("Up Next")
+    HISTORY = "history", _("History")
+    WATCH_HISTORY = "watch_history", _("Activity Journal")
+    SHELF_RESUME = "shelf_resume", _("Resume")
+    SHELF_STALE = "shelf_stale", _("Stale")
+    SHELF_UNSTARTED = "shelf_unstarted", _("Unstarted")
+    SHELF_FINISHED = "shelf_finished", _("Finished")
 
 
 # kept: unrenamed model field/class names and help_text below (avoids a migration; see plan)
@@ -826,6 +855,15 @@ class User(AbstractUser):
         default=False,
         help_text="Hide hover overlay on touch devices",
     )
+    show_up_next_episode_code = models.BooleanField(
+        default=True,
+        help_text="Show the season and episode code in the Up Next row",
+    )
+    now_playing_open_episode = models.BooleanField(
+        default=True,
+        help_text="Open the playing episode instead of its season",
+    )
+
     title_display_preference = models.CharField(
         max_length=20,
         default=TitleDisplayPreferenceChoices.LOCALIZED,
@@ -860,9 +898,53 @@ class User(AbstractUser):
         default=True,
         help_text="Show the Discover page and keep its caches warm",
     )
+    show_public_reviews = models.BooleanField(
+        default=True,
+        help_text="Show public reviews on supported detail pages",
+    )
+    public_reviews_position = models.CharField(
+        max_length=6,
+        choices=(("top", "Top"), ("bottom", "Bottom")),
+        default="bottom",
+        help_text="Place public reviews before or after other detail sections",
+    )
     obfuscate_episodes = models.BooleanField(
         default=False,
         help_text="Blur unseen episode thumbnails to avoid spoilers",
+    )
+    show_season_enrichment = models.BooleanField(
+        default=True,
+        help_text="Show season progress, resume and upcoming indicators",
+    )
+    show_episode_public_ratings = models.BooleanField(
+        default=True,
+        help_text="Show public episode ratings",
+    )
+    show_personal_rating_trend = models.BooleanField(
+        default=True,
+        help_text="Show the personal episode rating trend",
+    )
+    obfuscate_episode_titles = models.BooleanField(
+        default=False,
+        help_text="Hide unseen episode titles to avoid spoilers",
+    )
+    show_skipped_episodes = models.BooleanField(
+        default=True,
+        help_text="Show detected skipped episodes",
+    )
+    show_remaining_time = models.BooleanField(
+        default=True,
+        help_text="Show remaining time and estimated finish",
+    )
+    person_sections_order = models.JSONField(
+        default=default_person_sections_order,
+        blank=True,
+    )
+    person_hidden_sections = models.JSONField(default=list, blank=True)
+    person_known_for_limit = models.PositiveSmallIntegerField(
+        default=PERSON_KNOWN_FOR_LIMIT_DEFAULT,
+        validators=[MinValueValidator(0), MaxValueValidator(PERSON_KNOWN_FOR_LIMIT_MAX)],
+        help_text="Number of watched titles shown under each detail credit card",
     )
 
     # Watch provider region
@@ -1211,7 +1293,7 @@ class User(AbstractUser):
     )
 
     logo_text = models.CharField(
-        max_length=32,
+        max_length=LOGO_TEXT_STORAGE_MAX_LENGTH,
         default="Floppy",
         help_text="Short navigation wordmark",
     )
@@ -1239,6 +1321,25 @@ class User(AbstractUser):
         default=-1,
         choices=[(value, f"{value}px") for value in LOGO_TEXT_SPACINGS],
         help_text="Letter spacing used by the navigation wordmark",
+    )
+
+    logo_text_fill = models.CharField(
+        max_length=16,
+        default=LogoTextFillChoices.THEME_GRADIENT,
+        choices=LogoTextFillChoices.choices,
+        help_text="Color treatment used by the navigation wordmark",
+    )
+
+    logo_text_color_start = models.CharField(
+        max_length=7,
+        default="#1f2937",
+        help_text="Custom wordmark color or gradient start",
+    )
+
+    logo_text_color_end = models.CharField(
+        max_length=7,
+        default="#2563eb",
+        help_text="Custom wordmark gradient end",
     )
 
     custom_logo_data = models.TextField(
@@ -1401,6 +1502,15 @@ class User(AbstractUser):
         blank=True,
         help_text="Custom hexadecimal label colors keyed by media type",
     )
+    home_binge_grouping_enabled = models.BooleanField(
+        default=True,
+        help_text="Group consecutive episodes of the same series into a single expandable card in the home activity journal",
+    )
+    home_stale_days_threshold = models.PositiveIntegerField(
+        default=21,
+        help_text="Number of inactive days before an in-progress title is considered stale",
+    )
+
     home_screen_media_type_order = models.JSONField(
         default=list,
         blank=True,
@@ -1410,6 +1520,10 @@ class User(AbstractUser):
         default=list,
         blank=True,
         help_text="User's preferred order of media types in the sidebar",
+    )
+    sidebar_history_enabled = models.BooleanField(
+        default=True,
+        help_text="Show History in the sidebar navigation",
     )
     auto_pause_in_progress_enabled = models.BooleanField(
         default=False,
@@ -1429,6 +1543,22 @@ class User(AbstractUser):
         default=list,
         blank=True,
         help_text="Watch-provider names pinned/favorited by the user, promoted out of 'More'",
+    )
+    detail_availability_enabled = models.BooleanField(
+        default=True,
+        help_text="Show local service availability on private media details",
+    )
+    detail_availability_plex_enabled = models.BooleanField(
+        default=True,
+        help_text="Show Plex availability on private media details",
+    )
+    detail_availability_radarr_enabled = models.BooleanField(
+        default=True,
+        help_text="Show Radarr availability on private media details",
+    )
+    detail_availability_sonarr_enabled = models.BooleanField(
+        default=True,
+        help_text="Show Sonarr availability on private media details",
     )
     book_comic_manga_progress_percentage = models.BooleanField(
         default=False,
@@ -2096,7 +2226,7 @@ class User(AbstractUser):
                 status=states.PENDING,
                 date_created__lt=pending_cutoff,
             )
-            .order_by("-date_done", "-date_created")
+            .order_by("-date_done", "-date_created", "-id")
         )
 
         # Build results list
@@ -2508,6 +2638,10 @@ class HomeScreenRow(models.Model):
         choices=DirectionChoices.choices,
     )
     filters = models.JSONField(default=dict, blank=True)
+    open_last_episode = models.BooleanField(
+        default=True,
+        help_text="Open the episode to continue from In Progress Home rows",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2537,6 +2671,37 @@ class HomeScreenRow(models.Model):
     def __str__(self):
         """Return a compact label for admin/debug use."""
         return f"{self.user_id}:{self.media_type}:{self.row_type}:{self.position}"
+
+
+class HomePinnedItem(models.Model):
+    """A title the user wants ahead of automatic Home resume suggestions."""
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="home_pinned_items",
+    )
+    item = models.ForeignKey(
+        "app.Item",
+        on_delete=models.CASCADE,
+        related_name="home_pins",
+    )
+    pinned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        """Keep the most recently pinned titles first and prevent duplicates."""
+
+        ordering = ["-pinned_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "item"],
+                name="unique_home_pinned_item_per_user",
+            ),
+        ]
+
+    def __str__(self):
+        """Return a compact label for admin and debug output."""
+        return f"{self.user_id}:{self.item_id}"
 
 
 # Saved views of the History page live beside the media list ones, keyed by

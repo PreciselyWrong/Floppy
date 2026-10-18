@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -29,12 +29,22 @@ from app.models import (
     Status,
     Studio,
 )
+from app.people_views import _person_age, _select_known_for
 from users.card_metadata import ABSORBED_PREFERENCE_FIELDS, apply_absorbed_preference
 from users.models import DateFormatChoices
 
 
 class PersonDetailViewTests(TestCase):
     """Test cast/crew person profile pages."""
+
+    def test_person_age_and_known_for_prioritize_watched_titles(self):
+        self.assertEqual(_person_age("2000-08-25", today=date(2026, 8, 24)), 25)
+        entries = [
+            {"media_type": "movie", "media_id": "1", "is_watched": False, "vote_average": 10},
+            {"media_type": "movie", "media_id": "2", "is_watched": True, "vote_average": 7},
+            {"media_type": "movie", "media_id": "2", "is_watched": True, "vote_average": 8},
+        ]
+        self.assertEqual([entry["media_id"] for entry in _select_known_for(entries)], ["2", "1"])
 
     def setUp(self):
         self.credentials = {"username": "test", "password": "12345"}
@@ -306,6 +316,7 @@ class PersonDetailViewTests(TestCase):
         self.assertContains(response, 'class="media-card-overlay', count=3)
         self.assertContains(response, 'class="media-status-chip', count=2)
         self.assertNotContains(response, "Tracked Titles")
+        self.assertNotContains(response, "Known for")
 
     @patch("app.providers.tmdb.person")
     def test_person_detail_dates_respect_user_preference(self, mock_person):

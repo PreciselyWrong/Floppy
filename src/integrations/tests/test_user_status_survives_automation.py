@@ -345,4 +345,3 @@ class ModelRecomputeRespectsUserStatusTests(TestCase):
                     tv.seasons.get(item__season_number=2).status,
                     status,
                 )
-

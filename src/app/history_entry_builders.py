@@ -95,6 +95,8 @@ def _serialize_show(show):
         return show
     return {
         "id": getattr(show, "id", None),
+        "media_id": getattr(show, "media_id", None),
+        "source": getattr(show, "source", None),
         "title": getattr(show, "title", "") or "",
         "slug": getattr(show, "slug", "") or "",
         "podcast_uuid": getattr(show, "podcast_uuid", None),
@@ -222,6 +224,7 @@ def _build_episode_entry(episode, episode_title_map=None):
 
     entry = {
         "media_type": MediaTypes.EPISODE.value,
+        "library_media_type": getattr(tv_item, "media_type", None),
         "item": _serialize_item(entry_item),
         "show": _serialize_show(tv_item),
         "poster": _get_episode_poster(episode),
@@ -251,6 +254,94 @@ def _build_episode_entry(episode, episode_title_map=None):
     if implied_genres:
         entry["implied_genres"] = implied_genres
     return entry
+
+
+def _episode_run_key(entry):
+    if entry.get("media_type") != MediaTypes.EPISODE.value:
+        return None
+    item = entry.get("item") or {}
+    season_number = entry.get("season_number")
+    episode_number = entry.get("episode_number")
+    if season_number is None or episode_number is None:
+        return None
+    return (
+        item.get("source"),
+        item.get("media_id"),
+        season_number,
+    )
+
+
+def _merge_episode_run(run):
+    latest = dict(run[0])
+    season_number = latest["season_number"]
+    highest_episode = latest["episode_number"]
+    lowest_episode = run[-1]["episode_number"]
+    runtime_minutes = sum(entry.get("runtime_minutes") or 0 for entry in run)
+    show = latest.get("show") or {}
+
+    latest.update(
+        {
+            "group_title": show.get("title") or latest.get("title"),
+            "episode_label": (
+                f"{season_number}x{lowest_episode:02d}-{highest_episode:02d}"
+            ),
+            "episode_code": (
+                f"S{season_number:02d}E{lowest_episode:02d}-E{highest_episode:02d}"
+            ),
+            "runtime_minutes": runtime_minutes,
+            "runtime_display": helpers.minutes_to_hhmm(runtime_minutes)
+            if runtime_minutes
+            else None,
+            "group_count": len(run),
+            "group_entries": run,
+            "is_episode_group": True,
+            "entry_key": "episode-group-"
+            + "-".join(str(entry["entry_key"]) for entry in run),
+        }
+    )
+    return latest
+
+
+def expand_episode_group_entries(entries):
+    """Restore cached episode-group members for timeline presentation."""
+    expanded = []
+    for entry in entries:
+        group_entries = (
+            entry.get("group_entries")
+            if isinstance(entry, dict) and entry.get("is_episode_group")
+            else None
+        )
+        if (
+            isinstance(group_entries, list)
+            and len(group_entries) > 1
+            and all(isinstance(member, dict) for member in group_entries)
+        ):
+            expanded.extend(group_entries)
+        else:
+            expanded.append(entry)
+    return expanded
+
+
+def _group_consecutive_episode_entries(entries):
+    """Collapse adjacent descending episode runs in one history day."""
+    grouped = []
+    index = 0
+    while index < len(entries):
+        current = entries[index]
+        run = [current]
+        run_key = _episode_run_key(current)
+
+        while run_key is not None and index + len(run) < len(entries):
+            candidate = entries[index + len(run)]
+            if _episode_run_key(candidate) != run_key:
+                break
+            if candidate["episode_number"] != run[-1]["episode_number"] - 1:
+                break
+            run.append(candidate)
+
+        grouped.append(_merge_episode_run(run) if len(run) > 1 else current)
+        index += len(run)
+    return grouped
 
 
 def _build_movie_entry(movie):

@@ -1,8 +1,11 @@
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from app.models import Item, MediaTypes, Movie, Sources
+from app.search_views import get_saved_suggestions
 from users.models import Status
 
 
@@ -96,3 +99,30 @@ class SearchSuggestionsViewTests(TestCase):
         self.client.logout()
         response = self._get("godfa")
         self.assertEqual(response.status_code, 302)
+
+    def test_saved_suggestions_are_sorted_and_bounded_in_sql(self):
+        for number in range(3):
+            Movie.objects.create(
+                user=self.user,
+                item=Item.objects.create(
+                    media_id=f"suggest-bound-{number}",
+                    source=Sources.MANUAL.value,
+                    media_type=MediaTypes.MOVIE.value,
+                    title=f"The Godfather {number}",
+                ),
+                status=Status.COMPLETED.value,
+            )
+        with CaptureQueriesContext(connection) as queries:
+            suggestions = get_saved_suggestions(
+                self.user, MediaTypes.MOVIE.value, "godfa", limit=3
+            )
+        self.assertEqual(
+            [row["title"] for row in suggestions],
+            ["The Godfather", "The Godfather 0", "The Godfather 1"],
+        )
+        self.assertTrue(
+            any(
+                "app_item" in query["sql"] and "LIMIT 3" in query["sql"]
+                for query in queries
+            )
+        )

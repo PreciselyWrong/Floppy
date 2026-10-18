@@ -3,11 +3,15 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import escape
 
-from app import live_playback
+from app import cache_utils, live_playback
 from app.models import (
     TV,
     Anime,
@@ -24,10 +28,14 @@ from app.models import (
     Sources,
     Status,
 )
+from app.templatetags import app_tags
+from events.models import Event
 from users.models import (
     DateFormatChoices,
     DirectionChoices,
+    HomePinnedItem,
     HomeScreenRow,
+    HomeScreenRowTypeChoices,
     HomeSortChoices,
 )
 
@@ -151,6 +159,10 @@ class HomeViewTests(TestCase):
         self.assertEqual(season_row["title"], "In Progress")
         self.assertEqual(season_row["title_main"], "In Progress")
         self.assertIsNone(season_row["title_detail"])
+        self.assertEqual(
+            season_row["collapse_key"],
+            f"home-row-{season_row['row_id']}-open",
+        )
         self.assertEqual(len(season_row["items"]), 1)
         self.assertEqual(season_row["items"][0].media.progress, 5)
         self.assertEqual(len(anime_row["items"]), 1)
@@ -169,10 +181,76 @@ class HomeViewTests(TestCase):
         self.assertNotContains(response, "Sorted by Title • Ascending", html=False)
         self.assertContains(response, 'class="home-row-card w-44 shrink-0"', html=False)
         self.assertContains(response, 'data-home-row="true"', html=False)
+        self.assertContains(
+            response,
+            'aria-label="Toggle section"',
+            html=False,
+        )
+        self.assertContains(response, f'href="{escape(season_row["url"])}"', html=False)
         self.assertNotContains(
             response, '<h2 class="text-2xl font-semibold">', html=False
         )
         self.assertNotContains(response, "Load All")
+
+    def test_up_next_resume_links_episode_visual_and_series_title(self):
+        season = Season.objects.get(
+            user=self.user,
+            item__media_id="1668",
+            item__season_number=1,
+        )
+        tv = season.related_tv
+        Event.objects.create(
+            item=season.item,
+            content_number=6,
+            datetime=timezone.now() - timezone.timedelta(hours=1),
+        )
+        HomePinnedItem.objects.create(user=self.user, item=tv.item)
+        HomeScreenRow.objects.filter(user=self.user).delete()
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=MediaTypes.TV.value,
+            position=0,
+            row_type=HomeScreenRowTypeChoices.UP_NEXT,
+            sort_by=HomeSortChoices.RECENT,
+            direction=DirectionChoices.DESC,
+        )
+
+        response = self._get_hydrated_home()
+        row = self._get_first_row(response, MediaTypes.TV.value)
+        entry = row["items"][0]
+        episode_url = app_tags.next_episode_url(entry.item, entry.media)
+        series_url = app_tags.media_url(entry.title_item_override)
+
+        self.assertTrue(entry.resume_navigation)
+        self.assertEqual(entry.subtitle_override, "S01E06")
+        self.assertContains(response, f'href="{episode_url}"', html=False)
+        self.assertContains(response, 'data-resume-episode-link="true"', html=False)
+        self.assertContains(response, f'href="{series_url}"', html=False)
+        self.assertContains(response, 'data-resume-title-link="true"', html=False)
+        self.assertContains(
+            response,
+            'data-resume-episode-label-link="true"',
+            html=False,
+        )
+
+    def test_in_progress_row_can_keep_series_navigation(self):
+        HomeScreenRow.objects.filter(user=self.user).delete()
+        HomeScreenRow.objects.create(
+            user=self.user,
+            media_type=MediaTypes.TV.value,
+            position=0,
+            row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
+            sort_by=HomeSortChoices.COMPLETION,
+            direction=DirectionChoices.DESC,
+            filters={"status": [Status.IN_PROGRESS.value]},
+            open_last_episode=False,
+        )
+
+        response = self._get_hydrated_home()
+        row = self._get_first_row(response, MediaTypes.TV.value)
+
+        self.assertTrue(row["items"])
+        self.assertTrue(all(not entry.resume_navigation for entry in row["items"]))
 
     def test_home_rest_cards_return_to_home(self):
         """Cards in the deferred fragment must not redirect to that fragment."""
@@ -560,6 +638,7 @@ class HomeViewTests(TestCase):
         self.assertIsNotNone(card)
         self.assertEqual(card["title"], "Test TV Show")
         self.assertEqual(card["episode_code"], "S01E03")
+        self.assertIn("/episode/3", card["details_url"])
         self.assertIn(" / ", card["progress_display"])
         self.assertContains(response, "Now Playing")
         self.assertContains(response, "data-active-playback-card")
@@ -765,8 +844,16 @@ class HomeViewTests(TestCase):
         row_config.filters = {**row_config.filters, "release": "not_released"}
         row_config.save(update_fields=["filters"])
 
-        initial_response = self.client.get(reverse("home"))
-        season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
+        from users.home_screen import _library_entries_for_items
+
+        with patch(
+            "users.home_screen._library_entries_for_items", wraps=_library_entries_for_items
+        ) as hydrate:
+            initial_response = self.client.get(reverse("home"))
+            season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
+        self.assertEqual(season_row["total"], 29)
+        self.assertEqual(len(season_row["items"]), 14)
+        self.assertLessEqual(max(len(call.args[1]) for call in hydrate.call_args_list), 14)
         self.assertContains(initial_response, 'data-loaded-count="14"', html=False)
         self.assertContains(
             initial_response, 'data-home-row-sentinel="true"', html=False
@@ -785,9 +872,16 @@ class HomeViewTests(TestCase):
 
         # Loading another page must not touch other shelves, even when their
         # cached rows have expired and would need rebuilding.
-        with patch(
-            "users.home_screen._cached_row_section",
-            side_effect=AssertionError("Load more touched an unrelated home row"),
+        with (
+            patch(
+                "users.home_screen._cached_row_section",
+                side_effect=AssertionError("Load more touched an unrelated home row"),
+            ),
+            patch(
+                "users.home_screen._library_query_entries",
+                side_effect=AssertionError("pagination rebuilt the full Home row"),
+            ),
+            CaptureQueriesContext(connection) as queries,
         ):
             response = self.client.get(
                 reverse("home") + f"?load_row={season_row['row_id']}&offset=14",
@@ -803,11 +897,20 @@ class HomeViewTests(TestCase):
         self.assertContains(response, 'class="home-row-card w-44 shrink-0"', html=False)
         self.assertEqual(response["X-Home-Row-Total"], "29")
         self.assertEqual(response["X-Home-Row-Loaded"], "28")
-
-        final_response = self.client.get(
-            reverse("home") + f"?load_row={season_row['row_id']}&offset=28",
-            headers={"hx-request": "true"},
+        self.assertLess(
+            len(queries),
+            10,
+            f"Home pagination used {len(queries)} SQL queries",
         )
+
+        with patch(
+            "users.home_screen._library_query_entries",
+            side_effect=AssertionError("pagination rebuilt the full Home row"),
+        ):
+            final_response = self.client.get(
+                reverse("home") + f"?load_row={season_row['row_id']}&offset=28",
+                headers={"hx-request": "true"},
+            )
 
         self.assertEqual(final_response.status_code, 200)
         self.assertEqual(len(final_response.context["media_list"]["items"]), 1)
@@ -875,6 +978,12 @@ class HomeViewTests(TestCase):
         initial_response = self.client.get(reverse("home"))
         season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
         duplicate_entry = season_row["items"][0]
+        cache.delete(
+            cache_utils.build_home_row_order_cache_key(
+                self.user.id,
+                season_row["row_id"],
+            )
+        )
 
         duplicates = [duplicate_entry] * 37
         with patch(

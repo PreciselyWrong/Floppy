@@ -1,14 +1,16 @@
 """The data migration that clears tombstones left on still-tracked media (#1133)."""
 
 from importlib import import_module
+from types import SimpleNamespace
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
 
 from app.models import TV, DeletedMedia, Item, MediaTypes, Movie, Sources, Status
 
-migration = import_module("app.migrations.0202_clear_stale_deleted_media")
+migration = import_module("app.migrations.0184_reconcile_tags_and_deletion_markers")
 
 
 class ClearStaleTombstonesTests(TestCase):
@@ -20,8 +22,12 @@ class ClearStaleTombstonesTests(TestCase):
         self.other = get_user_model().objects.create_user(username="o", password="p")
         self.show = self._item(MediaTypes.TV.value, "1396")
         self.movie = self._item(MediaTypes.MOVIE.value, "603")
-        TV.objects.create(item=self.show, user=self.user, status=Status.IN_PROGRESS.value)
-        Movie.objects.create(item=self.movie, user=self.user, status=Status.COMPLETED.value)
+        TV.objects.create(
+            item=self.show, user=self.user, status=Status.IN_PROGRESS.value
+        )
+        Movie.objects.create(
+            item=self.movie, user=self.user, status=Status.COMPLETED.value
+        )
 
     @staticmethod
     def _item(media_type, media_id):
@@ -49,7 +55,7 @@ class ClearStaleTombstonesTests(TestCase):
         # The other user does not track the show, so their tombstone is real.
         other_users = self._tombstone(self.other, MediaTypes.TV.value, "1396")
 
-        migration.clear_stale_tombstones(apps, None)
+        migration.clear_stale_tombstones(apps, SimpleNamespace(connection=connection))
 
         remaining = set(DeletedMedia.objects.values_list("pk", flat=True))
         self.assertEqual(remaining, {deleted.pk, other_users.pk})
@@ -60,6 +66,6 @@ class ClearStaleTombstonesTests(TestCase):
         """A movie tombstone does not survive or clear on a show with the same id."""
         movie_with_show_id = self._tombstone(self.user, MediaTypes.MOVIE.value, "1396")
 
-        migration.clear_stale_tombstones(apps, None)
+        migration.clear_stale_tombstones(apps, SimpleNamespace(connection=connection))
 
         self.assertTrue(DeletedMedia.objects.filter(pk=movie_with_show_id.pk).exists())

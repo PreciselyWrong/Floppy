@@ -107,6 +107,7 @@ from app.detail_builders import (
     _apply_cached_hltb_link,
     _build_detail_link_entry,
     _build_detail_link_sections,
+    _build_detail_person_rows,
     _build_game_length_card,
     _build_game_lengths_context,
     _build_imdb_rating_context,
@@ -293,6 +294,7 @@ from app.providers import (
     services,
     tmdb,
 )
+from app.public_reviews import ReviewTarget, providers_for_target
 from app.save_views import (
     episode_bulk_save,
     episode_drop,
@@ -401,6 +403,7 @@ from integrations import anime_mapping
 from integrations.models import CollectionSourceState
 from lists.models import CustomList
 from lists.views_helpers import get_public_list_for_item
+from users.appearance import detail_section_enabled
 from users.home_screen import build_home_page_groups
 from users.models import (
     HomeSortChoices,
@@ -470,7 +473,10 @@ def home(request):
                 return HttpResponse("")
             response = render(
                 request,
-                "app/components/home_grid.html",
+                target_row.get(
+                    "grid_template",
+                    "app/components/home_grid.html",
+                ),
                 {
                     "media_list": target_row,
                     "user": request.user,
@@ -780,6 +786,8 @@ def active_playback_fragment(request):
         "app/components/active_playback_card.html",
         {
             "active_playback_card": card,
+            "user": request.user,
+            "IMG_NONE": settings.IMG_NONE,
         },
     )
 
@@ -939,6 +947,29 @@ def episode_details(
         )
     episode_item = episode_item_qs.first()
 
+    if (
+        not public_view
+        and episode_item
+        and isinstance(episode_metadata, dict)
+        and (episode_metadata.get("cast") or episode_metadata.get("crew"))
+        and not episode_item.person_credits.exists()
+    ):
+        run_retryable_db_operation(
+            lambda: credits.sync_item_credits_from_metadata(
+                episode_item,
+                episode_metadata,
+            ),
+            mode="best_effort",
+            operation_name="episode detail credits sync",
+            operation_logger=logger,
+        )
+
+    person_rows = _build_detail_person_rows(
+        episode_metadata,
+        item=episode_item,
+        user=request.user if request.user.is_authenticated else None,
+    )
+
     list_owner = None
     public_notes_view = False
     if public_list_view:
@@ -1018,6 +1049,7 @@ def episode_details(
         "prev_episode_number": prev_episode_number,
         "next_episode_number": next_episode_number,
         "episode_metadata": episode_metadata,
+        "media": {"source": source},
         "imdb_score": imdb_score,
         "season_metadata": season_metadata,
         "current_instance": current_season_instance,
@@ -1037,7 +1069,47 @@ def episode_details(
         or (episode_data or {}).get("title")
         or f"Episode {episode_number}",
         "detail_return_url": request.build_absolute_uri(),
+        **person_rows,
     }
+    review_external_ids = dict(
+        tv_with_seasons_metadata.get("provider_external_ids") or {}
+    )
+    if source == Sources.TVDB.value:
+        review_external_ids.setdefault("tvdb_id", str(media_id))
+    review_target = ReviewTarget(
+        media_type=MediaTypes.EPISODE.value,
+        source=source,
+        media_id=str(media_id),
+        external_ids=review_external_ids,
+        season_number=season_number,
+        episode_number=episode_number,
+    )
+    review_user = request.user if request.user.is_authenticated else None
+    if (
+        detail_section_enabled(request.user, "episode", "content", "reviews")
+        and providers_for_target(review_target, review_user)
+    ):
+        review_url = reverse(
+            "public_reviews_preview",
+            kwargs={
+                "source": source,
+                "media_type": MediaTypes.EPISODE.value,
+                "media_id": media_id,
+                "title": title,
+            },
+        )
+        review_query = urlencode(
+            {
+                "season": season_number,
+                "episode": episode_number,
+                **{
+                    key: review_external_ids[key]
+                    for key in ("tvdb_id", "imdb_id")
+                    if review_external_ids.get(key)
+                },
+            }
+        )
+        context["public_reviews_preview_url"] = f"{review_url}?{review_query}"
     return render(request, "app/episode_details.html", context)
 
 

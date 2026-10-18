@@ -219,6 +219,8 @@
       </div>
       </div>
 
+      {% include "app/components/detail_availability.html" %}
+
       {% if media.genres %}
         <div {% detail_section_attrs user detail_family "sidebar" "genres" %}
              class="detail-sidebar-genres{% if not public_view|default:False %} detail-sidebar-genres--in-tooltip{% endif %}">
@@ -347,11 +349,26 @@
 
     {# Related Media #}
     {% if media_type != MediaTypes.PODCAST.value %}
-      {% if show_notes|default:False or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes %}
+      {% if show_notes|default:False or media.related or media.cast or media.crew or media_type == MediaTypes.GAME.value or media.episodes or public_reviews_preview_url %}
         <div class="w-full md:w-3/4"
              style="display: flex; flex-direction: column;">
-         {# Rendered even with no notes yet: the empty section is the anchor the #}
-         {# post-save OOB swap replaces, so it must pre-exist in the DOM. #}
+        {# Rendered even with no notes yet: the empty section is the anchor the #}
+        {# post-save OOB swap replaces, so it must pre-exist in the DOM. #}
+        {% if remaining_time_summary and remaining_time_summary.remaining_minutes %}
+          <section class="mb-8 rounded-lg bg-[var(--color-surface)] p-4">
+            <h2 class="mb-2 text-xl font-bold">Time remaining</h2>
+            <p class="text-sm text-[var(--color-text-secondary)]">About {{ remaining_time_summary.remaining_minutes }} minutes left.</p>
+            {% if remaining_time_summary.has_pace %}<p class="text-xs text-[var(--color-text-muted)] mt-1">At your last 28-day pace, finish around {{ remaining_time_summary.estimated_finish|datetime_format:user }}.</p>{% endif %}
+          </section>
+        {% endif %}
+        {% if personal_rating_trend and personal_rating_trend.points|length > 1 %}
+          <section class="mb-8 rounded-lg bg-[var(--color-surface)] p-4">
+            <h2 class="mb-2 text-xl font-bold">Your episode rating trend</h2>
+            <p class="text-sm text-[var(--color-text-secondary)]">
+              {{ personal_rating_trend.direction|title }} across {{ personal_rating_trend.points|length }} rated episode{{ personal_rating_trend.points|length|pluralize }}.
+            </p>
+          </section>
+        {% endif %}
         {% if show_notes|default:False %}
           <div {% detail_section_attrs user detail_family "content" "notes" %}>
             {% include "app/components/detail_notes_section.html" %}
@@ -450,8 +467,9 @@
                 {% else %}
                 <div class="space-y-6" id="episodes-batch">
                   {% for episode in media.episodes %}
+                    {% firstof episode.display_title episode.title episode.name episode.issue_number "episode" as episode_url_title %}
                     {% if media_type == MediaTypes.COMIC.value %}
-                      {% url 'media_details' source=episode.source media_type=episode.media_type media_id=episode.media_id title=episode.title|default:episode.issue_number|slug as ep_detail_url %}
+                      {% url 'media_details' source=episode.source media_type=episode.media_type media_id=episode.media_id title=episode_url_title|slug as ep_detail_url %}
                       {% include "app/components/issue_row.html" %}
                     {% else %}
                       {% if media_type == MediaTypes.SEASON.value and media.source and media.media_id and media.season_number is not None and episode.episode_number is not None %}{% if parent_media_type == MediaTypes.ANIME.value %}{% url 'anime_episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% else %}{% url 'episode_details' source=media.source media_id=media.media_id title=media.title|slug season_number=media.season_number episode_number=episode.episode_number as ep_detail_url %}{% endif %}{% elif media_type == MediaTypes.ANIME.value and episode.source and episode.media_id and episode.episode_number %}{% url 'anime_episode_details' source=episode.source media_id=episode.media_id title=media.title|slug season_number=episode.season_number|default:0 episode_number=episode.episode_number as ep_detail_url %}{% endif %}
@@ -523,6 +541,9 @@
             {% include "app/components/_scrollable_row.html" with row=cast_row grid_template="app/components/detail_cast_grid.html" collapse_key="detail-cast-open" %}
           </section>
         {% endif %}
+        {% if guest_row.total %}
+          {% include "app/components/_scrollable_row.html" with row=guest_row grid_template="app/components/detail_cast_grid.html" collapse_key="detail-guest-open" %}
+        {% endif %}
 
         {% if crew_row.total %}
           <section class="mb-8" {% detail_section_attrs user detail_family "content" "crew" %}>
@@ -539,6 +560,12 @@
         {% if media_type == MediaTypes.GAME.value %}
           <div {% detail_section_attrs user detail_family "content" "game_lengths" %}>
             {% include "app/components/game_lengths_section.html" %}
+          </div>
+        {% endif %}
+
+        {% if public_reviews_preview_url %}
+          <div {% detail_section_attrs user detail_family "content" "reviews" %}>
+            {% include "app/components/public_reviews_loader.html" %}
           </div>
         {% endif %}
 

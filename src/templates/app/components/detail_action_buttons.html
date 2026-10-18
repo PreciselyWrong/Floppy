@@ -5,14 +5,10 @@
 {% load humanize %}
 {% load static %}
 {% if not public_view|default:False %}
-  {% if not activity_subtitle and media.score_count is None and not trakt_score and not imdb_score and not mal_score and not opencritic_score and not user_medias %}
-    <div class="order-1 mt-5 mb-6 flex flex-col gap-3 md:order-2 md:flex-row md:flex-wrap md:items-center">
-    {% elif not activity_subtitle and media.score_count is None and not trakt_score and not imdb_score and not mal_score and not opencritic_score and user_medias and not current_instance %}
-      <div class="order-1 mt-5 mb-6 flex flex-col gap-3 md:order-2 md:flex-row md:flex-wrap md:items-center">
-      {% else %}
-        <div class="order-1 mb-6 flex flex-col gap-3 md:order-2 md:flex-row md:flex-wrap md:items-center">
-          <div class="mt-4 mb-5 flex flex-wrap gap-2">
-          {% endif %}
+  <div class="order-1 {% if not activity_subtitle and media.score_count is None and not trakt_score and not imdb_score and not mal_score and not opencritic_score and not user_medias %}mt-5 mb-6 {% elif not activity_subtitle and media.score_count is None and not trakt_score and not imdb_score and not mal_score and not opencritic_score and user_medias and not current_instance %}mt-5 mb-6 {% else %}mb-6 {% endif %}flex flex-col gap-3 md:order-2 md:flex-row md:flex-wrap md:items-center">
+    {% if activity_subtitle or media.score_count is not None or trakt_score or imdb_score or mal_score or opencritic_score or user_medias and current_instance %}
+      <div class="mt-4 mb-5 flex flex-wrap gap-2">
+    {% endif %}
           {# Keep the hero tracker action full-width on mobile so the split button cannot collapse to content width after flex/layout merges. #}
           <div x-data="{ trackOpen: false }" class="w-full md:w-auto md:shrink-0">
             {% if media_type == MediaTypes.PODCAST.value and podcast_show %}
@@ -57,6 +53,9 @@
 
           {% detail_action_row media media_type as row %}
           <div class="flex w-full flex-wrap items-center gap-2 md:w-auto">
+            {% if can_home_pin %}
+              {% include "app/components/home_pin_button.html" with item=detail_item is_home_pinned=is_home_pinned %}
+            {% endif %}
             {% if row.link %}
               <div x-data="{ linksOpen: false, linksPinned: false }"
                    class="relative z-40 flex-1 md:flex-none"

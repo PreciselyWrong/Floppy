@@ -6,7 +6,7 @@
 <div x-data="{ trackOpen: false, noteExpanded: false }"
      class="border-b border-[var(--color-border)] last:border-b-0">
   <button type="button"
-          class="flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-[var(--color-surface-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+          class="flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-[var(--color-surface-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
           aria-label="{% blocktranslate trimmed with value_1=entry.display_title|default:entry.title %}View activity for {{ value_1 }}{% endblocktranslate %}"
           hx-get="{% media_view_url 'track_modal' entry.item %}"
           hx-vals='{"return_url": "{{ request.get_full_path|urlencode }}"{% if entry.instance_id is not None %}, "instance_id": "{{ entry.instance_id }}"{% endif %}, "standard_modal": "1"}'

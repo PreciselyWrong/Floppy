@@ -4,6 +4,14 @@
   --breakpoint-xs: 30rem;
 }
 
+@font-face {
+  font-family: "Floppy Display";
+  src: url("/static/fonts/roboto-flex.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 100 1000;
+}
+
 .home-settings-row-controls .filter-control > .absolute {
   right: 0;
   max-height: 60vh;
@@ -629,6 +637,129 @@ main > .container:has(img[data-artwork-ready="true"]),
   }
 }
 
+.brand-link {
+  display: inline-flex;
+  flex-shrink: 0;
+  min-width: 0;
+  align-items: center;
+  transform-origin: center;
+  transition:
+    transform var(--motion-duration) var(--motion-ease),
+    filter var(--motion-duration) var(--motion-ease);
+}
+
+.sidebar-brand-slot .brand-link {
+  width: 100%;
+  justify-content: center;
+}
+
+.brand-link:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+/* A hidden mark still needs a visible Home target when reached by keyboard. */
+.brand-link[data-brand-mode="hidden"] {
+  min-height: 2.75rem;
+}
+
+.brand-link[data-brand-mode="hidden"]:focus-visible {
+  border-radius: calc(var(--theme-radius) * 0.65);
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.brand-link[data-brand-mode="hidden"]:focus-visible .sr-only {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 0.5rem 0.75rem;
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  color: var(--color-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: normal;
+}
+
+.brand-built-in-image {
+  display: block;
+  flex-shrink: 0;
+  width: 9.875rem;
+  height: 3rem;
+  object-fit: contain;
+}
+
+.brand-custom-image {
+  display: block;
+  flex-shrink: 0;
+  width: auto;
+  height: 3rem;
+  max-width: 11rem;
+  object-fit: contain;
+}
+
+.brand-link-large :is(.brand-built-in-image, .brand-custom-image) {
+  height: 4rem;
+  max-width: 16rem;
+}
+
+.brand-wordmark {
+  min-width: 0;
+  max-width: 14rem;
+  color: var(--color-text);
+  font-family: "Floppy Display", ui-sans-serif, system-ui, sans-serif;
+  font-size: var(--brand-font-size, 23px);
+  font-weight: var(--brand-font-weight, 800);
+  letter-spacing: var(--brand-letter-spacing, -1px);
+  line-height: 1.05;
+  text-align: center;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-shadow: 0 1px 0 color-mix(in srgb, var(--color-page-bg) 55%, transparent);
+}
+
+.brand-wordmark[data-brand-font="sans"] {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.brand-wordmark[data-brand-font="serif"] {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+}
+
+.brand-wordmark[data-brand-font="mono"] {
+  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", monospace;
+}
+
+.brand-wordmark[data-brand-fill="custom_solid"] {
+  color: var(--brand-color-start);
+}
+
+.brand-wordmark[data-brand-fill="theme_gradient"],
+.brand-wordmark[data-brand-fill="custom_gradient"] {
+  background: linear-gradient(110deg, var(--color-text), var(--color-accent));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.brand-wordmark[data-brand-fill="custom_gradient"] {
+  background-image: linear-gradient(
+    110deg,
+    var(--brand-color-start),
+    var(--brand-color-end)
+  );
+}
+
+.brand-link-large .brand-wordmark {
+  max-width: 18rem;
+  font-size: calc(var(--brand-font-size, 23px) * 1.4);
+}
+
+html.glass .brand-wordmark[data-brand-fill="theme_gradient"] {
+  background-image: linear-gradient(110deg, #ffffff, #a5f3fc 52%, #c4b5fd);
+}
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -669,7 +800,6 @@ html:is(.glass, .custom) :is(.media-card, .search-result-card, .search-result-ca
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-
 html:is(.glass, .custom) [class*="bg-[var(--color-panel)]"] {
   background-color: color-mix(
     in srgb,
@@ -735,6 +865,61 @@ html.light .theme-toggle-icon-moon {
 
 [x-cloak] {
   display: none !important;
+}
+
+.history-timeline-chip {
+  border: 1px solid var(--color-surface-border);
+  border-radius: 9999px;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.history-timeline-chip:hover,
+.history-timeline-chip:focus-visible {
+  border-color: var(--color-link);
+  outline: none;
+}
+
+.history-timeline-chip-active {
+  border-color: var(--color-link);
+  background: var(--color-surface-strong);
+  color: var(--color-text);
+}
+
+.history-timeline-date {
+  color: var(--color-text-secondary);
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.history-timeline-card {
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.history-timeline-badge {
+  width: max-content;
+  border-radius: 0.25rem;
+  background: var(--color-surface-strong);
+  color: var(--color-text-muted);
+  padding: 0.2rem 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.history-timeline-accent {
+  color: var(--color-link);
 }
 
 /* Navigation progress for boosted links.
@@ -1103,8 +1288,8 @@ html.light .theme-toggle-icon-moon {
 /* Modal max height with padding from viewport */
 .modal-max-height {
   max-height: calc(100vh - 4rem);
-  /* iOS Safari counts vh with the toolbar hidden; dvh follows the visible height. */
-  max-height: calc(100dvh - 4rem);
+  /* dvh follows visible height on mobile browsers while safe-area insets prevent clipping. */
+  max-height: calc(100dvh - max(2rem, env(safe-area-inset-top)) - max(1rem, env(safe-area-inset-bottom)));
 }
 
 /* Custom date/time picker: trigger + popover/sheet */
@@ -3740,13 +3925,49 @@ html.light .theme-toggle-icon-moon {
   --home-row-hover-clearance: calc(max(0.25rem, var(--motion-distance)) + 0.25rem);
   -ms-overflow-style: none;
   scrollbar-width: none;
-  /* The scrollport must contain the vertical theme lift. */
+  /* Padding preserves horizontal paint room without shifting cards; scrollport contains vertical lift. */
   margin-top: calc(var(--home-row-hover-clearance) * -1);
   padding-top: var(--home-row-hover-clearance);
 }
 
 .home-row-scrollbar-hidden::-webkit-scrollbar {
   display: none;
+}
+
+[data-horizontal-scroll="true"] {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+  scroll-behavior: smooth;
+  scroll-snap-type: x proximity;
+  touch-action: pan-x pan-y pinch-zoom;
+}
+
+[data-horizontal-scroll="true"] > * {
+  scroll-snap-align: start;
+}
+
+[data-horizontal-scroll="true"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: fine) {
+  [data-horizontal-scroll="true"] {
+    cursor: grab;
+  }
+
+  [data-horizontal-scroll="true"].is-dragging {
+    cursor: grabbing;
+    scroll-behavior: auto;
+    scroll-snap-type: none;
+    user-select: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-horizontal-scroll="true"] {
+    scroll-behavior: auto;
+  }
 }
 
 @media (max-width: 768px) {

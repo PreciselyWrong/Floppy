@@ -1,9 +1,11 @@
 import importlib
 import json
+from types import SimpleNamespace
 
 from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
 from django.urls import reverse
 
@@ -985,7 +987,7 @@ class NormalizeTagNamesMigrationTest(TestCase):
             username="test", password="12345"
         )
         self.migration = importlib.import_module(
-            "app.migrations.0200_normalize_tag_names",
+            "app.migrations.0184_reconcile_tags_and_deletion_markers",
         )
 
     def _tag(self, name):
@@ -1005,7 +1007,9 @@ class NormalizeTagNamesMigrationTest(TestCase):
     def test_trailing_space_is_removed(self):
         tag = self._tag("Will Not Play ")
 
-        self.migration.normalize_tag_names(django_apps, None)
+        self.migration.normalize_tag_names(
+            django_apps, SimpleNamespace(connection=connection)
+        )
 
         tag.refresh_from_db()
         self.assertEqual(tag.name, "Will Not Play")
@@ -1018,7 +1022,9 @@ class NormalizeTagNamesMigrationTest(TestCase):
         ItemTag.objects.create(tag=stray, item=shared)
         ItemTag.objects.create(tag=stray, item=only_stray)
 
-        self.migration.normalize_tag_names(django_apps, None)
+        self.migration.normalize_tag_names(
+            django_apps, SimpleNamespace(connection=connection)
+        )
 
         self.assertFalse(Tag.objects.filter(pk=stray.pk).exists())
         self.assertCountEqual(
@@ -1030,7 +1036,9 @@ class NormalizeTagNamesMigrationTest(TestCase):
         self._tag(" Later")
         self._tag("Later ")
 
-        self.migration.normalize_tag_names(django_apps, None)
+        self.migration.normalize_tag_names(
+            django_apps, SimpleNamespace(connection=connection)
+        )
 
         self.assertEqual(list(Tag.objects.values_list("name", flat=True)), ["Later"])
 
@@ -1046,6 +1054,10 @@ class NormalizeTagNamesMigrationTest(TestCase):
             self.client.get(url, {"tag": "Will Not Play "}),
             "Stray Game",
         )
-        self.migration.normalize_tag_names(django_apps, None)
+        self.migration.normalize_tag_names(
+            django_apps, SimpleNamespace(connection=connection)
+        )
 
-        self.assertContains(self.client.get(url, {"tag": "Will Not Play"}), "Stray Game")
+        self.assertContains(
+            self.client.get(url, {"tag": "Will Not Play"}), "Stray Game"
+        )

@@ -90,6 +90,8 @@ CARD_VALUES = frozenset(
         "show_media_type_chip",
         "media_type_chip_type",
         "active",
+        "resume_navigation",
+        "title_item_override",
     },
 )
 

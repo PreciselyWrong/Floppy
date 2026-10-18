@@ -483,6 +483,7 @@ The only universally required variable is `SECRET`. For Docker installs you shou
 **Optional but recommended:**
 
 - `TMDB_API` - movie and TV metadata from [TMDB](https://www.themoviedb.org/settings/api)
+- `BETASERIES_API_KEY` - public movie, show, anime, and episode reviews from [BetaSeries](https://www.betaseries.com/api/)
 - `TVDB_API_KEY` / `TVDB_PIN` - TVDB-backed metadata and grouped anime support (`TVDB_PIN` is your **Subscriber PIN**, only required for user-supported API keys)
 - `MAL_API` - MyAnimeList **Client ID** for anime metadata ([register here](https://myanimelist.net/apiconfig))
 - `IGDB_ID` / `IGDB_SECRET` - game metadata from [IGDB](https://www.igdb.com/api)
@@ -521,6 +522,7 @@ Example `.env` file:
 
 ```bash
 TMDB_API=API_KEY
+BETASERIES_API_KEY=API_KEY
 TVDB_API_KEY=TVDB_API_KEY
 TVDB_PIN=SUBSCRIBER_PIN (Optional, only for user-supported keys)
 MAL_API=CLIENT_ID
@@ -586,7 +588,7 @@ count, batch sizes, and background task cadence accordingly. The chosen tier and
 Celery worker topology are logged on the first line of the container's output:
 
 ```
-[entrypoint] resources tier=minimal mem=1.9GiB swap=0 cpus=2 -> gunicorn 1x2, celery workers background=on(celery,interactive,discover) interactive=off(combined) discover=off(merged)
+[entrypoint] resources tier=minimal mem=1.9GiB swap=0 cpus=2 -> gunicorn 1x2, celery workers background=on(celery,discover) interactive=on(interactive) discover=off(merged)
 ```
 
 - **standard** (3 GB+): one threaded gunicorn worker and two Celery workers. Discover and
@@ -594,8 +596,8 @@ Celery worker topology are logged on the first line of the container's output:
   scrobbles are never stuck behind a backfill.
 - **constrained** (under 3 GB): the same lean process layout as standard, with smaller
   worker-recycling and cache budgets.
-- **minimal** (under 1.5 GB): one gunicorn worker and a single Celery worker serving every
-  queue.
+- **minimal** (under 1.5 GB): one gunicorn worker and two Celery workers with smaller
+  budgets. The interactive queue stays isolated from background work on this fork.
 
 **On a small host, swap matters as much as the memory figure.** Each Celery worker holds
 its own full copy of the application, so below about 6 GB a host with no swap gets bumped

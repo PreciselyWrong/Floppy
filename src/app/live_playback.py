@@ -831,7 +831,12 @@ def _app_path(path: str = "") -> str:
     )
 
 
-def _build_details_url(state: dict, library_media_type: str | None = None) -> str:
+def _build_details_url(
+    state: dict,
+    library_media_type: str | None = None,
+    *,
+    open_episode: bool = False,
+) -> str:
     """Build a URL to the media details page for the playing item."""
     media_id = state.get("media_id")
     source = state.get("source") or Sources.TMDB.value
@@ -843,11 +848,22 @@ def _build_details_url(state: dict, library_media_type: str | None = None) -> st
     slug_title = _slugify_title(title, media_id)
 
     if playback_media_type == MediaTypes.EPISODE.value:
+        season_number = _coerce_int(state.get("season_number"))
+        episode_number = _coerce_int(state.get("episode_number"))
+        if open_episode and season_number is not None and episode_number is not None:
+            parent_type = (
+                MediaTypes.ANIME.value
+                if library_media_type == MediaTypes.ANIME.value
+                else MediaTypes.TV.value
+            )
+            return _app_path(
+                f"details/{source}/{parent_type}/{media_id}/{slug_title}"
+                f"/season/{season_number}/episode/{episode_number}",
+            )
         if library_media_type == MediaTypes.ANIME.value:
             return _app_path(
                 f"details/{source}/{MediaTypes.ANIME.value}/{media_id}/{slug_title}",
             )
-        season_number = _coerce_int(state.get("season_number"))
         if season_number is not None:
             return _app_path(
                 f"details/{source}/{MediaTypes.TV.value}/{media_id}/{slug_title}"
@@ -1177,7 +1193,11 @@ def build_home_playback_card(user) -> dict | None:
             if status in (PLAYBACK_STATUS_PAUSED, PLAYBACK_STATUS_STOPPED)
             else "Playing"
         ),
-        "details_url": _build_details_url(state, library_media_type=library_media_type),
+        "details_url": _build_details_url(
+            state,
+            library_media_type=library_media_type,
+            open_episode=getattr(user, "now_playing_open_episode", True),
+        ),
         "progress_display": progress_display,
         "progress_percent": progress_percent,
         "offset_seconds": max(0, _coerce_int(state.get("view_offset_seconds"), 0)),

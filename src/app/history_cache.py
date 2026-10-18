@@ -131,6 +131,7 @@ from app.models import (
     Music,
     Podcast,
     Sources,
+    Status,
     Track,
 )
 
@@ -396,8 +397,8 @@ def _build_reading_entries(
 ):
     """Build history entries for books, comics, manga, and flat anime.
 
-    These are single-record media types anchored on their completion/activity
-    day. They join the general timeline (``process_all``), a matching media-type
+    These are single-record media types anchored on their completion day. They
+    join the general timeline (``process_all``), a matching media-type
     filter, or — for the reading types only — an author/person filter.
     """
     has_person_filter = bool(person_source_filter and person_id_filter)
@@ -448,6 +449,11 @@ def _build_reading_entries(
             .select_related("item")
             .defer(*history_deferred_item_fields("item"))
         )
+        if not include_undated:
+            queryset = queryset.filter(
+                status=Status.COMPLETED.value,
+                end_date__isnull=False,
+            )
         if credited_reading_item_ids is not None:
             if not credited_reading_item_ids:
                 continue
@@ -463,26 +469,10 @@ def _build_reading_entries(
                 item__source=target_source,
             )
         if start_date:
-            queryset = queryset.filter(
-                models.Q(end_date__gte=start_date)
-                | (
-                    models.Q(end_date__isnull=True)
-                    & models.Q(start_date__gte=start_date)
-                ),
-            )
+            queryset = queryset.filter(end_date__gte=start_date)
         if end_date:
-            queryset = queryset.filter(
-                models.Q(end_date__lte=end_date)
-                | (
-                    models.Q(end_date__isnull=True) & models.Q(start_date__lte=end_date)
-                ),
-            )
-        entry_is_undated = include_undated and targets_this_media
-        if not entry_is_undated:
-            queryset = queryset.filter(
-                models.Q(start_date__isnull=False) | models.Q(end_date__isnull=False),
-            )
-        queryset = queryset.order_by("-end_date", "-start_date", "-created_at")
+            queryset = queryset.filter(end_date__lte=end_date)
+        queryset = queryset.order_by("-end_date", "-created_at")
 
         for reading_entry in queryset:
             item = getattr(reading_entry, "item", None)
@@ -492,16 +482,9 @@ def _build_reading_entries(
                 item_genres = {str(g).lower() for g in _resolve_genres(item)}
                 if not item_genres & set(genre_filters):
                     continue
-            if not reading_entry.end_date and not reading_entry.start_date:
-                if not entry_is_undated:
-                    continue
-                played_at_local = None
-            else:
-                played_at_local = _localize_datetime(
-                    reading_entry.end_date or reading_entry.start_date,
-                )
-                if not played_at_local:
-                    continue
+            played_at_local = _localize_datetime(reading_entry.end_date)
+            if not played_at_local and not include_undated:
+                continue
             entry = {
                 "media_type": item.media_type,
                 "item": _serialize_item(item),

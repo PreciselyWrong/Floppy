@@ -32,10 +32,14 @@ class PreferencesViewTests(TestCase):
     @patch("users.views.tmdb.metadata_languages")
     @patch("app.tasks.backfill_item_metadata_task.apply_async")
     def test_language_changes_restart_and_schedule_automatic_metadata_repair(
-        self, mock_schedule, mock_languages,
+        self,
+        mock_schedule,
+        mock_languages,
     ):
         mock_languages.return_value = [
-            ("", "Server default"), ("es-ES", "Spanish"), ("fr", "French"),
+            ("", "Server default"),
+            ("es-ES", "Spanish"),
+            ("fr", "French"),
         ]
         for language in ("es-ES", "fr", "es-ES", ""):
             with self.subTest(language=language):
@@ -44,7 +48,8 @@ class PreferencesViewTests(TestCase):
                 ).update(completed_at=timezone.now(), last_cursor_item_id=100)
                 with self.captureOnCommitCallbacks(execute=True):
                     response = self.client.post(
-                        reverse("preferences"), {"metadata_language": language},
+                        reverse("preferences"),
+                        {"metadata_language": language},
                     )
                 self.assertEqual(response.status_code, 302)
                 self.user.refresh_from_db()
@@ -63,6 +68,26 @@ class PreferencesViewTests(TestCase):
         state.refresh_from_db()
         self.assertIsNotNone(state.completed_at)
         self.assertEqual(mock_schedule.call_count, 4)
+
+    def test_preferences_post_persists_person_known_for_limit(self):
+        response = self.client.post(
+            reverse("preferences"),
+            {"person_known_for_limit": "5"},
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.person_known_for_limit, 5)
+
+    def test_preferences_post_ignores_invalid_person_known_for_limit(self):
+        response = self.client.post(
+            reverse("preferences"),
+            {"person_known_for_limit": "11"},
+        )
+
+        self.assertRedirects(response, reverse("preferences"))
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.person_known_for_limit, 3)
 
     def test_preferences_post_can_disable_ratings(self):
         """Disabled is a rating scale choice and does not change the max used for stored scores."""
@@ -84,25 +109,34 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.theme, "light")
 
-    def test_preferences_post_persists_logo_style(self):
-        """POSTing a supported logo style should persist to the DB."""
-        response = self.client.post(
-            reverse("preferences"),
-            {"logo_style": "monochrome"},
-        )
-        self.assertRedirects(response, reverse("preferences"))
-        self.user.refresh_from_db()
-        self.assertEqual(self.user.logo_style, "monochrome")
+    def test_hidden_logo_keeps_an_accessible_home_link(self):
+        self.user.logo_style = "hidden"
+        self.user.save(update_fields=["logo_style"])
 
-    def test_preferences_post_rejects_invalid_logo_style(self):
-        """POSTing an invalid logo style should be ignored."""
+        response = self.client.get(reverse("preferences"))
+
+        self.assertContains(response, 'data-brand-mode="hidden"')
+        self.assertContains(response, 'aria-label="Floppy home"')
+
+    def test_preferences_post_persists_home_playback_display_options(self):
         response = self.client.post(
             reverse("preferences"),
-            {"logo_style": "neon"},
+            {
+                "show_up_next_episode_code": "0",
+                "now_playing_open_episode": "0",
+            },
         )
+
         self.assertRedirects(response, reverse("preferences"))
         self.user.refresh_from_db()
-        self.assertEqual(self.user.logo_style, "colorful")
+        self.assertFalse(self.user.show_up_next_episode_code)
+        self.assertFalse(self.user.now_playing_open_episode)
+
+    def test_preferences_render_home_playback_display_options(self):
+        response = self.client.get(reverse("preferences"))
+
+        self.assertContains(response, 'name="show_up_next_episode_code"')
+        self.assertContains(response, 'name="now_playing_open_episode"')
 
     def test_preferences_post_rejects_invalid_theme(self):
         """POSTing an invalid theme value should be ignored, not persisted."""
@@ -111,24 +145,59 @@ class PreferencesViewTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.theme, "system")
 
-    def test_preferences_does_not_manage_home_media_type_label_appearance(self):
-        response = self.client.get(reverse("preferences"))
+    def test_home_settings_manage_media_type_chip_appearance(self):
+        response = self.client.get(reverse("home_screen"))
+        self.assertContains(response, 'name="home_media_type_chips_enabled"')
+        self.assertContains(response, 'name="home_media_type_chip_style"')
+        self.assertContains(
+            response, "home_media_type_chip_color_' + section.media_type"
+        )
 
-        self.assertNotContains(response, 'name="home_media_type_chips_enabled"')
-        self.assertNotContains(response, 'name="home_media_type_chip_style"')
-        self.assertNotContains(response, "home_media_type_chip_color_")
+        response = self.client.post(
+            reverse("home_screen"),
+            {
+                "home_media_type_chips_present": "1",
+                "home_media_type_chips_enabled": "1",
+                "home_media_type_chip_style": "soft",
+                "home_media_type_chip_color_movie": "#123abc",
+                "home_media_type_chip_color_book": "javascript:alert(1)",
+            },
+        )
+
+        self.assertRedirects(response, reverse("home_screen"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.home_media_type_chips_enabled)
+        self.assertEqual(self.user.home_media_type_chip_style, "soft")
+        self.assertEqual(self.user.home_media_type_chip_colors["movie"], "#123ABC")
+        self.assertNotIn("book", self.user.home_media_type_chip_colors)
 
     def test_preferences_display_labels_and_logo(self):
-        """The display cards expose the simplified labels and logo choice."""
+        """The display cards keep their labels without duplicating branding."""
         response = self.client.get(reverse("preferences"))
 
-        self.assertContains(response, 'name="logo_style"')
-        self.assertContains(response, "Colorful")
+        self.assertNotContains(response, 'name="logo_style"')
         self.assertContains(response, "System default — Aug 12, 2025 / 12 Aug 2025")
         self.assertContains(response, "System default — 6:45 PM / 18:45")
         self.assertNotContains(response, "System default (locale)")
-        self.assertContains(response, "/static/img/floppy-logo.png")
-        self.assertNotContains(response, "/static/img/floppy-logo-white.png")
+
+    def test_preferences_post_cannot_change_branding(self):
+        self.client.post(reverse("preferences"), {"logo_style": "monochrome"})
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.logo_style, "colorful")
+
+    def test_preferences_keeps_all_theme_choices(self):
+        response = self.client.get(reverse("preferences"))
+
+        for label in (
+            "System default",
+            "Dark",
+            "Light",
+            "Projector",
+            "Video store",
+            "Custom palette",
+        ):
+            self.assertContains(response, label)
 
     def test_preferences_uses_monochrome_logo_for_authenticated_user(self):
         """Authenticated branding should follow the saved logo style."""

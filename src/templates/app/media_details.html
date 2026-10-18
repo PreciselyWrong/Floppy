@@ -20,6 +20,7 @@
   {% elif music_detail_kind == "track" %}
     {% include "app/components/detail_music_track.html" %}
   {% else %}
+    {% detail_layout_family media_type as detail_family %}
     {% if not render_secondary_only %}
       {# Top section #}
       {% if carousel_supported %}

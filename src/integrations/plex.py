@@ -375,6 +375,7 @@ def fetch_section_all_items(
     start: int = 0,
     size: int | None = None,
     max_retries: int = 3,
+    item_type: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch all items from a Plex library section.
 
@@ -385,6 +386,7 @@ def fetch_section_all_items(
         start: Starting offset for pagination
         size: Number of items to fetch per page
         max_retries: Maximum number of retry attempts for network errors
+        item_type: Optional Plex media type filter, such as 4 for episodes
 
     Returns:
         Tuple of (items list, total count)
@@ -401,6 +403,8 @@ def fetch_section_all_items(
         # resolve TMDB/IMDB/TVDB ids.
         "includeGuids": 1,
     }
+    if item_type is not None:
+        params["type"] = item_type
 
     # Ensure section_key is numeric (section ID) or use it as-is if it's already a path
     if not section_key.startswith("/"):

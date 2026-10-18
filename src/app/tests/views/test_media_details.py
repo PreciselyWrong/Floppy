@@ -146,6 +146,76 @@ class MediaDetailsViewTests(TestCase):
             user=self.user,
         )
 
+    @patch("app.providers.services.get_media_metadata")
+    def test_media_details_shows_credit_history_and_age_under_person_card(
+        self,
+        mock_get_metadata,
+    ):
+        person = Person.objects.create(
+            source=Sources.TMDB.value,
+            source_person_id="credit-person-1",
+            name="History Actor",
+            birth_date="1990-07-01",
+        )
+        history_item = Item.objects.create(
+            media_id="history-film",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="History Film",
+            provider_rating=9.0,
+            release_datetime=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        ItemPersonCredit.objects.create(
+            item=history_item,
+            person=person,
+            role_type=CreditRoleType.CAST.value,
+            role="Lead",
+        )
+        Movie.objects.create(
+            item=history_item,
+            user=self.user,
+            status=Status.PLANNING.value,
+            start_date=timezone.now(),
+            end_date=timezone.now(),
+        )
+        mock_get_metadata.return_value = {
+            "media_id": "credit-film",
+            "title": "Credit Film",
+            "media_type": MediaTypes.MOVIE.value,
+            "source": Sources.TMDB.value,
+            "image": "http://example.com/credit-film.jpg",
+            "max_progress": 1,
+            "details": {"release_date": "2024-06-01"},
+            "cast": [
+                {
+                    "person_id": "credit-person-1",
+                    "name": "History Actor",
+                    "image": "http://example.com/history-actor.jpg",
+                    "role": "Lead",
+                },
+            ],
+            "crew": [],
+            "related": {"recommendations": []},
+        }
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "credit-film",
+                    "title": "credit-film",
+                },
+            ),
+            {"fragment": "secondary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Age 33")
+        self.assertContains(response, "Your history")
+        self.assertContains(response, "History Film")
+
     @patch("integrations.tasks.fetch_collection_metadata_for_item.delay")
     @patch("app.views.helpers.enrich_items_with_user_data")
     @patch("app.views.run_retryable_db_operation")
@@ -326,6 +396,8 @@ class MediaDetailsViewTests(TestCase):
         self.assertContains(
             response, '<h2 class="text-xl font-bold">Collection</h2>', html=False
         )
+        self.assertContains(response, "Availability")
+        self.assertContains(response, "Search Plex")
         self.assertContains(response, "media-grid-row-detail-cast", html=False)
         self.assertNotContains(
             response,
@@ -558,7 +630,7 @@ class MediaDetailsViewTests(TestCase):
         )
 
     @patch("app.providers.services.get_media_metadata")
-    def test_media_details_renders_action_row_before_chips_and_description(
+    def test_media_details_renders_action_row_chips_and_description(
         self, mock_get_metadata
     ):
         mock_get_metadata.return_value = {
@@ -633,10 +705,10 @@ class MediaDetailsViewTests(TestCase):
             'class="hidden text-[var(--color-link)] hover:text-[var(--color-link-hover)] text-sm mt-2 focus:outline-none transition-colors cursor-pointer sm:inline-flex"',
             content,
         )
-        # Movies/TV/seasons render the carousel-column layout: title + action row
-        # come first, score chips move below them, then the synopsis.
-        self.assertLess(content.index("Add to tracker"), content.index("tmdb-logo.png"))
-        self.assertLess(content.index("tmdb-logo.png"), content.index("Test overview"))
+        # Custom detail layouts control the visual order, so the source order is
+        # intentionally not part of this rendering contract.
+        self.assertIn("tmdb-logo.png", content)
+        self.assertIn("Test overview", content)
 
     @patch("app.providers.services.get_media_metadata")
     def test_genres_move_to_tag_tooltip_only_when_viewer_has_one(
@@ -837,7 +909,7 @@ class MediaDetailsViewTests(TestCase):
             else volume_metadata
         )
 
-        volume_item = Item.objects.create(
+        Item.objects.create(
             media_id="500",
             source=Sources.COMICVINE.value,
             media_type=MediaTypes.COMIC.value,
@@ -1227,6 +1299,7 @@ class MediaDetailsViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Public list note")
+        self.assertNotContains(response, "Availability")
 
         response = self.client.get(
             detail_url,
@@ -4037,6 +4110,71 @@ class MediaDetailsViewTests(TestCase):
         )
 
     @patch("app.providers.services.get_media_metadata")
+    def test_media_details_renders_weighted_public_rating_breakdown(
+        self, mock_get_metadata
+    ):
+        Item.objects.create(
+            media_id="aggregate-238",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.MOVIE.value,
+            title="Aggregate Movie",
+            image="http://example.com/image.jpg",
+            trakt_rating=6.0,
+            trakt_rating_count=50,
+            imdb_rating=9.0,
+            imdb_rating_count=200,
+        )
+        mock_get_metadata.return_value = {
+            "media_id": "aggregate-238",
+            "title": "Aggregate Movie",
+            "media_type": MediaTypes.MOVIE.value,
+            "source": Sources.TMDB.value,
+            "source_url": "https://www.themoviedb.org/movie/238",
+            "image": "http://example.com/image.jpg",
+            "score": 8.0,
+            "score_count": 100,
+            "external_links": {
+                "IMDb": "https://www.imdb.com/title/tt0000238/",
+            },
+            "details": {},
+            "related": {},
+        }
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "aggregate-238",
+                    "title": "aggregate-movie",
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["aggregate_rating"]["rating"], 8.3)
+        self.assertContains(response, "Public rating")
+        self.assertContains(response, "350 votes")
+        self.assertContains(response, "3 sources")
+        self.assertContains(response, "57.1%")
+        self.assertContains(
+            response,
+            'data-detail-section="ratings" style="order: 0"',
+            html=False,
+        )
+
+        self.user.detail_page_layouts = {"media": {"hero": []}}
+        self.user.save(update_fields=["detail_page_layouts"])
+        hidden_response = self.client.get(response.request["PATH_INFO"])
+
+        self.assertContains(
+            hidden_response,
+            'data-detail-section="ratings" hidden',
+            html=False,
+        )
+
+    @patch("app.providers.services.get_media_metadata")
     def test_media_details_hides_trakt_score_card_without_data(self, mock_get_metadata):
         Item.objects.create(
             media_id="239",
@@ -4549,6 +4687,12 @@ class MediaDetailsViewTests(TestCase):
         self.assertNotContains(response, "FIRST PLAYED")
         self.assertNotContains(response, "LAST PLAYED")
         self.assertNotContains(response, "WATCHED HOURS")
+
+        self.assertContains(response, "Pin to Up Next")
+        self.assertContains(
+            response,
+            reverse("toggle_home_pin", args=[item.id]),
+        )
 
     @patch("app.providers.services.get_media_metadata")
     def test_movie_media_details_renders_watch_subtitle_above_score_chips(
@@ -7370,6 +7514,57 @@ class MediaDetailsViewTests(TestCase):
             language="en",
         )
 
+    @patch("app.season_details_views.credits_module.sync_item_credits_from_metadata")
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes", return_value=[])
+    def test_season_details_syncs_people_before_enriching_credit_cards(
+        self,
+        _mock_process_episodes,
+        mock_get_metadata,
+        mock_sync_credits,
+    ):
+        season_item = Item.objects.create(
+            media_id="season-credit-show",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            library_media_type=MediaTypes.SEASON.value,
+            season_number=1,
+            title="Season 1",
+        )
+        season_metadata = {
+            "title": "Season 1",
+            "season_title": "Season 1",
+            "media_id": "season-credit-show",
+            "media_type": MediaTypes.SEASON.value,
+            "source": Sources.TMDB.value,
+            "episodes": [],
+            "cast": [{"person_id": "42", "name": "Season Actor"}],
+            "crew": [],
+        }
+        mock_get_metadata.return_value = {
+            "title": "Credit Show",
+            "media_id": "season-credit-show",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "season/1": season_metadata,
+        }
+
+        response = self.client.get(
+            reverse(
+                "season_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "season-credit-show",
+                    "title": "credit-show",
+                    "season_number": 1,
+                },
+            ),
+            {"fragment": "secondary"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_sync_credits.assert_called_once_with(season_item, season_metadata)
+
     @patch("app.providers.services.get_media_metadata")
     @patch("app.providers.tmdb.process_episodes")
     def test_season_details_view_anonymous_public(
@@ -7684,6 +7879,69 @@ class MediaDetailsViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+
+    @patch("app.views._build_detail_person_rows")
+    @patch("app.views.credits.sync_item_credits_from_metadata")
+    @patch("app.views.tmdb.episode")
+    @patch("app.providers.services.get_media_metadata")
+    @patch("app.providers.tmdb.process_episodes", return_value=[])
+    def test_episode_details_builds_enriched_credit_rows(
+        self,
+        _mock_process_episodes,
+        mock_get_metadata,
+        mock_episode,
+        mock_sync_credits,
+        mock_build_person_rows,
+    ):
+        episode_item = Item.objects.create(
+            media_id="episode-credit-show",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.EPISODE.value,
+            library_media_type=MediaTypes.TV.value,
+            season_number=1,
+            episode_number=2,
+            title="Episode 2",
+        )
+        mock_get_metadata.return_value = {
+            "title": "Credit Show",
+            "media_id": "episode-credit-show",
+            "source": Sources.TMDB.value,
+            "media_type": MediaTypes.TV.value,
+            "season/1": {"title": "Season 1", "episodes": []},
+        }
+        episode_metadata = {
+            "cast": [{"person_id": "42", "name": "Episode Actor"}],
+            "crew": [],
+        }
+        mock_episode.return_value = episode_metadata
+        mock_build_person_rows.return_value = {
+            "cast_row": {"total": 1, "items": episode_metadata["cast"]},
+            "guest_row": {"total": 0, "items": []},
+            "crew_row": {"total": 0, "items": []},
+            "recommendations_row": {"total": 0, "items": []},
+        }
+
+        response = self.client.get(
+            reverse(
+                "episode_details",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_id": "episode-credit-show",
+                    "title": "credit-show",
+                    "season_number": 1,
+                    "episode_number": 2,
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_sync_credits.assert_called_once_with(episode_item, episode_metadata)
+        mock_build_person_rows.assert_called_once_with(
+            episode_metadata,
+            item=episode_item,
+            user=self.user,
+        )
+        self.assertEqual(response.context["cast_row"]["total"], 1)
 
     @patch("app.views.tmdb.episode", return_value={})
     @patch("app.providers.services.get_media_metadata")

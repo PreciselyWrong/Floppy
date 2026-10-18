@@ -1,0 +1,229 @@
+{% load app_tags %}
+{% load user_tags %}
+
+<div class="home-activity-journal-section mb-8" data-home-row-wrapper="true">
+  <div class="mb-4 flex items-center justify-between gap-3">
+    <div class="min-w-0 flex-1">
+      <h3 class="home-row-heading-title text-lg font-semibold leading-none text-[var(--color-text)] flex items-center gap-x-2">
+        {% if row.url %}
+          <a href="{{ row.url }}" class="hover:text-[var(--color-text)] transition-colors">{{ row.title }}</a>
+        {% else %}
+          {{ row.title }}
+        {% endif %}
+      </h3>
+      {% if row.summary %}
+        <p class="text-xs text-[var(--color-text-muted)] mt-0.5">{{ row.summary }}</p>
+      {% endif %}
+    </div>
+    <div>
+      <a href="{% url 'history' %}"
+         class="text-xs font-medium text-[var(--color-link)] hover:text-[var(--color-link-hover)] transition-colors inline-flex items-center gap-1">
+        <span>View Full History</span>
+        {% include "app/icons/chevron-right.svg" with classes="w-3.5 h-3.5" %}
+      </a>
+    </div>
+  </div>
+
+  <div class="space-y-6">
+    {% for day in row.days %}
+      <div class="home-activity-day">
+        {# Date Header #}
+        <div class="mb-2.5 flex items-center justify-between pb-1.5 border-b border-[var(--color-surface-strong)]">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-bold text-[var(--color-link)]">
+              {{ day.weekday }}
+            </span>
+            <span class="text-xs text-[var(--color-text-muted)]">
+              • {{ day.date_display }}
+            </span>
+          </div>
+          {% if day.total_runtime_display %}
+            <span class="text-xs text-[var(--color-text-muted)] font-medium">
+              {{ day.total_runtime_display }}
+            </span>
+          {% endif %}
+        </div>
+
+        {# Vertical list of rows (cards) #}
+        <div class="space-y-2.5">
+          {% for item in day.items %}
+            {% if item.is_group %}
+              {# BINGE GROUP CARD (Collapsible Series Binge) #}
+              <div class="rounded-lg border border-[var(--color-surface-strong)] bg-[var(--color-surface)] shadow-sm hover:border-[var(--color-surface-hover)] transition-all overflow-hidden"
+                   x-data="{ open: false }">
+                <div class="flex items-center gap-3.5 p-2.5 cursor-pointer select-none"
+                     @click="open = !open">
+                  {# Poster on left (60x90) #}
+                  <a href="{% if item.latest.item %}{{ item.latest.item|media_url }}{% else %}#{% endif %}"
+                     class="shrink-0 w-[60px] h-[90px] rounded-md overflow-hidden bg-[var(--color-surface-alt)] shadow block"
+                     @click.stop>
+                    {% firstof item.latest.poster item.latest.item.image IMG_NONE as poster_image %}
+                    <img src="{{ poster_image|image_url }}"
+                         alt="{{ item.series_title }}"
+                         class="w-full h-full object-cover lazyload"
+                         loading="lazy">
+                  </a>
+
+                  {# Middle Content #}
+                  <div class="min-w-0 flex-1 flex flex-col justify-center gap-0.5">
+                    <div class="flex items-center gap-2">
+                      <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]">
+                        {{ item.latest.media_type|default:"tv" }}
+                      </span>
+                    </div>
+
+                    <h4 class="text-sm font-semibold text-[var(--color-text)] truncate">
+                      <a href="{% if item.latest.item %}{{ item.latest.item|media_url }}{% else %}#{% endif %}"
+                         class="hover:text-[var(--color-link)] transition-colors"
+                         @click.stop>
+                        {{ item.series_title }}
+                      </a>
+                    </h4>
+
+                    {% if item.episode_range %}
+                      <div class="text-xs font-medium text-[var(--color-link)]">
+                        {{ item.episode_range }}
+                      </div>
+                    {% endif %}
+
+                    <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] flex-wrap">
+                      {% if item.latest.played_at_local %}
+                        <span>{{ item.latest.played_at_local|user_time_format:user }}</span>
+                      {% endif %}
+                      {% if item.total_runtime_minutes %}
+                        <span>• {{ item.total_runtime_minutes }} min</span>
+                      {% endif %}
+                      <span>• {{ item.count }} episodes</span>
+                    </div>
+                  </div>
+
+                  {# Expand/Collapse button on right #}
+                  <div class="shrink-0 pl-2 pr-1">
+                    <button type="button"
+                            class="p-1.5 rounded-full text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-strong)] transition-colors cursor-pointer"
+                            @click.stop="open = !open"
+                            :aria-expanded="open"
+                            aria-label="Toggle episodes for {{ item.series_title }}"
+                            aria-controls="activity-journal-group-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">
+                      <svg xmlns="http://www.w3.org/2000/svg"
+                           viewBox="0 0 20 20"
+                           class="w-4 h-4 transition-transform duration-200"
+                           :class="{ 'rotate-180': open }"
+                           fill="currentColor">
+                        <path d="M10 14 L4.5 7 H15.5 Z" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                {# Collapsible Episode Rows List #}
+                <div x-show="open"
+                     x-cloak
+                     x-transition.opacity.duration.150ms
+                     id="activity-journal-group-{{ forloop.parentloop.counter }}-{{ forloop.counter }}">
+                  <div class="border-t border-[var(--color-surface-strong)] bg-[var(--color-panel)]/40 divide-y divide-[var(--color-surface-strong)]/60">
+                    {% for ep in item.episodes %}
+                      <div class="flex items-center justify-between gap-3 px-3.5 py-2 hover:bg-[var(--color-surface-hover)] transition-colors">
+                        <div class="min-w-0 flex-1 flex items-center gap-2">
+                          {% if ep.season_number != None and ep.episode_number != None %}
+                            <span class="shrink-0 text-xs font-bold text-[var(--color-link)]">
+                              S{{ ep.season_number|stringformat:"02d" }}E{{ ep.episode_number|stringformat:"02d" }}
+                            </span>
+                          {% endif %}
+                          <a href="{% if ep.item %}{{ ep.item|media_url }}{% else %}#{% endif %}"
+                             class="text-xs text-[var(--color-text)] hover:text-[var(--color-link)] truncate transition-colors"
+                             title="{{ ep.episode_title|default:ep.title }}">
+                            {{ ep.episode_title|default:ep.title }}
+                          </a>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                          {% if ep.played_at_local %}
+                            <span>{{ ep.played_at_local|user_time_format:user }}</span>
+                          {% endif %}
+                          {% if ep.runtime_minutes %}
+                            <span>{{ ep.runtime_minutes }}m</span>
+                          {% endif %}
+                          {% if ep.score|show_media_score:user %}
+                            <span class="font-bold text-amber-400">★ {{ ep.score|score_display:user }}</span>
+                          {% endif %}
+                        </div>
+                      </div>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+            {% else %}
+              {# SINGLE ITEM CARD #}
+              <div class="flex items-center gap-3.5 p-2.5 rounded-lg border border-[var(--color-surface-strong)] bg-[var(--color-surface)] shadow-sm hover:border-[var(--color-surface-hover)] transition-all">
+                {# Poster on left (60x90) #}
+                <a href="{% if item.entry.item %}{{ item.entry.item|media_url }}{% else %}#{% endif %}"
+                   class="shrink-0 w-[60px] h-[90px] rounded-md overflow-hidden bg-[var(--color-surface-alt)] shadow block">
+                  {% firstof item.entry.poster item.entry.item.image IMG_NONE as poster_image %}
+                  <img src="{{ poster_image|image_url }}"
+                       alt="{{ item.entry.title }}"
+                       class="w-full h-full object-cover lazyload"
+                       loading="lazy">
+                </a>
+
+                {# Middle Content #}
+                <div class="min-w-0 flex-1 flex flex-col justify-center gap-0.5">
+                  <div class="flex items-center gap-2">
+                    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-[var(--color-surface-strong)] text-[var(--color-text-secondary)]">
+                      {{ item.entry.media_type }}
+                    </span>
+                  </div>
+
+                  <h4 class="text-sm font-semibold text-[var(--color-text)] truncate">
+                    <a href="{% if item.entry.item %}{{ item.entry.item|media_url }}{% else %}#{% endif %}"
+                       class="hover:text-[var(--color-link)] transition-colors">
+                      {{ item.entry.series_title|default:item.entry.title }}
+                    </a>
+                  </h4>
+
+                  {% if item.entry.season_number != None and item.entry.episode_number != None %}
+                    <div class="text-xs text-[var(--color-text-secondary)] truncate">
+                      <span class="font-medium text-[var(--color-link)]">
+                        S{{ item.entry.season_number|stringformat:"02d" }}E{{ item.entry.episode_number|stringformat:"02d" }}
+                      </span>
+                      {% if item.entry.episode_title and item.entry.episode_title != item.entry.title %}
+                        <span class="text-[var(--color-text-muted)]">· {{ item.entry.episode_title }}</span>
+                      {% endif %}
+                    </div>
+                  {% elif item.entry.author %}
+                    <div class="text-xs text-[var(--color-text-muted)] truncate">
+                      {{ item.entry.author }}
+                    </div>
+                  {% endif %}
+
+                  <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] flex-wrap">
+                    {% if item.entry.played_at_local %}
+                      <span>{{ item.entry.played_at_local|user_time_format:user }}</span>
+                    {% endif %}
+                    {% if item.entry.runtime_minutes %}
+                      <span>• {{ item.entry.runtime_minutes }} min</span>
+                    {% endif %}
+                    {% if item.entry.rewatch_count %}
+                      <span>• rewatch {{ item.entry.rewatch_count }}</span>
+                    {% endif %}
+                  </div>
+                </div>
+
+                {# Rating on right #}
+                {% if item.entry.score|show_media_score:user or item.entry.public_score %}
+                  <div class="shrink-0 flex flex-col items-end justify-center pr-1">
+                    {% if item.entry.score|show_media_score:user %}
+                      <span class="text-sm font-bold text-amber-400">★ {{ item.entry.score|score_display:user }}</span>
+                    {% endif %}
+                    {% if item.entry.public_score %}
+                      <span class="text-xs text-[var(--color-text-muted)]">({{ item.entry.public_score }})</span>
+                    {% endif %}
+                  </div>
+                {% endif %}
+              </div>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>

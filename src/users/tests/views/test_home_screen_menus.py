@@ -62,7 +62,7 @@ class HomeScreenMenuTests(SerialStaticLiveServerTestCase):
         )
         self.page.goto(self.live_server_url + reverse("home_screen"))
         self.section = self.page.locator('[data-section-media-type="movie"]')
-        self.section.locator("h3").click()
+        self.section.get_by_role("button", name="Expand section", exact=True).click()
 
     def test_sort_menu_receives_clicks_and_escape_restores_focus(self):
         for width in (1280, 768, 390):
@@ -72,9 +72,11 @@ class HomeScreenMenuTests(SerialStaticLiveServerTestCase):
                 with self.page.expect_response(
                     lambda response: "filter-fields" in response.url
                 ):
-                    self.section.locator("h3").click()
+                    self.section.get_by_role(
+                        "button", name="Expand section", exact=True
+                    ).click()
                 row = self.section.locator("article").first
-                control = row.locator(".filter-control").nth(2)
+                control = row.locator(".filter-control").last
                 trigger = control.locator("button").first
                 trigger.focus()
                 self.page.keyboard.press("Enter")
@@ -113,7 +115,9 @@ class HomeScreenMenuTests(SerialStaticLiveServerTestCase):
             with self.subTest(width=width):
                 self.page.set_viewport_size({"width": width, "height": 900})
                 self.page.reload()
-                self.section.locator("h3").click()
+                self.section.get_by_role(
+                    "button", name="Expand section", exact=True
+                ).click()
                 row = self.section.locator("article").first
 
                 filter_control = row.locator(".filter-control").first

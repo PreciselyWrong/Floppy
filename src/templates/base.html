@@ -1,13 +1,15 @@
 {% load static %}
 {% load app_tags %}
 {% load user_tags %}
+{% load brand_tags %}
 {% load i18n %}
 
+{% branding_for user as appearance %}
 <!DOCTYPE html>
 <html lang="{{ LANGUAGE_CODE }}"
       data-img-none="{{ IMG_NONE }}"
-      class="{% if user.is_authenticated and user.theme != 'system' %}{{ user.theme }}{% endif %} bg-[var(--color-page-bg)]"
-      style="{% custom_theme_style user %}">
+      class="{% if appearance.theme != 'system' %}{{ appearance.theme }}{% endif %} bg-[var(--color-page-bg)]"
+      style="{% custom_theme_style appearance %}">
   <head>
     {# Required meta tags #}
     <meta charset="UTF-8">
@@ -17,10 +19,9 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-title" content="Floppy">
-
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="mobile-web-app-title" content="Floppy">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Floppy">
 
     <title>
       {% block title %}
@@ -171,9 +172,9 @@
     </script>
     <link rel="shortcut icon" href="{% static "favicon/favicon.ico" %}">
     <meta name="msapplication-TileColor" content="#181a1b">
-    {% if user.is_authenticated and user.theme == 'light' %}
+    {% if appearance.theme == 'light' %}
       <meta name="theme-color" content="#f8f9fa">
-    {% elif user.is_authenticated and user.theme == 'dark' %}
+    {% elif appearance.theme == 'dark' %}
       <meta name="theme-color" content="#181a1b">
     {% else %}
       <meta name="theme-color"
@@ -221,23 +222,9 @@
         {% if not public_view|default:False %}
           <aside class="fixed top-0 left-0 z-[43] h-dvh w-64 pt-[var(--safe-top)] pb-[var(--safe-bottom)] pl-[var(--safe-left)] bg-[var(--color-sidebar)] transform transition-[transform,translate,visibility] duration-300 ease-in-out border-r border-[var(--color-border)] -translate-x-full lg:translate-x-0 lg:sticky flex flex-col"
                  :class="isMobileMenuOpen ? 'translate-x-0' : 'max-lg:invisible'">
-            <div class="h-16 border-b border-[var(--color-border)] flex items-center px-6">
-              <h1 class="flex items-center">
-                {% if user.is_authenticated and user.logo_style == 'monochrome' %}
-                  <img src="{% static 'img/floppy-logo-white.png' %}"
-                       alt="Floppy"
-                       width="158"
-                       height="48"
-                       class="h-9 w-[158px] object-cover object-center">
-                {% else %}
-                <img src="{% static 'img/floppy-logo.png' %}"
-                     srcset="{% static 'img/floppy-logo.png' %} 1x,
-                             {% static 'img/floppy-logo@2x.png' %} 2x"
-                     alt="Floppy"
-                     width="158"
-                     height="48"
-                     class="h-9 w-auto">
-                {% endif %}
+            <div class="min-h-16 border-b border-[var(--color-border)] flex items-center px-6 py-2">
+              <h1 class="sidebar-brand-slot flex w-full items-center justify-center">
+                {% include "users/components/brand_logo.html" %}
               </h1>
             </div>
             {# hx-boost: swap the body instead of reloading on sidebar navigation #}
@@ -340,18 +327,20 @@
                     </a>
                   </li>
 
-                  {% get_history_saved_views user as history_saved_views %}
-                  {% if history_saved_views %}
-                    {% trans "History" as history_label %}
-                    {% include "app/components/sidebar_saved_views.html" with group_key="history" group_url=history_url group_label=history_label group_current=request.path|str_equals:history_url saved_views=history_saved_views %}
-                  {% else %}
-                    <li>
-                      <a href="{{ history_url }}"
-                         class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == history_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
-                        {% icon 'history' is_active=request.path|str_equals:history_url %}
-                        <span>{% trans "History" %}</span>
-                      </a>
-                    </li>
+                  {% if user.sidebar_history_enabled %}
+                    {% get_history_saved_views user as history_saved_views %}
+                    {% if history_saved_views %}
+                      {% trans "History" as history_label %}
+                      {% include "app/components/sidebar_saved_views.html" with group_key="history" group_url=history_url group_label=history_label group_current=request.path|str_equals:history_url saved_views=history_saved_views %}
+                    {% else %}
+                      <li data-sidebar-nav-item="history">
+                        <a href="{{ history_url }}"
+                           class="flex items-center space-x-3 px-4 py-2 rounded-md transition-colors duration-200 text-sm {% if request.path == history_url %}text-[var(--color-text)] bg-[var(--color-border)]{% else %}text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-hover-dim)]{% endif %}">
+                          {% icon 'history' is_active=request.path|str_equals:history_url %}
+                          <span>{% trans "History" %}</span>
+                        </a>
+                      </li>
+                    {% endif %}
                   {% endif %}
 
                   {% url 'lists' as lists_url %}
@@ -564,7 +553,7 @@
                            x-transition
                            class="absolute z-50 mt-2 w-full max-w-2xl">
                         <div class="flex items-center gap-2 rounded-md border px-3 py-2 shadow-lg toast-info">
-                          {% include "app/icons/info.svg" with classes="w-4 h-4 text-indigo-300 shrink-0" %}
+                          {% include "app/icons/info.svg" with classes="w-4 h-4 text-[var(--color-info-text)] shrink-0" %}
                           <p class="text-sm font-medium flex-1" x-text="barcodeError"></p>
                           <button type="button"
                                   class="text-current opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
@@ -629,7 +618,7 @@
               {% elif message.tags == 'error' %}
                 {% include "app/icons/warning.svg" with classes="w-4 h-4 text-red-300 shrink-0" %}
               {% elif message.tags == "info" %}
-                {% include "app/icons/info.svg" with classes="w-4 h-4 text-indigo-300 shrink-0" %}
+                {% include "app/icons/info.svg" with classes="w-4 h-4 text-[var(--color-info-text)] shrink-0" %}
               {% endif %}
 
               <p class="text-sm font-medium flex-1">{{ message }}</p>
@@ -653,6 +642,41 @@
          aria-atomic="true">
       <div class="w-full max-w-xl px-4 space-y-2 pointer-events-auto"></div>
     </div>
+
+    <aside data-pwa-install="true"
+           hidden
+           aria-labelledby="pwa-install-title"
+           class="fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-sm rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-[var(--color-text)] shadow-2xl sm:left-auto sm:mx-0">
+      <div class="flex items-start gap-3">
+        <img src="{% static 'favicon/android-chrome-192x192.png' %}"
+             alt=""
+             width="48"
+             height="48"
+             class="h-12 w-12 shrink-0 rounded-xl">
+        <div class="min-w-0 flex-1">
+          <h2 id="pwa-install-title" class="font-semibold">Install Floppy</h2>
+          <p data-pwa-install-message class="mt-1 text-sm text-[var(--color-text-muted)]">
+            Add Floppy to this device for quick, app-like access.
+          </p>
+          <p data-pwa-ios-help="true"
+             hidden
+             class="mt-2 text-sm text-[var(--color-text-secondary)]">
+            Open Share, then choose Add to Home Screen.
+          </p>
+          <button type="button"
+                  data-pwa-install-action
+                  class="mt-3 rounded-lg bg-[var(--color-accent)] px-3 py-2 text-sm font-medium text-[var(--color-page-bg)] hover:brightness-110">
+            Install
+          </button>
+        </div>
+        <button type="button"
+                data-pwa-install-dismiss
+                aria-label="Dismiss install suggestion"
+                class="rounded-lg p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-hover-dim)] hover:text-[var(--color-text)]">
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+    </aside>
 
     <script src="{% static 'js/libraries/sortablejs-1.15.3.min.js' %}"></script>
 
@@ -898,7 +922,9 @@
     <script src="{% static 'js/collectionCustomFields.js' %}{% get_static_file_mtime 'js/collectionCustomFields.js' %}"></script>
     <script src="{% static 'js/searchShortcut.js' %}{% get_static_file_mtime 'js/searchShortcut.js' %}"></script>
     <script src="{% static 'js/searchAutocomplete.js' %}{% get_static_file_mtime 'js/searchAutocomplete.js' %}"></script>
+    <script src="{% static 'js/modalPortal.js' %}{% get_static_file_mtime 'js/modalPortal.js' %}"></script>
     <script src="{% static 'js/horizontal-scroll.js' %}{% get_static_file_mtime 'js/horizontal-scroll.js' %}"></script>
+    <script src="{% static 'js/pwa-install.js' %}{% get_static_file_mtime 'js/pwa-install.js' %}"></script>
     <script src="{% static 'js/keepPopupsOnScreen.js' %}{% get_static_file_mtime 'js/keepPopupsOnScreen.js' %}"></script>
   </body>
 </html>

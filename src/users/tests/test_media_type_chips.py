@@ -52,3 +52,10 @@ class MediaTypeChipPreferenceTests(SimpleTestCase):
                 "style": "soft",
             },
         )
+
+    def test_default_movie_solid_label_uses_readable_dark_text(self):
+        user = SimpleNamespace(
+            home_media_type_chip_colors={},
+            home_media_type_chip_style="solid",
+        )
+        self.assertEqual(media_type_chip_preferences(user, "movie")["contrast"], "#111827")

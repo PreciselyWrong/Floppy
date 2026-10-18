@@ -302,8 +302,7 @@
         </div>
       {% endif %}
     </div>
-
-     </div>
+    </div>
 
     {% if album_genres %}
       <div {% detail_section_attrs user "music_album" "sidebar" "genres" %}>
@@ -318,7 +317,7 @@
       </div>
     {% endif %}
 
-     <div {% detail_section_attrs user "music_album" "sidebar" "collection" %}>
+    <div {% detail_section_attrs user "music_album" "sidebar" "collection" %}>
     <h2 class="text-xl font-bold mb-4 mt-6">{% translate "Collection" %}</h2>
     <div class="bg-[var(--color-surface)] p-4 rounded-lg text-center md:text-start">
       {% if album_collection_metadata.has_collection %}

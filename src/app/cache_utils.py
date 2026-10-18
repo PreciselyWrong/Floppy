@@ -336,3 +336,11 @@ def clear_media_list_cache_for_user(user_id: int) -> None:
         deleted,
         user_id,
     )
+
+
+HOME_ROW_ORDER_CACHE_PREFIX = "home_row_order_v1"
+
+
+def build_home_row_order_cache_key(user_id: int, row_id: int) -> str:
+    """Cache key for one compact, fully sorted Home row order."""
+    return f"{HOME_ROW_ORDER_CACHE_PREFIX}_{user_id}_{row_id}"

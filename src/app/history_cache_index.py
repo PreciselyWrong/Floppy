@@ -36,6 +36,7 @@ from app.models import (
     Game,
     Manga,
     Movie,
+    Status,
     VideoPlay,
 )
 
@@ -138,21 +139,17 @@ def build_history_index(
             requested_media_types is None or media_type in requested_media_types
         ):
             continue
-        reading_qs = model.objects.filter(user=user)
-        reading_end_days = (
-            reading_qs.filter(end_date__isnull=False)
-            .annotate(day=TruncDate("end_date"))
-            .values_list("day", flat=True)
-            .distinct()
+        reading_qs = model.objects.filter(
+            user=user,
+            status=Status.COMPLETED.value,
+            end_date__isnull=False,
         )
-        reading_start_days = (
-            reading_qs.filter(end_date__isnull=True, start_date__isnull=False)
-            .annotate(day=TruncDate("start_date"))
+        reading_end_days = (
+            reading_qs.annotate(day=TruncDate("end_date"))
             .values_list("day", flat=True)
             .distinct()
         )
         reading_count += _add_days(days, reading_end_days)
-        reading_count += _add_days(days, reading_start_days)
 
     music_days = []
     if include_music:
