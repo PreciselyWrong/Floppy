@@ -93,6 +93,17 @@ class HandRolledCardTests(SimpleTestCase):
         self.assertFalse(score_is_visible(context, 0, "music"))
         self.assertTrue(score_is_visible(context, 0, "movie"))
 
+    def test_missing_rating_is_hidden(self):
+        """An unrated history entry has no score key, which a tag sees as ""."""
+        from django.template import Context, Template
+
+        template = Template(
+            "{% load app_tags %}"
+            "{% score_is_visible entry.score entry.media_type as shown %}{{ shown }}"
+        )
+        context = Context({"user": self._user({}), "entry": {"media_type": "movie"}})
+        self.assertEqual(template.render(context), "False")
+
     def test_artist_field_reads_structured_album_credits(self):
         """A multi-artist album with no legacy artist still shows its artists."""
         from users.card_metadata import _artist

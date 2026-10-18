@@ -2058,7 +2058,8 @@ def score_is_visible(context, rating, media_type=None):
         media_type = getattr(item, "media_type", None)
     if not shows_score(user, media_type):
         return False
-    if rating is None:
+    # A missing dict key reaches a tag argument as "", not None.
+    if rating is None or rating == "":
         return False
     try:
         rating_value = float(rating)
