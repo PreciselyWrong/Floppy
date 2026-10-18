@@ -66,6 +66,7 @@
                            decoding="async">
                     </a>
                     <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">{{ item.latest.media_type|media_type_readable }}</span>
                       <a href="{{ item.latest.item|media_url }}"
                          class="truncate text-sm font-semibold text-[var(--color-text)] hover:text-[var(--color-link)]">{{ item.series_title }}</a>
                       {% if item.episode_range %}
