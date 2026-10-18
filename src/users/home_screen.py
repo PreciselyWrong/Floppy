@@ -200,6 +200,16 @@ HOME_SCREEN_FILTER_KEYS = tuple(
     dict.fromkeys((*HOME_QUERY_DEFAULT_FILTERS.keys(), "subview", "media_types")),
 )
 SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
+    MediaTypes.VIDEO.value: {
+        "status",
+        "rating",
+        "collection",
+        "genre",
+        "year",
+        "release",
+        "source",
+        "tag",
+    },
     MediaTypes.TV.value: {
         "status",
         "progress",

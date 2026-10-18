@@ -1564,6 +1564,32 @@ class HomeScreenViewTests(TestCase):
         ):
             self.assertNotIn(key, tv_filters)
 
+    def test_every_seeded_section_saves_back_unchanged(self):
+        """Saving the page untouched must work for every enabled media type."""
+        sections = home_screen.serialize_settings_sections(self.user)
+        self.assertIn(
+            MediaTypes.VIDEO.value,
+            [section["media_type"] for section in sections],
+        )
+        payload = [
+            {
+                "media_type": section["media_type"],
+                "rows": [
+                    {
+                        "id": row["id"],
+                        "row_type": row["row_type"],
+                        "sort_by": row["sort_by"],
+                        "direction": row["direction"],
+                        "filters": row["filters"],
+                    }
+                    for row in section["rows"]
+                ],
+            }
+            for section in sections
+        ]
+
+        home_screen.save_home_screen_configuration(self.user, json.dumps(payload))
+
     def test_home_screen_post_round_trips_seeded_filters_without_error(self):
         """Regression test for #1177: saving unmodified seeded filters must not
         fail with e.g. "Filter 'completed_date_within_unit' is not available".
