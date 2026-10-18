@@ -274,8 +274,11 @@ class TrackSplitTemplateTests(SimpleTestCase):
                     self.assertIn(f"{active}: true", html)
                     self.assertIn(f"{inactive}: false", html)
                     soup = BeautifulSoup(html, "html.parser")
-                    self.assertIsNotNone(
-                        soup.select_one(f'[x-show="{active}"] #validation-fixture')
+                    form = soup.select_one(f'[x-show="{active}"] #validation-fixture')
+                    self.assertIsNotNone(form)
+                    self.assertEqual(
+                        form.parent.get("x-init"),
+                        "$nextTick(() => htmx.process($el))",
                     )
                     self.assertEqual(html.count(content), 1)
 
