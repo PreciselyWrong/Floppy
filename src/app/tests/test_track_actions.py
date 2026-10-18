@@ -194,10 +194,19 @@ class ShowTrackActionTemplateTests(SimpleTestCase):
 class TrackSplitTemplateTests(SimpleTestCase):
     """One action is a plain button, two a pencil segment, three or more a menu."""
 
-    def render(self, actions, status=Status.COMPLETED.value):
+    def render(
+        self,
+        actions,
+        status=Status.COMPLETED.value,
+        *,
+        media_type="movie",
+        current_id=7,
+        track_open=False,
+        modal_content="",
+    ):
         request = RequestFactory().get("/details/")
         request.user = SimpleNamespace(id=1)
-        media = {"source": "tmdb", "media_type": "movie", "media_id": "238"}
+        media = {"source": "tmdb", "media_type": media_type, "media_id": "238"}
         with (
             patch("app.track_actions.track_actions", return_value=actions),
             patch("app.checkin.phase", return_value=None),
@@ -207,8 +216,10 @@ class TrackSplitTemplateTests(SimpleTestCase):
                 {
                     "request": request,
                     "media": media,
-                    "media_type": "movie",
-                    "current_instance": SimpleNamespace(id=7, status=status),
+                    "media_type": media_type,
+                    "current_instance": SimpleNamespace(id=current_id, status=status),
+                    "track_open": track_open,
+                    "track_modal_content": modal_content,
                 },
             )
 
@@ -243,6 +254,30 @@ class TrackSplitTemplateTests(SimpleTestCase):
         self.assertIn('@keydown.escape.window="trackMenuOpen = false"', html)
         self.assertIn("Another action", html)
         self.assertNotIn("Edit entry,", html)
+
+    def test_invalid_forms_reopen_the_correct_split_modal_with_errors(self):
+        from bs4 import BeautifulSoup
+
+        content = '<form id="validation-fixture">Invalid score</form>'
+        for media_type in ("movie", "game"):
+            for current_id in (7, None):
+                with self.subTest(media_type=media_type, current_id=current_id):
+                    html = self.render(
+                        [self.action("create"), self.action("edit")],
+                        media_type=media_type,
+                        current_id=current_id,
+                        track_open=True,
+                        modal_content=content,
+                    )
+                    active = "editTrackOpen" if current_id else "createTrackOpen"
+                    inactive = "createTrackOpen" if current_id else "editTrackOpen"
+                    self.assertIn(f"{active}: true", html)
+                    self.assertIn(f"{inactive}: false", html)
+                    soup = BeautifulSoup(html, "html.parser")
+                    self.assertIsNotNone(
+                        soup.select_one(f'[x-show="{active}"] #validation-fixture')
+                    )
+                    self.assertEqual(html.count(content), 1)
 
     def test_modal_actions_override_the_checkin_swap_mode(self):
         html = self.render([self.action("create"), self.action("edit")])
