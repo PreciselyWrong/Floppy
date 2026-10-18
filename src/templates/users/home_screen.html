@@ -318,7 +318,7 @@
                                     @click.stop="row.filters = { ...row.filters, binge_grouping: row.filters.binge_grouping === false }">
                               <span>{% translate "Group episodes" %}</span>
                               <span class="text-xs font-semibold"
-                                    :class="row.filters.binge_grouping !== false ? 'text-indigo-400' : 'text-[var(--color-text-muted)]'"
+                                    :class="row.filters.binge_grouping !== false ? 'text-[var(--color-link)]' : 'text-[var(--color-text-muted)]'"
                                     x-text="row.filters.binge_grouping !== false ? gettext('On') : gettext('Off')"></span>
                             </button>
                           </template>
