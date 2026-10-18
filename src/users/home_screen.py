@@ -23,6 +23,7 @@ from django.utils.translation import gettext
 
 from app import helpers
 from app.history_cache_reader import get_cached_history_window
+from app.history_cache_utils import expand_history_media_types
 from app.library_query import FilterValues, LibraryQuery, LibraryQueryExecutor, SortSpec
 from app.library_query.adapters import from_home_row_filters, home_engine_direction
 from app.library_query.filters import NEEDS_MAX_PROGRESS, NEEDS_MEDIA
@@ -65,6 +66,8 @@ RECENTLY_UNRATED_LABEL = "Recently Played - Not Rated"
 ACTIVITY_JOURNAL_LABEL = "Activity Journal"
 # The journal shows this many history days, read from the History index.
 ACTIVITY_JOURNAL_DAYS = 14
+# A media-type journal looks this far back for its days, then stops.
+ACTIVITY_JOURNAL_SCAN_DAYS = 3 * ACTIVITY_JOURNAL_DAYS
 # Consecutive episodes of one show fold into a single card from this length.
 MIN_BINGE_EPISODES = 2
 # Cap on how many active-filter labels are shown in a row's settings summary.
@@ -3273,6 +3276,14 @@ def group_journal_entries(entries: list[dict], *, binge_grouping: bool) -> list[
     return items
 
 
+def _minutes_display(minutes) -> str | None:
+    return helpers.minutes_to_hhmm(minutes) if minutes else None
+
+
+def _entries_runtime_display(entries: list[dict]) -> str | None:
+    return _minutes_display(sum(entry.get("runtime_minutes") or 0 for entry in entries))
+
+
 def _binge_group(run: list[dict]) -> dict:
     latest = run[0]
     seasons = {entry.get("season_number") for entry in run}
@@ -3281,49 +3292,67 @@ def _binge_group(run: list[dict]) -> dict:
     if len(seasons) == 1 and None not in seasons and None not in numbers:
         season = next(iter(seasons))
         episode_range = f"S{season:02d}E{min(numbers):02d}-E{max(numbers):02d}"
-    runtime_minutes = sum(entry.get("runtime_minutes") or 0 for entry in run)
     return {
         "is_group": True,
         "latest": latest,
         "series_title": (latest.get("show") or {}).get("title") or latest["title"],
         "episode_range": episode_range,
         "count": len(run),
-        "runtime_display": helpers.minutes_to_hhmm(runtime_minutes)
-        if runtime_minutes
-        else None,
+        "runtime_display": _entries_runtime_display(run),
         "episodes": run,
     }
 
 
-def _activity_journal_section(user, row: HomeScreenRow) -> dict | None:
-    """Build an Activity Journal section from the cached History index.
+def _recent_journal_days(user, media_type: str) -> list[tuple[dict, list[dict]]]:
+    """Return up to ACTIVITY_JOURNAL_DAYS recent History days with their entries.
 
-    It reads the same bounded day window the History page pages through, so a
-    Home render never walks the whole history.
+    Only the shared History index is read, and never built here: a cold index
+    is queued for a background build and the journal stays empty until it is
+    ready. A media-type journal filters that index's days instead of building
+    an index of its own, scanning at most ACTIVITY_JOURNAL_SCAN_DAYS days; like
+    History, it sees each day's first HISTORY_ENTRIES_PER_DAY_PAGE entries.
     """
-    filters = None
-    if row.media_type != HOME_ALL_MEDIA_TYPE:
-        filters = {"media_type": [row.media_type]}
-    history_days, _total_days = get_cached_history_window(
-        user,
-        limit=ACTIVITY_JOURNAL_DAYS,
-        offset=0,
-        filters=filters,
+    wanted_types = (
+        None
+        if media_type == HOME_ALL_MEDIA_TYPE
+        else expand_history_media_types([media_type])
     )
+    days = []
+    offset = 0
+    while len(days) < ACTIVITY_JOURNAL_DAYS and offset < ACTIVITY_JOURNAL_SCAN_DAYS:
+        history_days, total_days = get_cached_history_window(
+            user,
+            limit=ACTIVITY_JOURNAL_DAYS,
+            offset=offset,
+            build_cold_index=False,
+        )
+        for day in history_days:
+            entries = [
+                entry
+                for entry in day.get("entries") or []
+                if wanted_types is None or entry.get("media_type") in wanted_types
+            ]
+            if entries:
+                days.append((day, entries))
+        offset += ACTIVITY_JOURNAL_DAYS
+        if offset >= total_days:
+            break
+    return days[:ACTIVITY_JOURNAL_DAYS]
 
+
+def _activity_journal_section(user, row: HomeScreenRow) -> dict | None:
+    """Build an Activity Journal section from the cached History index."""
     binge_grouping = journal_binge_grouping(row)
     days = []
-    for day in history_days:
-        entries = day.get("entries") or []
-        if not entries:
-            continue
+    for day, entries in _recent_journal_days(user, row.media_type):
         days.append(
             {
                 "date_display": day.get("date_display"),
                 "weekday": day.get("weekday"),
-                "total_runtime_display": day.get("total_runtime_display")
-                if day.get("total_minutes")
-                else None,
+                # All media keeps History's day total, even for a capped day.
+                "runtime_display": _minutes_display(day.get("total_minutes"))
+                if row.media_type == HOME_ALL_MEDIA_TYPE
+                else _entries_runtime_display(entries),
                 "items": group_journal_entries(entries, binge_grouping=binge_grouping),
             },
         )

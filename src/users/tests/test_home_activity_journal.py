@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -7,6 +8,7 @@ from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from app.history_cache_reader import get_cached_history_window
 from app.models import TV, Episode, Item, MediaTypes, Movie, Season, Sources, Status
 from users import home_screen
 from users.models import (
@@ -179,6 +181,15 @@ class ActivityJournalHomeTests(TestCase):
             filters={"binge_grouping": True},
         )
 
+    def _warm_history(self):
+        """Build the History index the way a History visit would.
+
+        TestCase never commits, so the on_commit invalidation that follows each
+        write in production never runs; start from a fresh index instead.
+        """
+        cache.clear()
+        get_cached_history_window(self.user, limit=1, offset=0)
+
     def _watch_movie(self, title, minutes_ago):
         item = Item.objects.create(
             media_id=f"movie-{title}",
@@ -194,7 +205,7 @@ class ActivityJournalHomeTests(TestCase):
             end_date=self.now - timedelta(minutes=minutes_ago),
         )
 
-    def _watch_episodes(self, title, numbers, minutes_ago):
+    def _watch_episodes(self, title, numbers, minutes_ago, spacing_minutes=30):
         tv_item = Item.objects.create(
             media_id="show-1",
             source=Sources.TMDB.value,
@@ -234,15 +245,14 @@ class ActivityJournalHomeTests(TestCase):
             Episode.objects.create(
                 item=episode_item,
                 related_season=season,
-                end_date=self.now - timedelta(minutes=minutes_ago - offset * 30),
+                end_date=self.now
+                - timedelta(minutes=minutes_ago - offset * spacing_minutes),
             )
 
     def test_home_renders_days_with_a_binge_card(self):
         self._watch_movie("Journal Movie", minutes_ago=300)
         self._watch_episodes("Journal Show", [1, 2, 3], minutes_ago=200)
-        # TestCase never commits, so the History index never sees the
-        # on_commit invalidation that follows each write in production.
-        cache.clear()
+        self._warm_history()
 
         response = self.client.get(reverse("home"))
 
@@ -257,7 +267,7 @@ class ActivityJournalHomeTests(TestCase):
         self.row.filters = {"binge_grouping": False}
         self.row.save(update_fields=["filters"])
         self._watch_episodes("Journal Show", [1, 2, 3], minutes_ago=200)
-        cache.clear()
+        self._warm_history()
 
         groups = home_screen.build_home_page_groups(self.user, items_limit=14)
         journal = next(
@@ -274,7 +284,7 @@ class ActivityJournalHomeTests(TestCase):
         self.row.save(update_fields=["media_type"])
         self._watch_movie("Journal Movie", minutes_ago=300)
         self._watch_episodes("Journal Show", [1, 2], minutes_ago=200)
-        cache.clear()
+        self._warm_history()
 
         section = home_screen._activity_journal_section(self.user, self.row)
 
@@ -283,5 +293,55 @@ class ActivityJournalHomeTests(TestCase):
         ]
         self.assertEqual(titles, ["Journal Movie"])
 
+    def test_typed_journal_looks_past_the_first_window_of_days(self):
+        self.row.media_type = MediaTypes.MOVIE.value
+        self.row.save(update_fields=["media_type"])
+        days = home_screen.ACTIVITY_JOURNAL_DAYS + 2
+        self._watch_movie("Older Movie", minutes_ago=(days + 1) * 24 * 60)
+        self._watch_episodes(
+            "Daily Show",
+            list(range(1, days + 1)),
+            minutes_ago=days * 24 * 60,
+            spacing_minutes=24 * 60,
+        )
+        self._warm_history()
+
+        section = home_screen._activity_journal_section(self.user, self.row)
+
+        self.assertEqual(
+            [
+                item["entry"]["title"]
+                for day in section["days"]
+                for item in day["items"]
+            ],
+            ["Older Movie"],
+        )
+
+    def test_cold_index_hides_the_row_and_builds_in_the_background(self):
+        self._watch_movie("Journal Movie", minutes_ago=300)
+        cache.clear()
+
+        with (
+            patch("app.history_cache_reader.build_history_index") as build_inline,
+            patch("app.history_cache_reader.schedule_history_refresh") as schedule,
+        ):
+            section = home_screen._activity_journal_section(self.user, self.row)
+
+        self.assertIsNone(section)
+        build_inline.assert_not_called()
+        schedule.assert_called_once()
+        self.assertFalse(schedule.call_args.kwargs["allow_inline"])
+
+    def test_cold_index_option_rejects_a_media_type_filter(self):
+        with self.assertRaises(ValueError):
+            get_cached_history_window(
+                self.user,
+                limit=1,
+                offset=0,
+                filters={"media_type": [MediaTypes.MOVIE.value]},
+                build_cold_index=False,
+            )
+
     def test_empty_history_hides_the_row(self):
+        self._warm_history()
         self.assertIsNone(home_screen._activity_journal_section(self.user, self.row))

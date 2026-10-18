@@ -392,8 +392,15 @@ def get_cached_history_window(
     logging_style_override=None,
     max_entries_per_day=None,
     date_filters=None,
+    build_cold_index=True,
 ):
     """Read one API page from indexed/day-cached history payloads.
+
+    With `build_cold_index=False` a missing index is queued for a background
+    build and the window comes back empty, as History does on a cold miss, so
+    a passive surface never pays for a full index build in its request. Only
+    the shared index is ever queued, so this cannot combine with a media-type
+    filter.
 
     `date_filters` are applied to the day index rather than to the builders.
     start_date/end_date are whole-day bounds, so a date range only ever drops
@@ -407,6 +414,9 @@ def get_cached_history_window(
         if max_entries_per_day is not None
         else HISTORY_ENTRIES_PER_DAY_PAGE
     )
+    if not build_cold_index and filters:
+        msg = "build_cold_index=False reads the unfiltered index only"
+        raise ValueError(msg)
     unsupported_filters = set(filters) - {"media_type"}
     if unsupported_filters:
         raise ValueError(
@@ -459,6 +469,14 @@ def get_cached_history_window(
             or cache_entry.get("era") != _current_history_era(user.id, logging_style)
         ) and _clean_refresh_lock(_refresh_lock_key(user.id, logging_style)) is None:
             schedule_history_refresh(user.id, logging_style, warm_days=0)
+    elif not build_cold_index:
+        schedule_history_refresh(
+            user.id,
+            logging_style,
+            warm_days=HISTORY_COLD_MISS_WARM_DAYS,
+            allow_inline=False,
+        )
+        return [], 0
     else:
         era = _current_history_era(user.id, logging_style)
         index_days = build_history_index(
