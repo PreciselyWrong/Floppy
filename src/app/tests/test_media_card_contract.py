@@ -15,6 +15,7 @@ from django.template.loader import render_to_string
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
+from app import history_timeline
 from app.card_surfaces import SURFACES
 from app.models import (
     Album,
@@ -164,7 +165,14 @@ class MediaCardSurfaceContractTest(TestCase):
         content = render_to_string(
             "app/components/history_day.html",
             {
-                "day": {"entries": entries, "entry_count": 2, "day_key": "today"},
+                "day": {
+                    "entries": entries,
+                    "timeline_entries": history_timeline.group_day_timeline_entries(
+                        entries
+                    ),
+                    "entry_count": 2,
+                    "day_key": "today",
+                },
                 "user": self.user,
                 "history_mode": "activity",
             },
@@ -172,7 +180,6 @@ class MediaCardSurfaceContractTest(TestCase):
         )
         self.assertEqual(content.count('data-media-type="video"'), 1)
         self.assertEqual(content.count("video-card-landscape"), 1)
-        self.assertIn("media-grid media-grid-video", content)
         self.assertIn("/maxresdefault.jpg", content)
         self.assertIn("/hqdefault.jpg", content)
 

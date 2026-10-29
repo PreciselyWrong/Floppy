@@ -34,6 +34,7 @@ class CustomUpgradePreservationTests(TransactionTestCase):
         latest = executor.loader.graph.leaf_nodes()
         previous = {
             "app": "0182_episodeorder_episodeorderchange_historicalvideo_and_more",
+            "events": "0015_remove_event_unique_item_null_content_number_and_more",
             "integrations": "0038_cataloggrant_embyaccount_externalreference_and_more",
             "lists": "0015_customlist_tiers_customlistitem_tier_and_more",
             "users": "0152_savedview_and_more",
@@ -69,6 +70,9 @@ class CustomUpgradePreservationTests(TransactionTestCase):
             old.get_model("users", "HomePinnedItem").objects.create(
                 user_id=user.pk, item_id=item.pk
             )
+            pinned_row = old.get_model("users", "HomeScreenRow").objects.create(
+                user_id=user.pk, media_type="tv", position=1, row_type="up_next"
+            )
             branding = {
                 "logo_text": "NicoFlix",
                 "theme": "custom",
@@ -103,6 +107,12 @@ class CustomUpgradePreservationTests(TransactionTestCase):
                 saved_row.filters, {"binge_grouping": False, "media_types": ["movie"]}
             )
             self.assertFalse(saved_row.open_last_episode)
+            self.assertEqual(
+                upgraded.get_model("users", "HomeScreenRow")
+                .objects.get(pk=pinned_row.pk)
+                .row_type,
+                "pinned_up_next",
+            )
             self.assertTrue(
                 upgraded.get_model("users", "HomePinnedItem")
                 .objects.filter(user_id=user.pk, item_id=item.pk)

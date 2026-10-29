@@ -648,7 +648,7 @@ class VideoChannelTests(FloppyApiTestCase):
         import importlib
 
         migration = importlib.import_module(
-            "app.migrations.0214_video_channel_as_author"
+            "app.migrations.0186_video_channel_as_author"
         )
         item = Item.objects.get(media_id="vidA")
         item.authors = []

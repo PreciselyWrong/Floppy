@@ -8,9 +8,17 @@
     <a href="{{ entry.item|media_url }}"
        hx-boost="true"
        class="flex min-w-0 gap-3 p-3 pr-12 transition-colors hover:bg-[var(--color-surface-strong)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-accent)] sm:gap-4">
-      <img loading="lazy" decoding="sync" alt="{{ preferred_title|default:entry.display_title|default:entry.title }}"
-           class="h-[7.5rem] w-20 shrink-0 rounded-md object-cover sm:h-[8.25rem] sm:w-[5.5rem]"
-           src="{{ entry.poster|image_url }}">
+      {% if entry.media_type == MediaTypes.VIDEO.value %}
+        <img loading="lazy" decoding="sync" alt="{{ preferred_title|default:entry.display_title|default:entry.title }}"
+             data-media-type="video"
+             data-image-fallback="{{ entry.poster|image_url }}"
+             class="video-card-landscape h-24 w-40 shrink-0 rounded-md object-cover sm:h-[6.5rem] sm:w-44"
+             src="{{ entry.poster|youtube_landscape_thumbnail|image_url }}">
+      {% else %}
+        <img loading="lazy" decoding="sync" alt="{{ preferred_title|default:entry.display_title|default:entry.title }}"
+             class="h-[7.5rem] w-20 shrink-0 rounded-md object-cover sm:h-[8.25rem] sm:w-[5.5rem]"
+             src="{{ entry.poster|image_url }}">
+      {% endif %}
       <div class="min-w-0 self-center">
         <div class="history-timeline-badge flex items-center gap-1.5">
           {% if entry.media_type == MediaTypes.BOOK.value or entry.media_type == MediaTypes.COMIC.value or entry.media_type == MediaTypes.MANGA.value %}
