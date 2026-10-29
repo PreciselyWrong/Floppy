@@ -40,7 +40,7 @@ class HomeUpNextTests(SimpleTestCase):
                 ),
             ),
         ):
-            entries = home_screen._up_next_entries(self.user)
+            entries = home_screen._pinned_up_next_entries(self.user)
 
         self.assertEqual(len(entries), 1)
         self.assertIs(entries[0].item, item)
@@ -76,7 +76,7 @@ class HomeUpNextTests(SimpleTestCase):
                 ),
             ),
         ):
-            entries = home_screen._up_next_entries(self.user)
+            entries = home_screen._pinned_up_next_entries(self.user)
 
         self.assertEqual(entries[0].subtitle_override, None)
         self.assertFalse(entries[0].subtitle_always_visible)
@@ -107,7 +107,7 @@ class HomeUpNextTests(SimpleTestCase):
                 return_value=release,
             ),
         ):
-            entries = home_screen._up_next_entries(self.user)
+            entries = home_screen._pinned_up_next_entries(self.user)
 
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].subtitle_override, release)
@@ -155,7 +155,7 @@ class HomeUpNextTests(SimpleTestCase):
                 ),
             ),
         ):
-            entries = home_screen._up_next_entries(self.user)
+            entries = home_screen._pinned_up_next_entries(self.user)
 
         self.assertEqual(
             [entry.item.title for entry in entries],

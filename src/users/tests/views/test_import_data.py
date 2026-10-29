@@ -62,10 +62,63 @@ class ImportDataViewTests(TestCase):
             HTTP_HX_REQUEST="true",
         )
 
-        self.assertEqual(response.status_code, 200)
+        # Idle: 286 tells htmx to stop polling, but the body is still swapped.
+        self.assertEqual(response.status_code, 286)
         self.assertTemplateUsed(response, "users/components/import_activity.html")
-        self.assertContains(response, "Active Periodic Imports")
-        self.assertContains(response, "Import History")
+        self.assertContains(response, "Active Periodic Imports", status_code=286)
+        self.assertContains(response, "Import History", status_code=286)
+
+    def test_import_activity_polling_pauses_while_details_open(self):
+        """An open failed-items/traceback section must not be refreshed away."""
+        response = self.client.get(reverse("import_data"))
+        self.assertContains(response, "[data-keep-open=true]", count=2)
+        self.assertContains(response, "shouldSwap = false")
+
+    def test_import_activity_marks_open_details(self):
+        """Result details expose their open state so the panel can skip refreshes."""
+        from integrations.models import ImportRun
+
+        ImportRun.objects.create(user=self.user, source="plex", status="finished")
+        TaskResult.objects.create(
+            task_id="task-errors",
+            task_name="Import from Plex",
+            task_kwargs=(f'{{"user_id": {self.user.id}}}'),
+            status="SUCCESS",
+            result='"Imported 1 Movies."',
+            traceback="Skipping Plex entry without external IDs: Heat",
+        )
+        response = self.client.get(
+            reverse("import_data_activity"),
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertContains(response, ':data-keep-open="showDetails"', status_code=286)
+
+    def test_import_data_activity_keeps_polling_while_import_active(self):
+        """A pending/started task or running ImportRun keeps the poll alive."""
+        TaskResult.objects.create(
+            task_id="task-started",
+            task_name="Import from Trakt",
+            task_kwargs=(f'{{"user_id": {self.user.id}}}'),
+            status="STARTED",
+        )
+        with patch("users.models.AsyncResult") as async_result:
+            async_result.return_value.status = "STARTED"
+            response = self.client.get(
+                reverse("import_data_activity"),
+                HTTP_HX_REQUEST="true",
+            )
+        self.assertEqual(response.status_code, 200)
+
+    def test_import_data_activity_keeps_polling_for_running_import_run(self):
+        """A running ImportRun keeps the poll alive."""
+        from integrations.models import ImportRun
+
+        ImportRun.objects.create(user=self.user, source="trakt", status="running")
+        response = self.client.get(
+            reverse("import_data_activity"),
+            HTTP_HX_REQUEST="true",
+        )
+        self.assertEqual(response.status_code, 200)
 
     def test_import_data_activity_lists_media_by_import_source(self):
         """Media is grouped by media type and import source."""
@@ -201,6 +254,7 @@ class ImportDataViewTests(TestCase):
             "import_goodreads",
             "import_hardcover",
             "import_storygraph",
+            "import_youtube_takeout",
             "import_wetrakr",
             "import_tvtime",
         )

@@ -353,7 +353,7 @@
                             </div>
                           </template>
 
-                          <template x-if="row.row_type === 'up_next'">
+                          <template x-if="row.row_type === 'pinned_up_next'">
                             <div class="px-2 py-2 text-sm text-slate-300">
                               Ready episode or announced release
                             </div>
@@ -432,6 +432,13 @@
                       {% translate "Library Row" %}
                     </button>
                     <button type="button"
+                            x-show="section.media_type === 'tv' || (section.media_type === 'all' && section.available_media_types.includes('tv'))"
+                            class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-strong)] cursor-pointer"
+                            @click="addRow(section, 'up_next'); section.addRowMenuOpen = false">
+                      {% include "app/icons/play.svg" with classes="mr-2 h-4 w-4" %}
+                      {% translate "Up Next" %}
+                    </button>
+                    <button type="button"
                             x-show="section.media_type !== 'all'"
                             class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
                             @click="addRow(section, 'shelf_resume'); section.addRowMenuOpen = false">
@@ -475,11 +482,11 @@
                     <button type="button"
                             x-show="['tv', 'anime'].includes(section.media_type)"
                             class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
-                            @click="addRow(section, 'up_next'); section.addRowMenuOpen = false"
-                            :disabled="sections.some(candidate => candidate.rows.some(row => row.row_type === 'up_next'))"
-                            :class="{ 'opacity-50 cursor-not-allowed': sections.some(candidate => candidate.rows.some(row => row.row_type === 'up_next')) }">
+                            @click="addRow(section, 'pinned_up_next'); section.addRowMenuOpen = false"
+                            :disabled="sections.some(candidate => candidate.rows.some(row => row.row_type === 'pinned_up_next'))"
+                            :class="{ 'opacity-50 cursor-not-allowed': sections.some(candidate => candidate.rows.some(row => row.row_type === 'pinned_up_next')) }">
                       {% include "app/icons/right-arrow.svg" with classes="mr-2 h-4 w-4" %}
-                      Up Next Row
+                      Pinned Up Next Row
                     </button>
                     <button type="button"
                             class="flex w-full items-center border-t border-[var(--color-surface-alt)] px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-strong)] hover:text-[var(--color-text)] cursor-pointer"
@@ -645,10 +652,11 @@
           return choice ? choice.label : gettext('Album');
         },
         rowTypeLabel(type) {
+          if (type === 'up_next') return gettext('Up Next');
           if (type === 'library_query') return gettext('Library Row');
           if (type === 'custom_list') return gettext('List / Smart List');
           if (type === 'recently_unrated') return gettext('Recently Played');
-          if (type === 'up_next') return gettext('Up Next');
+          if (type === 'pinned_up_next') return gettext('Pinned Up Next');
           if (type === 'history') return gettext('History');
           if (type === 'shelf_resume') return gettext('Resume Shelf');
           if (type === 'shelf_stale') return gettext('Stale Shelf');
@@ -658,13 +666,14 @@
           return type;
         },
         rowAutoTitle(section, row) {
+          if (row.row_type === 'up_next') return gettext('Up Next');
           if (row.row_type === 'custom_list') {
             return row.custom_list_name || gettext('List / Smart List');
           }
           if (row.row_type === 'recently_unrated') {
             return gettext('Recently Played - Not Rated');
           }
-          if (row.row_type === 'up_next') return gettext('Up Next');
+          if (row.row_type === 'pinned_up_next') return gettext('Pinned Up Next');
           if (row.row_type === 'history') return gettext('History');
           if (row.row_type === 'watch_history') {
             return gettext('Activity Journal');
@@ -811,7 +820,7 @@
           return choice ? choice.label : gettext('Sort');
         },
         defaultSortDirection(value) {
-          return ['author', 'popularity', 'runtime', 'start_date', 'title', 'time_left', 'time_to_beat'].includes(value) ? 'asc' : 'desc';
+          return ['author', 'popularity', 'runtime', 'start_date', 'title', 'time_left', 'time_to_beat', 'episode_feed'].includes(value) ? 'asc' : 'desc';
         },
         toggleRowSort(row, value) {
           row.direction = (row.sort_by === value) ? (row.direction === 'asc' ? 'desc' : 'asc') : this.defaultSortDirection(value);
@@ -865,6 +874,7 @@
         },
         defaultSortValue(section, rowType) {
           if (rowType === 'recently_unrated' || rowType === 'history') return 'recent';
+          if (rowType === 'up_next') return 'episode_feed';
           const defaultSortChoices = rowType === 'custom_list'
             ? (section.sort_choices.custom_list || [])
             : (section.sort_choices.library_query || []);
@@ -950,11 +960,12 @@
         },
         sortChoices(section, row) {
           if (row.row_type === 'custom_list') return section.sort_choices.custom_list || [];
+          if (row.row_type === 'up_next') return section.sort_choices.up_next || [];
           if (row.row_type === 'shelf_resume') return section.sort_choices.shelf_resume || section.sort_choices.library_query || [];
           if (row.row_type === 'shelf_stale') return section.sort_choices.shelf_stale || section.sort_choices.library_query || [];
           if (row.row_type === 'shelf_unstarted') return section.sort_choices.shelf_unstarted || section.sort_choices.library_query || [];
           if (row.row_type === 'shelf_finished') return section.sort_choices.shelf_finished || section.sort_choices.library_query || [];
-          if (['recently_unrated', 'watch_history'].includes(row.row_type)) return [];
+          if (['recently_unrated', 'watch_history', 'pinned_up_next'].includes(row.row_type)) return [];
           return section.sort_choices.library_query || [];
         },
         isInProgressEpisodeRow(section, row) {
@@ -972,11 +983,11 @@
           if (['recently_unrated', 'history', 'watch_history'].includes(rowType) && section.rows.some(row => row.row_type === rowType)) {
             return;
           }
-          if (rowType === 'up_next' && this.sections.some(candidate => candidate.rows.some(row => row.row_type === 'up_next'))) {
+          if (rowType === 'pinned_up_next' && this.sections.some(candidate => candidate.rows.some(row => row.row_type === 'pinned_up_next'))) {
             return;
           }
           const defaultSort = this.defaultSortValue(section, rowType);
-          const isRecentOnly = ['recently_unrated', 'up_next', 'history', 'watch_history'].includes(rowType);
+          const isRecentOnly = ['recently_unrated', 'pinned_up_next', 'history', 'watch_history'].includes(rowType);
           const newRow = {
             id: null,
             client_id: `new-row-${this.nextRowId++}`,

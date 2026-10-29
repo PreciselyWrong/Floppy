@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -82,6 +83,27 @@ class ServicesTests(TestCase):
         self.assertEqual(kwargs["data"], {"form_data": "value"})
         self.assertIn("timeout", kwargs)
 
+    @patch("app.providers.services.session.put")
+    def test_api_request_put(self, mock_put):
+        """Test the api_request function with PUT method."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": "test"}
+        mock_put.return_value = mock_response
+
+        result = services.api_request(
+            "TEST",
+            "PUT",
+            "https://example.com/api",
+            data={"form_data": "value"},
+        )
+
+        self.assertEqual(result, {"data": "test"})
+        mock_put.assert_called_once()
+        _, kwargs = mock_put.call_args
+        self.assertEqual(kwargs["url"], "https://example.com/api")
+        self.assertEqual(kwargs["data"], {"form_data": "value"})
+        self.assertIn("timeout", kwargs)
+
     def tearDown(self):
         """Avoid leaking the tmdb proxy cache key between tests."""
         cache.delete("tmdb_proxy_url")
@@ -153,14 +175,16 @@ class ServicesTests(TestCase):
         self.assertIsNone(cm.exception.status_code)
         self.assertIn("Could not reach", str(cm.exception))
 
-    @patch("app.providers.services.time.sleep")
     @patch("app.providers.services.session.get")
-    def test_api_request_retries_transient_http_errors(
-        self,
-        mock_get,
-        mock_sleep,
-    ):
+    def test_api_request_retries_transient_http_errors(self, mock_get):
         """Transient upstream 5xx responses should be retried before failing."""
+        # Swap the module's own `time` name, not the process-wide time.sleep,
+        # so sleeps from background threads are not counted.
+        fake_time = MagicMock(wraps=time)
+        mock_sleep = fake_time.sleep
+        patcher = patch("app.providers.services.time", fake_time)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         failed_response = MagicMock()
         failed_response.status_code = 502
         failed_response.headers = {}
@@ -553,7 +577,9 @@ class ServicesTests(TestCase):
 
         self.assert_metadata_title_payload(result, "Test Season")
 
-        mock_tv_with_seasons.assert_called_once_with("1", [1], None, missing_seasons=set())
+        mock_tv_with_seasons.assert_called_once_with(
+            "1", [1], None, missing_seasons=set()
+        )
 
     @patch("app.providers.tmdb.episode")
     def test_get_media_metadata_episode(self, mock_episode):
@@ -757,6 +783,53 @@ class ServicesTests(TestCase):
         self.assertEqual(result["genres"], show.genres)
         self.assertEqual(result["details"]["show_title"], show.title)
         self.assertEqual(result["details"]["duration"], episode.duration)
+
+    @patch("app.services.podcast_import.import_show_from_itunes_id")
+    def test_get_media_metadata_podcast_itunes_search_id_resolves_show(
+        self, mock_import
+    ):
+        """Search results carry an iTunes id; resolve it to the show catalog row."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:1532744254",
+            source=Sources.POCKETCASTS.value,
+            title="Sternstunde Philosophie",
+            author="SRF",
+            image="https://example.com/show.jpg",
+        )
+        mock_import.return_value = show
+
+        result = services.get_media_metadata(
+            MediaTypes.PODCAST.value,
+            "1532744254",
+            Sources.POCKETCASTS.value,
+        )
+
+        self.assertEqual(result["media_id"], show.podcast_uuid)
+        self.assertEqual(result["title"], show.title)
+        self.assertEqual(result["details"]["show_uuid"], show.podcast_uuid)
+        mock_import.assert_called_once_with("1532744254")
+
+    @patch("app.services.podcast_import.import_show_from_feed_url")
+    def test_get_media_metadata_gpodder_feed_url_resolves_show(self, mock_import):
+        """GPodder search results carry a feed URL; resolve it to the show row."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="gp_show",
+            source=Sources.GPODDER.value,
+            title="Linux Outlaws",
+            rss_feed_url="https://example.com/linux.xml",
+        )
+        mock_import.return_value = show
+
+        result = services.get_media_metadata(
+            MediaTypes.PODCAST.value,
+            "https://example.com/linux.xml",
+            Sources.GPODDER.value,
+        )
+
+        self.assertEqual(result["media_id"], show.podcast_uuid)
+        self.assertEqual(result["title"], show.title)
+        self.assertEqual(result["details"]["show_uuid"], show.podcast_uuid)
+        mock_import.assert_called_once_with("https://example.com/linux.xml")
 
     def test_get_media_metadata_podcast_deleted_episode_is_not_found(self):
         """Deleted podcast episodes should not resolve as generic media."""
@@ -1027,6 +1100,22 @@ class ServicesTests(TestCase):
 
         mock_search.assert_called_once_with("test", 1, user=None)
 
+    @patch("app.providers.gpodder.search")
+    def test_search_podcast_gpodder(self, mock_search):
+        """Test that the GPodder source dispatches to the GPodder provider."""
+        mock_search.return_value = {"results": [{"title": "Test Podcast"}]}
+
+        result = services.search(
+            MediaTypes.PODCAST.value,
+            "test",
+            1,
+            source=Sources.GPODDER.value,
+        )
+
+        self.assertEqual(result, {"results": [{"title": "Test Podcast"}]})
+
+        mock_search.assert_called_once_with("test", 1)
+
     @patch("app.providers.hardcover.search")
     def test_search_hardcover_book(self, mock_search):
         """Test the search function for books from Hardcover."""
@@ -1097,7 +1186,9 @@ class ServicesTests(TestCase):
         )
 
         self.assertEqual(result, [{"title": "Google result"}])
-        mock_google_search.assert_called_once_with("9780123456789", 1, language=None, user=None)
+        mock_google_search.assert_called_once_with(
+            "9780123456789", 1, language=None, user=None
+        )
         mock_hardcover_search.assert_not_called()
         mock_isbn_search.assert_not_called()
 

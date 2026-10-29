@@ -706,6 +706,12 @@ class OpenAPIArtifactTests(SimpleTestCase):
                 {"200", "400", "401", "403"},
             ),
             (
+                "/apis/listenbrainz/1/user/{username}/listens/",
+                "get",
+                "getListenBrainzUserListens",
+                {"200", "400", "401", "404"},
+            ),
+            (
                 "/apis/listenbrainz/1/validate-token/",
                 "get",
                 "validateListenBrainzToken",
@@ -991,7 +997,7 @@ class SchemaFindingContractTests(SimpleTestCase):
         self.assertIn(SCHEMA_REGENERATION_COMMAND, message)
 
     def test_reviewed_baseline_has_expected_unique_counts(self):
-        self.assertEqual(len(EXPECTED_SCHEMA_ERRORS), 87)
+        self.assertEqual(len(EXPECTED_SCHEMA_ERRORS), 86)
         self.assertEqual(len(EXPECTED_SCHEMA_WARNINGS), 18)
 
     def test_generated_schema_findings_match_reviewed_baseline(self):

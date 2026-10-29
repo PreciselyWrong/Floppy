@@ -162,7 +162,8 @@ VIEW_SCOPES: dict[str, dict[str, str]] = {
     "api.fork_views_statistics.StatisticsRefreshView": {"POST": "statistics:write"},
     "api.fork_views_tracking.MediaEpisodeWatchView": {"POST": _W, "DELETE": _W},
     "api.fork_views_tracking.MediaMovieWatchView": {"POST": _W, "DELETE": _W},
-    "api.fork_views_video.VideoPlayView": {"POST": _W},
+    "api.fork_views_video.VideoPlayView": {"GET": _R, "POST": _W},
+    "api.fork_views_video.VideoPlayDetailView": {"DELETE": _W},
     "api.fork_views_tracking.MediaEpisodeDropView": {"POST": _W},
     "api.fork_views_tracking.MediaEpisodeBulkView": {"POST": _W},
     "api.fork_views_tracking.TagsView": {"GET": _R, "POST": _W},
@@ -197,6 +198,7 @@ VIEW_SCOPES: dict[str, dict[str, str]] = {
     # Rotating the account token would let a scoped token mint an unscoped one.
     "api.fork_views_users.UserTokenRegenerateView": {"POST": NEVER},
     "api.listenbrainz_views.SubmitListensView": {"POST": "scrobble:write"},
+    "api.listenbrainz_views.UserListensView": {"GET": "music:read"},
     # A client must be able to check its own credential before it knows its grants.
     "api.listenbrainz_views.ValidateTokenView": {"GET": ANY_SCOPE},
     "api.schema.LiveSchemaView": {"GET": ANY_SCOPE},

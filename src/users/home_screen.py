@@ -7,7 +7,7 @@ import json
 import random
 import secrets
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
@@ -16,16 +16,20 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Case, F, IntegerField, Min, Q, Subquery, Value, When
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Lower, Replace, Trim
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext
 
-from app.helpers import is_caught_up_media
+from app.helpers import is_caught_up_media, progress_activity
 from app.history_cache_reader import get_recent_history_entries
 from app.history_entry_builders import expand_episode_group_entries
 from app.library_query import FilterValues, LibraryQuery, LibraryQueryExecutor, SortSpec
-from app.library_query.adapters import from_home_row_filters, home_engine_direction
+from app.library_query.adapters import (
+    from_home_row_filters,
+    home_engine_direction,
+    last_watched_sort_key,
+)
 from app.library_query.filters import (
     NEEDS_MAX_PROGRESS,
     NEEDS_MEDIA,
@@ -45,6 +49,7 @@ from app.models import (
     Tag,
     prefill_episode_runtime_index,
 )
+from app.models.tv import TERMINAL_PRODUCTION_STATUSES
 from app.release_years import prefill_display_release_years
 from app.request_timing import boundary
 from app.services.item_merge import dedupe_cross_provider_items
@@ -190,6 +195,8 @@ for _status_choice in Status:
         _status_choice.value
     )
 
+# Sort key of the Up Next row's own queue order.
+UP_NEXT_SORT = "episode_feed"
 HOME_QUERY_DEFAULT_FILTERS = {
     "status": [Status.IN_PROGRESS.value],
     "progress": "all",
@@ -367,6 +374,10 @@ SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
         "tag",
     },
 }
+# Videos use the shared item filters, without streaming-provider filtering.
+SUPPORTED_FILTERS_BY_MEDIA_TYPE[MediaTypes.VIDEO.value] = (
+    SUPPORTED_FILTERS_BY_MEDIA_TYPE[MediaTypes.MOVIE.value] - {"provider"}
+)
 SUPPORTED_FILTERS_BY_MEDIA_TYPE[HOME_ALL_MEDIA_TYPE] = {
     "media_types",
     "status",
@@ -395,6 +406,7 @@ class HomeRowEntry:
     podcast_show: object | None = None
     show_progress_controls: bool = True
     subtitle_override: object | None = None
+    next_episode: dict | None = None
     subtitle_always_visible: bool = False
     resume_navigation: bool = False
     title_item_override: Item | None = None
@@ -436,7 +448,7 @@ def resolve_home_row_direction(sort_by: str, direction: str | None = None) -> st
         return DirectionChoices.DESC
     if sort_by == HomeSortChoices.COMPLETION:
         return DirectionChoices.DESC
-    if sort_by == HomeSortChoices.EPISODES_LEFT:
+    if sort_by in {HomeSortChoices.EPISODES_LEFT, UP_NEXT_SORT}:
         return DirectionChoices.ASC
     if sort_by == HomeSortChoices.RANDOM:
         return DirectionChoices.DESC
@@ -478,6 +490,15 @@ def get_home_configurable_media_types(user) -> list[str]:
 
 def get_allowed_sort_choices(media_type: str, row_type: str) -> list[dict]:
     """Return sort options for a home row."""
+    if row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        return [
+            {"value": UP_NEXT_SORT, "label": gettext("Up Next")},
+            {"value": MediaSortChoices.TITLE, "label": gettext("Title")},
+            {"value": MediaSortChoices.SCORE, "label": gettext("Rating")},
+            {"value": MediaSortChoices.DATE_ADDED, "label": gettext("Date Added")},
+            {"value": MediaSortChoices.END_DATE, "label": gettext("Last Watched")},
+            {"value": HomeSortChoices.RANDOM, "label": gettext("Random")},
+        ]
     if media_type == HOME_ALL_MEDIA_TYPE:
         return [
             {"value": HomeSortChoices.RECENT, "label": "Recent"},
@@ -1300,7 +1321,11 @@ def serialize_settings_sections(user) -> list[dict]:
                         media_type,
                         HomeScreenRowTypeChoices.CUSTOM_LIST,
                     ),
-                    HomeScreenRowTypeChoices.UP_NEXT: [],
+                    HomeScreenRowTypeChoices.UP_NEXT: get_allowed_sort_choices(
+                        media_type,
+                        HomeScreenRowTypeChoices.UP_NEXT,
+                    ),
+                    HomeScreenRowTypeChoices.PINNED_UP_NEXT: [],
                     HomeScreenRowTypeChoices.HISTORY: [],
                     HomeScreenRowTypeChoices.WATCH_HISTORY: [],
                     HomeScreenRowTypeChoices.SHELF_RESUME: get_allowed_sort_choices(
@@ -1334,14 +1359,16 @@ def row_title(row: HomeScreenRow, user) -> str:
     custom_title = (row.title or "").strip()
     if custom_title:
         return custom_title
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        return "Up Next"
     if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST:
         if row.custom_list_id and row.custom_list:
             return row.custom_list.name
         return "List / Smart List"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return RECENTLY_UNRATED_LABEL
-    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
-        return "Up Next"
+    if row.row_type == HomeScreenRowTypeChoices.PINNED_UP_NEXT:
+        return "Pinned Up Next"
     if row.row_type == HomeScreenRowTypeChoices.HISTORY:
         return "History"
     if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
@@ -1359,13 +1386,15 @@ def row_title(row: HomeScreenRow, user) -> str:
 
 def row_summary(row: HomeScreenRow, user) -> str:
     """Return a compact subtitle for a configured row."""
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        return ""
     if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST:
         if row.custom_list_id and row.custom_list:
             return "List-backed row"
         return "Choose a list or smart list"
     if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
         return "Recent unrated plays from this library"
-    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+    if row.row_type == HomeScreenRowTypeChoices.PINNED_UP_NEXT:
         return "Next ready episode or announced release"
     if row.row_type == HomeScreenRowTypeChoices.HISTORY:
         return "Recent activity from this library"
@@ -1520,6 +1549,11 @@ def _row_payload_to_model(
         msg = f"Unsupported row type for {media_type}."
         raise HomeScreenValidationError(msg)
 
+    if row_type == HomeScreenRowTypeChoices.UP_NEXT and (
+        media_type not in {HOME_ALL_MEDIA_TYPE, MediaTypes.TV.value} or not user.tv_enabled
+    ):
+        msg = gettext("Up Next requires the TV library.")
+        raise HomeScreenValidationError(msg)
     enabled = bool(row_payload.get("enabled", True))
     custom_list = None
     filters = {}
@@ -1536,18 +1570,20 @@ def _row_payload_to_model(
             msg = f"Choose an accessible list for {media_type}."
             raise HomeScreenValidationError(msg)
         sort_choices = get_allowed_sort_choices(media_type, row_type)
+    elif row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        sort_choices = get_allowed_sort_choices(media_type, row_type)
     elif row_type in {
         HomeScreenRowTypeChoices.RECENTLY_UNRATED,
-        HomeScreenRowTypeChoices.UP_NEXT,
+        HomeScreenRowTypeChoices.PINNED_UP_NEXT,
         HomeScreenRowTypeChoices.HISTORY,
         HomeScreenRowTypeChoices.WATCH_HISTORY,
     }:
-        if row_type == HomeScreenRowTypeChoices.UP_NEXT and media_type not in {
+        if row_type == HomeScreenRowTypeChoices.PINNED_UP_NEXT and media_type not in {
             MediaTypes.TV.value,
             MediaTypes.ANIME.value,
             HOME_ALL_MEDIA_TYPE,
         }:
-            msg = "Up Next is only available for TV and Anime."
+            msg = "Pinned Up Next is only available for TV and Anime."
             raise HomeScreenValidationError(msg)
         sort_choices = []
         if row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
@@ -1571,13 +1607,15 @@ def _row_payload_to_model(
     sort_by = str(row_payload.get("sort_by") or "").strip()
     if row_type in {
         HomeScreenRowTypeChoices.RECENTLY_UNRATED,
-        HomeScreenRowTypeChoices.UP_NEXT,
+        HomeScreenRowTypeChoices.PINNED_UP_NEXT,
         HomeScreenRowTypeChoices.HISTORY,
         HomeScreenRowTypeChoices.WATCH_HISTORY,
     }:
         sort_by = HomeSortChoices.RECENT
         direction = _default_recent_row_direction()
     else:
+        if row_type == HomeScreenRowTypeChoices.UP_NEXT and not sort_by:
+            sort_by = UP_NEXT_SORT
         if sort_by not in allowed_sort_values:
             msg = f"Unsupported sort for {media_type}."
             raise HomeScreenValidationError(msg)
@@ -1735,7 +1773,7 @@ def save_home_screen_configuration(user, raw_payload: str) -> None:
     allowed_media_types = set(get_home_configurable_media_types(user))
     replacement_rows: list[HomeScreenRow] = []
     seen_recent_rows: set[str] = set()
-    seen_up_next = False
+    seen_pinned_up_next = False
     seen_history_rows: set[str] = set()
     media_type_order: list[str] = []
 
@@ -1765,11 +1803,11 @@ def save_home_screen_configuration(user, raw_payload: str) -> None:
                         msg,
                     )
                 seen_recent_rows.add(media_type)
-            if model_row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
-                if seen_up_next:
-                    msg = "Only one 'Up Next' row is allowed."
+            if model_row.row_type == HomeScreenRowTypeChoices.PINNED_UP_NEXT:
+                if seen_pinned_up_next:
+                    msg = "Only one 'Pinned Up Next' row is allowed."
                     raise HomeScreenValidationError(msg)
-                seen_up_next = True
+                seen_pinned_up_next = True
             if model_row.row_type == HomeScreenRowTypeChoices.HISTORY:
                 if media_type in seen_history_rows:
                     msg = f"Only one 'History' row is allowed for {media_type}."
@@ -1853,8 +1891,13 @@ def _music_shell_item(media_id: str, title: str, image: str | None) -> Item:
 
 def _music_shell_items_bulk(
     specs: list[tuple[str, str, str | None]],
+    persist: set[str] | None = None,
 ) -> dict[str, Item]:
-    """Batch version of _music_shell_item — fetches/creates all shell items in 1-3 queries."""
+    """Batch version of _music_shell_item — fetches/creates all shell items in 1-3 queries.
+
+    With ``persist`` only those media ids are created/updated in the database; every
+    other spec gets an equivalent in-memory Item, enough to sort on but never saved.
+    """
     if not specs:
         return {}
     specs_map = {s[0]: s for s in specs}
@@ -1867,8 +1910,10 @@ def _music_shell_items_bulk(
             media_type=MediaTypes.MUSIC.value,
         )
     }
+    write_ids = set(media_ids) if persist is None else persist & set(media_ids)
     missing_ids = [mid for mid in media_ids if mid not in existing]
-    if missing_ids:
+    create_ids = [mid for mid in missing_ids if mid in write_ids]
+    if create_ids:
         Item.objects.bulk_create(
             [
                 Item(
@@ -1878,16 +1923,25 @@ def _music_shell_items_bulk(
                     title=specs_map[mid][1],
                     image=specs_map[mid][2] or settings.IMG_NONE,
                 )
-                for mid in missing_ids
+                for mid in create_ids
             ],
             ignore_conflicts=True,
         )
         for item in Item.objects.filter(
-            media_id__in=missing_ids,
+            media_id__in=create_ids,
             source=Sources.MANUAL.value,
             media_type=MediaTypes.MUSIC.value,
         ):
             existing[item.media_id] = item
+    for mid in missing_ids:
+        if mid not in write_ids:
+            existing[mid] = Item(
+                media_id=mid,
+                source=Sources.MANUAL.value,
+                media_type=MediaTypes.MUSIC.value,
+                title=specs_map[mid][1],
+                image=specs_map[mid][2] or settings.IMG_NONE,
+            )
     to_update = []
     for media_id, item in existing.items():
         _, title, image = specs_map[media_id]
@@ -1895,7 +1949,8 @@ def _music_shell_items_bulk(
         if item.title != title or item.image != desired_image:
             item.title = title
             item.image = desired_image
-            to_update.append(item)
+            if media_id in write_ids:
+                to_update.append(item)
     if to_update:
         Item.objects.bulk_update(to_update, ["title", "image"])
     return existing
@@ -2096,8 +2151,8 @@ def _apply_music_tracker_rating_filter(trackers, rating_filter: str):
 
 
 def _build_album_home_entries(
-    user, filters: dict, sort_by: str, direction: str
-) -> list[HomeRowEntry]:
+    user, filters: dict, sort_by: str, direction: str, offset: int, limit: int
+) -> tuple[list[HomeRowEntry], int]:
     """Build Home entries from the user's tracked albums (AlbumTracker)."""
     from app.models import AlbumTracker
 
@@ -2117,7 +2172,7 @@ def _build_album_home_entries(
         for t in trackers
         if t.album
     ]
-    items = _music_shell_items_bulk(specs)
+    items = _music_shell_items_bulk(specs, persist=set())
 
     entries = []
     for tracker in trackers:
@@ -2134,12 +2189,30 @@ def _build_album_home_entries(
                 show_progress_controls=False,
             ),
         )
-    return sort_home_entries(entries, sort_by, direction)
+    entries = sort_home_entries(entries, sort_by, direction)
+    window = entries[offset : offset + limit]
+    # Only the shelf window needs a saved shell Item; the rest sorted in memory.
+    persisted = _music_shell_items_bulk(
+        [spec for spec in specs if spec[0] in {e.item.media_id for e in window}],
+    )
+    trackers_by_id = {t.id: t for t in trackers}
+    return [
+        HomeRowEntry(
+            item=persisted[e.item.media_id],
+            media=_AlbumHomeAdapter(
+                persisted[e.item.media_id],
+                trackers_by_id[e.media.id],
+                e.media.album,
+            ),
+            show_progress_controls=False,
+        )
+        for e in window
+    ], len(entries)
 
 
 def _build_artist_home_entries(
-    user, filters: dict, sort_by: str, direction: str
-) -> list[HomeRowEntry]:
+    user, filters: dict, sort_by: str, direction: str, offset: int, limit: int
+) -> tuple[list[HomeRowEntry], int]:
     """Build Home entries from the user's tracked artists (ArtistTracker)."""
     from app.models import ArtistTracker
 
@@ -2161,7 +2234,7 @@ def _build_artist_home_entries(
         for t in trackers
         if t.artist
     ]
-    items = _music_shell_items_bulk(specs)
+    items = _music_shell_items_bulk(specs, persist=set())
 
     entries = []
     for tracker in trackers:
@@ -2178,7 +2251,25 @@ def _build_artist_home_entries(
                 show_progress_controls=False,
             ),
         )
-    return sort_home_entries(entries, sort_by, direction)
+    entries = sort_home_entries(entries, sort_by, direction)
+    window = entries[offset : offset + limit]
+    # Only the shelf window needs a saved shell Item; the rest sorted in memory.
+    persisted = _music_shell_items_bulk(
+        [spec for spec in specs if spec[0] in {e.item.media_id for e in window}],
+    )
+    trackers_by_id = {t.id: t for t in trackers}
+    return [
+        HomeRowEntry(
+            item=persisted[e.item.media_id],
+            media=_ArtistHomeAdapter(
+                persisted[e.item.media_id],
+                trackers_by_id[e.media.id],
+                e.media.artist,
+            ),
+            show_progress_controls=False,
+        )
+        for e in window
+    ], len(entries)
 
 
 class _PodcastShowHomeAdapter(_MusicTrackerAdapter):
@@ -2193,8 +2284,13 @@ class _PodcastShowHomeAdapter(_MusicTrackerAdapter):
         self.last_played_at = tracker.updated_at
 
 
-def _podcast_show_shell_items_bulk(shows: list[object]) -> dict[tuple[str, str], Item]:
+def _podcast_show_shell_items_bulk(
+    shows: list[object], persist: set[tuple[str, str]] | None = None
+) -> dict[tuple[str, str], Item]:
     """Return the card Item for each show, keyed by (source, podcast_uuid).
+
+    With ``persist`` only those keys are created/updated in the database; the
+    other shows get an equivalent in-memory Item for sorting.
 
     The same shell Item the Podcasts list page creates, so both pages share it.
     """
@@ -2216,6 +2312,11 @@ def _podcast_show_shell_items_bulk(shows: list[object]) -> dict[tuple[str, str],
         for show in shows
         if (show.source, show.podcast_uuid) not in existing
     ]
+    if persist is not None:
+        for item in missing:
+            if (item.source, item.media_id) not in persist:
+                existing[(item.source, item.media_id)] = item
+        missing = [i for i in missing if (i.source, i.media_id) in persist]
     if missing:
         Item.objects.bulk_create(missing, ignore_conflicts=True)
         for item in Item.objects.filter(
@@ -2232,15 +2333,16 @@ def _podcast_show_shell_items_bulk(shows: list[object]) -> dict[tuple[str, str],
         if item and (item.title != show.title or item.image != image):
             item.title = show.title
             item.image = image
-            stale.append(item)
+            if persist is None or (show.source, show.podcast_uuid) in persist:
+                stale.append(item)
     if stale:
         Item.objects.bulk_update(stale, ["title", "image"])
     return existing
 
 
 def _build_podcast_show_home_entries(
-    user, filters: dict, sort_by: str, direction: str
-) -> list[HomeRowEntry]:
+    user, filters: dict, sort_by: str, direction: str, offset: int, limit: int
+) -> tuple[list[HomeRowEntry], int]:
     """Build Home entries from the user's tracked podcast shows (PodcastShowTracker).
 
     A Home podcast shelf lists shows, like the Podcasts page, not every episode.
@@ -2278,7 +2380,9 @@ def _build_podcast_show_home_entries(
             if (tracker.show.language or "").strip().lower() == language
         ]
 
-    items = _podcast_show_shell_items_bulk([tracker.show for tracker in trackers])
+    items = _podcast_show_shell_items_bulk(
+        [tracker.show for tracker in trackers], persist=set()
+    )
     entries = []
     for tracker in trackers:
         show = tracker.show
@@ -2296,7 +2400,30 @@ def _build_podcast_show_home_entries(
                 show_progress_controls=False,
             ),
         )
-    return sort_home_entries(entries, sort_by, direction)
+    entries = sort_home_entries(entries, sort_by, direction)
+    window = entries[offset : offset + limit]
+    # Only the shelf window needs a saved shell Item; the rest sorted in memory.
+    persisted = _podcast_show_shell_items_bulk(
+        [e.podcast_show for e in window],
+        persist={(e.podcast_show.source, e.podcast_show.podcast_uuid) for e in window},
+    )
+    trackers_by_id = {t.id: t for t in trackers}
+    out = []
+    for e in window:
+        show = e.podcast_show
+        item = persisted[(show.source, show.podcast_uuid)]
+        if sort_by == MediaSortChoices.RELEASE_DATE:
+            item.release_datetime = e.item.release_datetime
+        out.append(
+            HomeRowEntry(
+                item=item,
+                media=_PodcastShowHomeAdapter(item, trackers_by_id[e.media.id], show),
+                use_podcast_show=True,
+                podcast_show=show,
+                show_progress_controls=False,
+            ),
+        )
+    return out, len(entries)
 
 
 class _RecentAlbumAdapter:
@@ -2647,12 +2774,20 @@ def _entry_start_timestamp(entry: HomeRowEntry):
     return dt_value.timestamp() if dt_value else None
 
 
-def _entry_end_timestamp(entry: HomeRowEntry):
+def _entry_last_watched_timestamp(entry: HomeRowEntry):
+    """Return the last activity for the "Last Watched" sort.
+
+    A completed entry is dated by its end_date; an in-progress one by its
+    last progress update. No activity stays null and sorts last.
+    """
     media = _entry_media(entry)
     if not media:
         return None
-    candidate = getattr(media, "aggregated_end_date", None) or getattr(
-        media, "end_date", None
+    candidate = (
+        getattr(media, "aggregated_last_watched", None)
+        or getattr(media, "aggregated_end_date", None)
+        or getattr(media, "end_date", None)
+        or progress_activity(media)
     )
     dt_value = _coerce_datetime(candidate)
     return dt_value.timestamp() if dt_value else None
@@ -2781,7 +2916,7 @@ def _resolve_up_next_entry(media, user=None) -> HomeRowEntry | None:
     )
 
 
-def _up_next_entries(user) -> list[HomeRowEntry]:
+def _pinned_up_next_entries(user) -> list[HomeRowEntry]:
     enabled_types = set(user.get_enabled_media_types())
     candidates = []
     for media_type in (MediaTypes.TV.value, MediaTypes.ANIME.value):
@@ -3041,7 +3176,7 @@ def sort_home_entries(
     if sort_by == MediaSortChoices.START_DATE:
         return _sort_numeric(entries, _entry_start_timestamp, direction)
     if sort_by == MediaSortChoices.END_DATE:
-        return _sort_numeric(entries, _entry_end_timestamp, direction)
+        return _sort_numeric(entries, _entry_last_watched_timestamp, direction)
     if sort_by == MediaSortChoices.TIME_LEFT:
 
         def time_left(entry):
@@ -3090,10 +3225,12 @@ def _upcoming_values(user, candidates, direction):
 
 def _release_rank(item, now):
     """Return (group, key) ordering unstarted items: released, upcoming, undated."""
+    from events.models import is_released_datetime
+
     release_dt = _coerce_datetime(_entry_release_date(item))
     if release_dt is None:
         return (2, 0)
-    if release_dt <= now:
+    if is_released_datetime(release_dt, now):
         return (0, -release_dt.timestamp())
     return (1, release_dt.timestamp())
 
@@ -3130,8 +3267,10 @@ def _recent_sql_order(ctx, seed, direction):
             ),
         ).values("value")[:1],
     )
-    released = Q(release_datetime__lte=now)
-    upcoming = Q(release_datetime__gt=now)
+    from events.models import released_q
+
+    released = released_q("release_datetime", now)
+    upcoming = Q(release_datetime__isnull=False) & ~released
     descending = direction == DirectionChoices.DESC
     recent_key = F("_home_recent")
     return (
@@ -3186,9 +3325,36 @@ def _episodes_left_value(entry):
     return max_progress - progress
 
 
+def _episode_feed_sort_values(user, candidates, direction):
+    """Backlog ascending, then soonest release, then most recently aired."""
+    entries = _episode_feed_entries(_batch_entries(user, candidates))
+    values = {}
+    for entry in entries:
+        target = entry.next_episode
+        if target["released"]:
+            value = (0, entry.media.episodes_left)
+        elif target.get("air_date"):
+            value = (1, target["air_date"].timestamp())
+        else:
+            last_date = target.get("last_air_date")
+            value = (2, -last_date.timestamp()) if last_date else (3, 0)
+        values[entry.item.pk] = value
+    missing = (3, 0)
+    ordered = [values.get(candidate.item.pk, missing) for candidate in candidates]
+    if direction == DirectionChoices.DESC:
+        return [(-group, -key) for group, key in ordered]
+    return ordered
+
+
 _MEDIA = frozenset({NEEDS_MEDIA})
 _MEDIA_AND_MAX = frozenset({NEEDS_MEDIA, NEEDS_MAX_PROGRESS})
 for _definition in (
+    SortDef(
+        (UP_NEXT_SORT,),
+        batch_values=_episode_feed_sort_values,
+        direction_in_value=True,
+        needs=_MEDIA_AND_MAX,
+    ),
     SortDef(
         ("home_upcoming",),
         batch_values=_upcoming_values,
@@ -3256,7 +3422,8 @@ def _row_items(user, row, executor, offset, limit, *, seed):
     """Return (items, total) for one window of a shelf's query.
 
     A Python-ordered shelf ranks every candidate once; the compact id order is
-    cached for the row-cache lifetime so load-more requests fetch one page.
+    cached so load-more requests and later warm visits fetch one page. Random
+    shelves keep the row lifetime: each new seed is a different order.
     """
     from django.core.cache import cache
 
@@ -3275,7 +3442,12 @@ def _row_items(user, row, executor, offset, limit, *, seed):
     if ranked_ids is None:
         with boundary("home_rank"):
             ranked_ids = executor.ranked_ids()
-        cache.set(order_key, ranked_ids, cache_utils.HOME_ROW_CACHE_TTL)
+        ttl = (
+            cache_utils.HOME_ROW_CACHE_TTL
+            if row.sort_by == HomeSortChoices.RANDOM
+            else cache_utils.HOME_ROW_ORDER_CACHE_TTL
+        )
+        cache.set(order_key, ranked_ids, ttl)
         cache_utils.register_home_row_cache_key(user.id, order_key)
     window = ranked_ids[offset : offset + limit]
     by_id = Item.objects.defer(*HOME_CARD_UNREAD_ITEM_FIELDS).in_bulk(window)
@@ -3318,7 +3490,7 @@ def _custom_list_row_executor(user, row, *, seed: int):
         else (row.media_type,),
         filters=FilterValues(status_match=STATUS_MATCH_ANY),
         sort=SortSpec(
-            key=sort_key or "title",
+            key=last_watched_sort_key(sort_key) or "title",
             direction=home_engine_direction(
                 row.sort_by,
                 resolve_home_row_direction(row.sort_by, row.direction),
@@ -3357,35 +3529,24 @@ def _library_row_window(user, row, offset, limit, *, seed):
     if row.media_type == MediaTypes.MUSIC.value:
         subview = _canonical_subview(normalized.get("subview"), row.media_type)
         if subview == MUSIC_SUBVIEW_ALBUMS:
-            entries = _build_album_home_entries(
-                user,
-                normalized,
-                row.sort_by,
-                row.direction,
+            return _build_album_home_entries(
+                user, normalized, row.sort_by, row.direction, offset, limit,
             )
-            return entries[offset : offset + limit], len(entries)
         if subview == MUSIC_SUBVIEW_ARTISTS:
-            entries = _build_artist_home_entries(
-                user,
-                normalized,
-                row.sort_by,
-                row.direction,
+            return _build_artist_home_entries(
+                user, normalized, row.sort_by, row.direction, offset, limit,
             )
-            return entries[offset : offset + limit], len(entries)
     if (
         row.media_type == MediaTypes.PODCAST.value
         and _canonical_subview(normalized.get("subview"), row.media_type)
         == PODCAST_SUBVIEW_SHOWS
     ):
-        entries = _build_podcast_show_home_entries(
-            user,
-            normalized,
-            row.sort_by,
-            row.direction,
+        return _build_podcast_show_home_entries(
+            user, normalized, row.sort_by, row.direction, offset, limit,
         )
-        return entries[offset : offset + limit], len(entries)
-    if row.media_type == HOME_ALL_MEDIA_TYPE and not _all_media_type_selection(
-        user, row.filters
+    if (
+        row.media_type == HOME_ALL_MEDIA_TYPE
+        and not _all_media_type_selection(user, row.filters)
     ):
         return [], 0
     executor = _library_row_executor(user, row, normalized, seed=seed)
@@ -3649,7 +3810,10 @@ def home_row_destination_url(row: HomeScreenRow, user) -> str:
     custom-list rows open the list itself. Sort, direction, layout and filters are
     encoded in the URL (the media list persists them like any normal navigation).
     """
-    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+    if row.row_type in {
+        HomeScreenRowTypeChoices.UP_NEXT,
+        HomeScreenRowTypeChoices.PINNED_UP_NEXT,
+    }:
         return ""
     if row.row_type == HomeScreenRowTypeChoices.HISTORY:
         return f"{reverse('history')}?{urlencode({'media_type': row.media_type})}"
@@ -4061,105 +4225,22 @@ def _watch_history_section(user, row: HomeScreenRow) -> dict | None:
 _HOME_ROW_EMPTY_SENTINEL = "__home_row_empty__"
 
 
-def _supports_compact_home_order(row: HomeScreenRow) -> bool:
-    if row.row_type != HomeScreenRowTypeChoices.LIBRARY_QUERY:
-        return False
-    if row.media_type != MediaTypes.MUSIC.value:
-        return True
-    normalized = _normalized_filter_payload(row.filters or {}, row.media_type)
-    return _canonical_music_subview(normalized.get("subview")) == MUSIC_SUBVIEW_TRACKS
-
-
-def _cache_home_row_order(
-    user, row: HomeScreenRow, entries: list[HomeRowEntry]
-) -> None:
-    if not _supports_compact_home_order(row):
-        return
-
-    from django.core.cache import cache
-
-    from app import cache_utils
-
-    cache_key = cache_utils.build_home_row_order_cache_key(user.id, row.id)
-    cache.set(
-        cache_key,
-        {"item_ids": [entry.item.id for entry in entries], "total": len(entries)},
-        cache_utils.HOME_ROW_CACHE_TTL,
-    )
-    cache_utils.register_home_row_cache_key(user.id, cache_key)
-
-
-def _section_from_entry_slice(
-    user,
-    row: HomeScreenRow,
-    media_type: str,
-    section_entries: list[HomeRowEntry],
-    total: int,
-    batch_start: int,
-    consumed_count: int | None = None,
-) -> dict | None:
-    if total == 0:
-        return None
-
-    prefill_display_release_years(section_entries)
-    consumed_count = len(section_entries) if consumed_count is None else consumed_count
-    loaded_count = min(total, batch_start + consumed_count)
-    title_main, title_detail = home_row_header_title_parts(row, user)
-
-    def _entry_missing_cover(entry):
-        if getattr(entry, "use_podcast_show", False) and getattr(
-            entry, "podcast_show", None
-        ):
-            image = entry.podcast_show.image
-        else:
-            image = (
-                getattr(entry.media, "card_image_override", None) or entry.item.image
-            )
-        return not image or image == settings.IMG_NONE
-
-    poll_for_covers = any(
-        _entry_missing_cover(entry)
-        for entry in section_entries
-        if media_type in SQUARE_HOME_MEDIA_TYPES
-        or (
-            media_type == HOME_ALL_MEDIA_TYPE
-            and entry.item.media_type in SQUARE_HOME_MEDIA_TYPES
-        )
-    )
-    return {
-        "row_id": row.id,
-        "collapse_key": f"home-row-{row.id}-open",
-        "title": row_title(row, user),
-        "title_main": title_main,
-        "title_detail": title_detail,
-        "url": home_row_destination_url(row, user),
-        "summary": row_summary(row, user),
-        "summary_inline": home_row_inline_summary(row, user),
-        "direction": row.direction,
-        "items": section_entries,
-        "total": total,
-        "loaded_count": loaded_count,
-        "show_played_chip": row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
-        "show_media_type_chip": _show_media_type_chip(user, row, media_type),
-        "card_width_class": "w-44",
-        "grid_class": "media-grid media-grid-square"
-        if media_type in SQUARE_HOME_MEDIA_TYPES
-        else "media-grid",
-        "poll_for_covers": poll_for_covers,
-    }
-
-
 def _build_row_section(
     user,
     row,
     media_type: str,
     items_limit: int,
     batch_start: int = 0,
-    collection_context_cache: dict | None = None,
-    cache_order: bool = False,
     seed: int | None = None,
+    collection_context_cache: dict | None = None,
 ) -> dict | None:
-    """Build a single home-row section dict, or None when the row is empty."""
+    """Build a single home-row section dict, or None when the row is empty.
+
+    Library shelves load only the requested window; ``seed`` keeps a random
+    shelf's order fixed across its load-more requests.
+    """
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT and not user.tv_enabled:
+        return None
     if row.row_type == HomeScreenRowTypeChoices.HISTORY:
         entries, has_more = get_recent_history_entries(
             user,
@@ -4189,126 +4270,101 @@ def _build_row_section(
             "grid_template": "app/components/home_history_grid.html",
             "poll_for_covers": False,
         }
-    if row.row_type in {
-        HomeScreenRowTypeChoices.LIBRARY_QUERY,
-        HomeScreenRowTypeChoices.CUSTOM_LIST,
-    }:
-        seed = home_row_seed(row) if seed is None else seed
-        window = (
-            _custom_list_row_window
-            if row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST
-            else _library_row_window
-        )
-        section_entries, total = window(user, row, batch_start, items_limit, seed=seed)
-        section = _section_from_entry_slice(
-            user, row, media_type, section_entries, total, batch_start
-        )
-        if section is not None:
-            section["seed"] = seed
-        return section
-    if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
-        entries = _recently_unrated_entries(user, row)
-    elif row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
-        entries = _up_next_entries(user)
-    elif row.row_type == HomeScreenRowTypeChoices.SHELF_RESUME:
-        entries = _shelf_resume_entries(
-            user, row, collection_context_cache=collection_context_cache
-        )
-    elif row.row_type == HomeScreenRowTypeChoices.SHELF_STALE:
-        entries = _shelf_stale_entries(
-            user, row, collection_context_cache=collection_context_cache
-        )
-    elif row.row_type == HomeScreenRowTypeChoices.SHELF_UNSTARTED:
-        entries = _shelf_unstarted_entries(
-            user, row, collection_context_cache=collection_context_cache
-        )
-    elif row.row_type == HomeScreenRowTypeChoices.SHELF_FINISHED:
-        entries = _shelf_finished_entries(
-            user, row, collection_context_cache=collection_context_cache
-        )
-    elif row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
+    if row.row_type == HomeScreenRowTypeChoices.WATCH_HISTORY:
         return _watch_history_section(user, row)
+    if seed is None:
+        seed = home_row_seed(row)
+    if row.row_type == HomeScreenRowTypeChoices.UP_NEXT:
+        section_entries, total = _episode_feed_row_window(
+            user, row, batch_start, items_limit, seed,
+        )
+    elif row.row_type == HomeScreenRowTypeChoices.CUSTOM_LIST:
+        section_entries, total = _custom_list_row_window(
+            user, row, batch_start, items_limit, seed=seed,
+        )
+    elif row.row_type in {
+        HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        HomeScreenRowTypeChoices.PINNED_UP_NEXT,
+        HomeScreenRowTypeChoices.SHELF_RESUME,
+        HomeScreenRowTypeChoices.SHELF_STALE,
+        HomeScreenRowTypeChoices.SHELF_UNSTARTED,
+        HomeScreenRowTypeChoices.SHELF_FINISHED,
+    }:
+        # Bounded by a time window or a small curated set, so it is built whole
+        # and sliced.
+        if row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED:
+            entries = _recently_unrated_entries(user, row)
+        elif row.row_type == HomeScreenRowTypeChoices.PINNED_UP_NEXT:
+            entries = _pinned_up_next_entries(user)
+        else:
+            shelf_entries = {
+                HomeScreenRowTypeChoices.SHELF_RESUME: _shelf_resume_entries,
+                HomeScreenRowTypeChoices.SHELF_STALE: _shelf_stale_entries,
+                HomeScreenRowTypeChoices.SHELF_UNSTARTED: _shelf_unstarted_entries,
+                HomeScreenRowTypeChoices.SHELF_FINISHED: _shelf_finished_entries,
+            }[row.row_type]
+            entries = shelf_entries(
+                user, row, collection_context_cache=collection_context_cache
+            )
+        total = len(entries)
+        section_entries = entries[batch_start : batch_start + items_limit]
     else:
-        entries = _library_query_entries(
-            user,
-            row,
-            collection_context_cache=collection_context_cache,
+        section_entries, total = _library_row_window(
+            user, row, batch_start, items_limit, seed=seed,
         )
 
-    if not entries:
+    if not total:
         return None
 
-    batch_end = batch_start + items_limit
-    section_entries = entries[batch_start:batch_end]
-    if cache_order:
-        _cache_home_row_order(user, row, entries)
-    return _section_from_entry_slice(
-        user,
-        row,
-        media_type,
-        section_entries,
-        len(entries),
-        batch_start,
-    )
+    prefill_display_release_years(section_entries)
+    loaded_count = min(total, batch_start + len(section_entries))
+    title_main, title_detail = home_row_header_title_parts(row, user)
 
+    def _entry_missing_cover(entry):
+        if getattr(entry, "use_podcast_show", False) and getattr(
+            entry, "podcast_show", None
+        ):
+            image = entry.podcast_show.image
+        else:
+            image = (
+                getattr(entry.media, "card_image_override", None) or entry.item.image
+            )
+        return not image or image == settings.IMG_NONE
 
-def _cached_paginated_row_section(
-    user,
-    row: HomeScreenRow,
-    media_type: str,
-    items_limit: int,
-    batch_start: int,
-    collection_context_cache: dict | None = None,
-) -> dict | None:
-    """Hydrate one page from a cached compact order when the row supports it."""
-    if not _supports_compact_home_order(row):
-        return _build_row_section(
-            user,
-            row,
-            media_type,
-            items_limit,
-            batch_start=batch_start,
-            collection_context_cache=collection_context_cache,
+    # A mixed row decides per entry: only its music and podcast cards poll.
+    poll_for_covers = any(
+        _entry_missing_cover(e)
+        for e in section_entries
+        if media_type in SQUARE_HOME_MEDIA_TYPES
+        or (
+            media_type == HOME_ALL_MEDIA_TYPE
+            and e.item.media_type in SQUARE_HOME_MEDIA_TYPES
         )
-
-    from django.core.cache import cache
-
-    from app import cache_utils
-
-    cache_key = cache_utils.build_home_row_order_cache_key(user.id, row.id)
-    payload = cache.get(cache_key)
-    if not isinstance(payload, dict) or not isinstance(payload.get("item_ids"), list):
-        return _build_row_section(
-            user,
-            row,
-            media_type,
-            items_limit,
-            batch_start=batch_start,
-            collection_context_cache=collection_context_cache,
-            cache_order=True,
-        )
-
-    requested_ids = payload["item_ids"][batch_start : batch_start + items_limit]
-    items_by_id = Item.objects.in_bulk(requested_ids)
-    items = [
-        items_by_id[item_id] for item_id in requested_ids if item_id in items_by_id
-    ]
-    normalized = _normalized_filter_payload(row.filters or {}, row.media_type)
-    entries = _library_entries_for_items(
-        user,
-        items,
-        normalized.get("status") or [],
-        row=row,
     )
-    return _section_from_entry_slice(
-        user,
-        row,
-        media_type,
-        entries,
-        int(payload.get("total", len(payload["item_ids"]))),
-        batch_start,
-        consumed_count=len(requested_ids),
-    )
+    return {
+        "row_id": row.id,
+        "row_type": row.row_type,
+        "collapse_key": f"home-row-{row.id}-open",
+        "title": row_title(row, user),
+        "title_main": title_main,
+        "title_detail": title_detail,
+        "url": home_row_destination_url(row, user),
+        "summary": row_summary(row, user),
+        "summary_inline": home_row_inline_summary(row, user),
+        "direction": row.direction,
+        "items": section_entries,
+        "total": total,
+        "seed": seed,
+        "loaded_count": loaded_count,
+        "show_played_chip": row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
+        "show_media_type_chip": _show_media_type_chip(user, row, media_type),
+        "card_width_class": "w-44",
+        "video_landscape": media_type == "video",
+        "grid_class": "media-grid media-grid-square"
+        if media_type in SQUARE_HOME_MEDIA_TYPES
+        else "media-grid",
+        "poll_for_covers": poll_for_covers,
+    }
 
 
 def _cached_row_section(
@@ -4341,14 +4397,14 @@ def _cached_row_section(
     cache_key = cache_utils.build_home_row_cache_key(user.id, row.id, items_limit)
     cached = None if refresh else cache.get(cache_key)
     if cached is None:
-        section = _build_row_section(
-            user,
-            row,
-            media_type,
-            items_limit,
-            collection_context_cache=collection_context_cache,
-            cache_order=True,
-        )
+        with boundary("home_row"):
+            section = _build_row_section(
+                user,
+                row,
+                media_type,
+                items_limit,
+                collection_context_cache=collection_context_cache,
+            )
         cache.set(
             cache_key,
             section if section is not None else _HOME_ROW_EMPTY_SENTINEL,
@@ -4359,6 +4415,123 @@ def _cached_row_section(
     if cached == _HOME_ROW_EMPTY_SENTINEL:
         return None
     return cached
+
+
+def _episode_feed_row_window(user, row, offset, limit, seed):
+    """Use the standard Home row window and cache for the TV episode queue."""
+    query = from_home_row_filters(
+        user,
+        {"status": [Status.IN_PROGRESS.value], "progress": "not_caught_up"},
+        (MediaTypes.TV.value,),
+        sort_key=row.sort_by,
+        direction=row.direction,
+        seed=seed,
+        mixed=True,
+    )
+    # Keep ended shows only while they have released episodes left. Use the
+    # library's progress policy, rather than calculating a second watch state.
+    released_ids = LibraryQueryExecutor(
+        user, query.with_sort(MediaSortChoices.TITLE, DirectionChoices.ASC),
+    ).ranked_ids()
+    continuing = Item.objects.annotate(
+        production_status=Lower(Replace(Trim("status"), Value("_"), Value(" "))),
+    ).exclude(production_status__in=TERMINAL_PRODUCTION_STATUSES)
+    query = replace(
+        query,
+        filters=replace(query.filters, progress="all"),
+        include_collection_only=False,
+        within=Item.objects.filter(
+            Q(pk__in=released_ids) | Q(pk__in=continuing.values("pk")),
+        ).values("pk"),
+    )
+    items, total = _row_items(
+        user,
+        row,
+        LibraryQueryExecutor(user, query),
+        offset,
+        limit,
+        seed=seed,
+    )
+    entries = _episode_feed_entries(_row_entries(user, items))
+    return entries, total
+
+
+def _episode_feed_entries(entries):
+    """Decorate cards with the model manager's shared episode projection."""
+    BasicMedia.objects.attach_episode_queue(
+        [entry.media for entry in entries if entry.media]
+    )
+    for entry in entries:
+        entry.next_episode = entry.media.next_episode_queue if entry.media else None
+    return [entry for entry in entries if entry.next_episode]
+
+
+def build_home_page_manifest(
+    user,
+    only_row_ids: set[int] | None = None,
+) -> list[dict]:
+    """Return enabled Home groups and rows in configured order, without sections.
+
+    Cheap enough to call on every Home render: the shell uses it to lay out
+    one deferred placeholder per row. Build sections with
+    ``build_home_page_groups(..., groups=manifest)`` instead of rebuilding the
+    configuration.
+    """
+    with boundary("home_config"):
+        rows = ensure_home_screen_rows(user)
+        enabled_media_types = get_home_configurable_media_types(user)
+    rows_by_media_type: dict[str, list[HomeScreenRow]] = defaultdict(list)
+    for row in rows:
+        if row.enabled and (only_row_ids is None or row.id in only_row_ids):
+            rows_by_media_type[row.media_type].append(row)
+
+    groups = []
+    for media_type in enabled_media_types:
+        media_rows = rows_by_media_type.get(media_type, [])
+        if not media_rows:
+            continue
+        groups.append(
+            {
+                "media_type": media_type,
+                "label": _media_type_group_label(media_type),
+                "available_media_types": get_all_media_row_types(user)
+                if media_type == HOME_ALL_MEDIA_TYPE
+                else [],
+                "icon_svg": str(
+                    app_tags.icon(
+                        _media_type_group_icon_name(media_type),
+                        False,
+                        "w-6 h-6 text-gray-300",
+                    ),
+                ),
+                "rows": media_rows,
+            },
+        )
+    return groups
+
+
+def build_home_row(
+    user,
+    row_id: int,
+    items_limit: int,
+    *,
+    refresh: bool = False,
+) -> dict | None:
+    """Build one enabled Home row for a deferred fragment request."""
+    row = (
+        HomeScreenRow.objects.filter(user=user, id=row_id, enabled=True)
+        .select_related("custom_list")
+        .first()
+    )
+    if row is None or row.media_type not in get_home_configurable_media_types(user):
+        return None
+    return _cached_row_section(
+        user,
+        row,
+        row.media_type,
+        items_limit,
+        refresh=refresh,
+    )
 
 
 def build_home_page_groups(
@@ -4373,35 +4546,28 @@ def build_home_page_groups(
     refresh_row_cache: bool = False,
     load_row_seed: int | None = None,
     first_group_only: bool = False,
+    groups: list[dict] | None = None,
 ) -> list[dict]:
     """Build grouped home sections from persisted Home rows."""
     if only_row_id is not None:
         only_row_ids = (only_row_ids or set()) | {only_row_id}
-    rows = ensure_home_screen_rows(user)
-    enabled_media_types = get_home_configurable_media_types(user)
-    rows_by_media_type: dict[str, list[HomeScreenRow]] = defaultdict(list)
-    for row in rows:
-        if row.enabled and (only_row_ids is None or row.id in only_row_ids):
-            rows_by_media_type[row.media_type].append(row)
+    if groups is None:
+        groups = build_home_page_manifest(user, only_row_ids)
 
     # Shared across every row built in this call so the (potentially
     # unscoped) CollectionEntry scan behind collection/collection-only-
     # untracked filtering runs at most once per request instead of once per
     # row/media type.
     collection_context_cache: dict = {}
-    groups = []
-    for media_type in enabled_media_types:
+    built_groups = []
+    for group in groups:
+        media_type = group["media_type"]
         row_sections = []
-        for row in rows_by_media_type.get(media_type, []):
-            if (
-                load_row_id == row.id
-                and append_only
-                and row.row_type
-                in {
-                    HomeScreenRowTypeChoices.LIBRARY_QUERY,
-                    HomeScreenRowTypeChoices.CUSTOM_LIST,
-                }
-            ):
+        for row in group["rows"]:
+            if only_row_ids is not None and row.id not in only_row_ids:
+                continue
+            if load_row_id == row.id and append_only:
+                # Offset pagination ("load more") bypasses the row cache.
                 section = _build_row_section(
                     user,
                     row,
@@ -4409,14 +4575,6 @@ def build_home_page_groups(
                     items_limit,
                     batch_start=load_row_offset,
                     seed=load_row_seed,
-                )
-            elif load_row_id == row.id and append_only:
-                section = _cached_paginated_row_section(
-                    user,
-                    row,
-                    media_type,
-                    items_limit,
-                    batch_start=load_row_offset,
                     collection_context_cache=collection_context_cache,
                 )
             else:
@@ -4432,23 +4590,15 @@ def build_home_page_groups(
                 continue
             row_sections.append(section)
         if row_sections:
-            groups.append(
+            built_groups.append(
                 {
                     "media_type": media_type,
-                    "label": _media_type_group_label(media_type),
-                    "available_media_types": get_all_media_row_types(user)
-                    if media_type == HOME_ALL_MEDIA_TYPE
-                    else [],
-                    "icon_svg": str(
-                        app_tags.icon(
-                            _media_type_group_icon_name(media_type),
-                            False,
-                            "w-6 h-6 text-gray-300",
-                        ),
-                    ),
+                    "label": group["label"],
+                    "available_media_types": group["available_media_types"],
+                    "icon_svg": group["icon_svg"],
                     "rows": row_sections,
                 },
             )
             if first_group_only:
                 break
-    return groups
+    return built_groups

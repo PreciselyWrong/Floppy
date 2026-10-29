@@ -19,10 +19,12 @@ from app.models import (
     ArtistTracker,
     Book,
     CollectionEntry,
+    ComicIssue,
     DiscoverFeedback,
     DiscoverFeedbackType,
     Episode,
     Item,
+    ItemTag,
     MediaTypes,
     MetadataProviderPreference,
     Movie,
@@ -33,6 +35,7 @@ from app.models import (
     Season,
     Sources,
     Status,
+    Tag,
 )
 from app.providers import services
 from app.services.metadata_resolution import MetadataResolutionResult
@@ -342,8 +345,10 @@ class TrackModalViewTests(TestCase):
         self.assertContains(response, "General")
         self.assertContains(response, "Metadata")
         self.assertContains(response, "Discover")
-        self.assertContains(response, "Image URL")
-        self.assertContains(response, "Save Image")
+        # A tracked item gets the Cover section (upload, link, find) in place of
+        # the old single Image URL box.
+        self.assertContains(response, "choose an image")
+        self.assertContains(response, "enter a URL")
         self.assertContains(response, "Metadata Provider")
         self.assertContains(response, "Fix match")
         self.assertContains(response, "Custom")
@@ -354,6 +359,60 @@ class TrackModalViewTests(TestCase):
         self.assertContains(response, "showMonthsView", html=False)
         self.assertContains(response, "showYearsView", html=False)
         self.assertNotContains(response, "Custom Metadata")
+
+    def test_track_modal_renders_tags_tab_for_tracked_media(self):
+        """The edit modal exposes tag management in its own tab."""
+        tag = Tag.objects.create(user=self.user, name="Favourite")
+        ItemTag.objects.create(tag=tag, item=self.item)
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "238",
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["tags_tab_available"])
+        self.assertContains(response, "@click=\"activeTab = 'tags'\"")
+        self.assertContains(response, "Favourite")
+        self.assertContains(response, 'name="tag_surface"')
+        self.assertContains(response, 'value="track"')
+        self.assertNotContains(response, "tagsOpen = false")
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_track_modal_omits_tags_tab_for_untracked_media(
+        self,
+        mock_get_metadata,
+    ):
+        """Without an item row there is nothing to attach tags to yet."""
+        mock_get_metadata.return_value = {
+            "media_id": "278",
+            "title": "New Movie",
+            "media_type": MediaTypes.MOVIE.value,
+            "source": Sources.TMDB.value,
+            "image": "http://example.com/image.jpg",
+            "max_progress": 1,
+        }
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.MOVIE.value,
+                    "media_id": "278",
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["tags_tab_available"])
+        self.assertNotContains(response, "@click=\"activeTab = 'tags'\"")
 
     def test_session_history_row_opens_standard_modal_for_instance(self):
         """Session rows preserve the tracked instance when opening the editor."""
@@ -604,6 +663,48 @@ class TrackModalViewTests(TestCase):
     ):
         """An untracked episode used to render the bare show title. Issue #1070."""
         mock_get_metadata.return_value = self._episode_metadata_payload()
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.TMDB.value,
+                    "media_type": MediaTypes.EPISODE.value,
+                    "media_id": "titled-show-1",
+                    "season_number": 1,
+                },
+            )
+            + "?is_create=1&episode_number=2",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["title"], "Failure's Contagious")
+        self.assertEqual(response.context["title_subtitle"], "Titled Show · S1E2")
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_track_modal_untracked_episode_survives_episode_lookup_404(
+        self,
+        mock_get_metadata,
+    ):
+        """A season can list an episode its own endpoint 404s; the modal opens."""
+        season_payload = {
+            "title": "Titled Show",
+            "season_title": "Season 1",
+            "episodes": [{"episode_number": 2, "name": "Failure's Contagious"}],
+        }
+
+        def get_metadata(media_type, *args, **kwargs):
+            if media_type == MediaTypes.EPISODE.value:
+                raise services.ProviderAPIError(
+                    Sources.TMDB.value,
+                    SimpleNamespace(
+                        response=SimpleNamespace(status_code=404, headers={}),
+                    ),
+                    "cached episode lookup failure",
+                )
+            return season_payload
+
+        mock_get_metadata.side_effect = get_metadata
 
         response = self.client.get(
             reverse(
@@ -1208,6 +1309,42 @@ class TrackModalViewTests(TestCase):
         self.assertContains(response, "Save Metadata")
         self.assertNotContains(response, "Save Image")
 
+    def test_track_modal_renders_custom_metadata_form_for_manual_comic_issue(self):
+        """A hand-made comic issue gets the same metadata editor as its series."""
+        manual_item = Item.objects.create(
+            media_id="manual-issue-1",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.COMIC_ISSUE.value,
+            title="Manual Issue #1",
+        )
+        ComicIssue.objects.create(
+            item=manual_item,
+            user=self.user,
+            status=Status.PLANNING.value,
+        )
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.MANUAL.value,
+                    "media_type": MediaTypes.COMIC_ISSUE.value,
+                    "media_id": "manual-issue-1",
+                },
+            )
+            + "?return_url=/home",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["metadata_tab_available"])
+        self.assertTrue(response.context["can_edit_custom_metadata"])
+        form = response.context["manual_metadata_form"]
+        self.assertIsNotNone(form)
+        self.assertIn("publishers", form.fields)
+        self.assertNotIn("creators", form.fields)
+        self.assertContains(response, "Custom Metadata")
+        self.assertContains(response, "Metadata Provider")
+
     def test_track_modal_renders_custom_metadata_form_for_movie_using_custom_provider(
         self,
     ):
@@ -1314,6 +1451,70 @@ class TrackModalViewTests(TestCase):
             manual_item.manual_metadata["details"]["release_date"],
             "2024-01-15",
         )
+
+    def test_update_manual_item_metadata_for_collected_only_comic_issue(self):
+        """An issue that is only in the collection can still get its metadata."""
+        manual_item = Item.objects.create(
+            media_id="manual-issue-2",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.COMIC_ISSUE.value,
+            title="Collected Issue",
+        )
+        CollectionEntry.objects.create(user=self.user, item=manual_item)
+
+        response = self.client.post(
+            reverse("update_manual_item_metadata", args=[manual_item.id]),
+            {
+                "return_url": "/home",
+                "metadata-title": "Collected Issue #2",
+                "metadata-synopsis": "Found in a long box.",
+                "metadata-publishers": "Nova Press",
+                "metadata-release_date": "2024-03-06",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        manual_item.refresh_from_db()
+        self.assertEqual(manual_item.title, "Collected Issue #2")
+        self.assertEqual(
+            manual_item.manual_metadata["synopsis"], "Found in a long box."
+        )
+        self.assertEqual(manual_item.publishers, "Nova Press")
+
+    def test_update_manual_item_metadata_rejects_item_not_in_library(self):
+        """Neither tracking nor collecting means no edits."""
+        manual_item = Item.objects.create(
+            media_id="manual-issue-3",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.COMIC_ISSUE.value,
+            title="Someone Else's Issue",
+        )
+
+        self.client.post(
+            reverse("update_manual_item_metadata", args=[manual_item.id]),
+            {"return_url": "/home", "metadata-title": "Hijacked"},
+        )
+
+        manual_item.refresh_from_db()
+        self.assertEqual(manual_item.title, "Someone Else's Issue")
+
+    def test_update_item_image_for_collected_only_item(self):
+        """The image URL box also works for a collected-only item."""
+        manual_item = Item.objects.create(
+            media_id="manual-issue-4",
+            source=Sources.MANUAL.value,
+            media_type=MediaTypes.COMIC_ISSUE.value,
+            title="Collected Cover",
+        )
+        CollectionEntry.objects.create(user=self.user, item=manual_item)
+
+        self.client.post(
+            reverse("update_item_image", args=[manual_item.id]),
+            {"return_url": "/home", "image_url": "https://images.example.com/c.jpg"},
+        )
+
+        manual_item.refresh_from_db()
+        self.assertEqual(manual_item.image, "https://images.example.com/c.jpg")
 
     def test_update_manual_item_metadata_redirects_to_normalized_return_url(self):
         """Custom metadata saves should restore encoded list query separators."""
@@ -1915,6 +2116,34 @@ class PodcastTrackModalViewTests(TestCase):
         self.assertContains(response, "General")
         self.assertContains(response, 'name="notes"', html=False)
         self.assertContains(response, 'name="score"', html=False)
+
+    @patch("app.services.podcast_import.import_show_from_itunes_id")
+    def test_podcast_track_modal_resolves_itunes_search_result(self, mock_import):
+        """A podcast search result's iTunes id opens the show editor."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:1532744254",
+            title="Sternstunde Philosophie",
+            image="http://example.com/show.jpg",
+            rss_feed_url="",
+        )
+        mock_import.return_value = show
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                kwargs={
+                    "source": Sources.POCKETCASTS.value,
+                    "media_type": MediaTypes.PODCAST.value,
+                    "media_id": "1532744254",
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "app/components/fill_track.html")
+        self.assertContains(response, "Sternstunde Philosophie")
+        self.assertContains(response, 'name="show_id"', html=False)
+        mock_import.assert_called_once_with("1532744254")
 
     def test_podcast_show_track_modal_renders_episode_plays_tab(self):
         """Podcast show modal should expose bulk episode plays instead of mark-all CTA."""

@@ -31,16 +31,6 @@
            this.activeModal = null;
          },
          activeMediaTag: 'all',
-         mediaTagLabels: {
-           all: gettext('All Sources'),
-           screen: gettext('Movies & TV'),
-           anime_manga: gettext('Anime & Manga'),
-           reading: gettext('Books & Comics'),
-           games: gettext('Games'),
-           podcasts: gettext('Podcasts'),
-           music: gettext('Music'),
-           backup: gettext('Backups')
-         },
          sourceSupports(tags) {
            return this.activeMediaTag === 'all' || tags.includes(this.activeMediaTag);
          },
@@ -335,70 +325,9 @@
            target="_blank"
            class="text-[var(--color-link)] hover:text-[var(--color-link-hover)] underline">{% translate "import configuration guide" %}</a>.
       </p>
-      <div class="bg-[var(--color-surface-strong)] rounded-lg p-4 mb-5">
-        <p class="text-sm text-[var(--color-text-secondary)] mb-3">{% translate "Browse by media type:" %}</p>
-        <div class="flex flex-wrap gap-2">
-          <button type="button"
-                  @click="activeMediaTag = 'all'"
-                  :aria-pressed="activeMediaTag === 'all'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'all' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "All Sources" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'screen'"
-                  :aria-pressed="activeMediaTag === 'screen'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'screen' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Movies & TV" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'anime_manga'"
-                  :aria-pressed="activeMediaTag === 'anime_manga'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'anime_manga' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Anime & Manga" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'reading'"
-                  :aria-pressed="activeMediaTag === 'reading'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'reading' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Books & Comics" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'games'"
-                  :aria-pressed="activeMediaTag === 'games'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'games' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Games" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'podcasts'"
-                  :aria-pressed="activeMediaTag === 'podcasts'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'podcasts' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Podcasts" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'music'"
-                  :aria-pressed="activeMediaTag === 'music'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'music' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Music" %}
-          </button>
-          <button type="button"
-                  @click="activeMediaTag = 'backup'"
-                  :aria-pressed="activeMediaTag === 'backup'"
-                  class="px-3 py-1.5 text-xs rounded-md border transition-colors cursor-pointer"
-                  :class="activeMediaTag === 'backup' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-[var(--color-surface)] text-[var(--color-text-secondary)] border-[var(--color-border)] hover:border-indigo-500 hover:text-[var(--color-text)]'">
-            {% translate "Backups" %}
-          </button>
-        </div>
-        <p class="text-xs text-[var(--color-text-muted)] mt-3"
-           x-text="gettext('Showing ') + mediaTagLabels[activeMediaTag] + '.'">
-        </p>
-      </div>
+      {% media_tag_choices as media_tags %}
+      {% translate "All Sources" as all_sources_label %}
+      {% include "users/components/media_tag_filter.html" with tags=media_tags all_label=all_sources_label summary=True %}
 
       {# Import source tiles - click a tile to open its setup/import modal #}
       <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -599,7 +528,10 @@
                 x-show="sourceSupports(['anime_manga'])"
                 x-transition.opacity.duration.150ms
                 class="bg-[var(--color-surface-strong)] hover:bg-[var(--color-surface-border)] transition-colors rounded-lg p-4 text-left cursor-pointer flex flex-col gap-2">
-          <div class="flex items-center justify-between">{% source_display "myanimelist" %}</div>
+          <div class="flex items-center justify-between">
+            {% source_display "myanimelist" %}
+            {% if mal_account and mal_account.is_connected %}<span class="flex items-center justify-center w-5 h-5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30" title="Sync connected">{% include "app/icons/checkmark.svg" with classes="w-3 h-3" %}</span>{% endif %}
+          </div>
           <p class="text-xs text-[var(--color-text-muted)] line-clamp-2">{% translate "Import anime and manga from MyAnimeList." %}</p>
         </button>
 
@@ -788,6 +720,15 @@
                 class="bg-[var(--color-surface-strong)] hover:bg-[var(--color-surface-border)] transition-colors rounded-lg p-4 text-left cursor-pointer flex flex-col gap-2">
           <div class="flex items-center justify-between">{% source_display "storygraph" %}</div>
           <p class="text-xs text-[var(--color-text-muted)] line-clamp-2">{% translate "Import an export from StoryGraph." %}</p>
+        </button>
+
+        <button type="button"
+                @click="openModal('youtube')"
+                x-show="sourceSupports(['screen'])"
+                x-transition.opacity.duration.150ms
+                class="bg-[var(--color-surface-strong)] hover:bg-[var(--color-surface-border)] transition-colors rounded-lg p-4 text-left cursor-pointer flex flex-col gap-2">
+          <div class="flex items-center justify-between">{% source_display "youtube" %}</div>
+          <p class="text-xs text-[var(--color-text-muted)] line-clamp-2">{% translate "Import watch history from Google Takeout." %}</p>
         </button>
       </div>
 
@@ -2562,25 +2503,45 @@
         <div class="bg-[var(--color-surface-strong)] p-4 rounded-lg">
           <div class="flex items-center mb-3">{% source_display "simkl" %}</div>
           <p class="text-sm text-[var(--color-text-muted)] mb-3">{% translate "Import TV shows, movies and anime" %}</p>
-          {% if not simkl_configured %}
-            <div class="mb-3 rounded-md border border-indigo-500/30 bg-indigo-500/10 p-3 text-xs text-[var(--color-text-secondary)] space-y-2">
-              <p class="text-[var(--color-link)] font-medium">{% translate "SIMKL needs your own API app" %}</p>
-              <ol class="list-decimal list-inside space-y-1">
-                <li>
-                  {% translate "Create an app at" %}
-                  <a href="https://simkl.com/settings/developer/"
-                     target="_blank"
-                     class="text-[var(--color-link)] underline hover:text-indigo-200">{% translate "SIMKL Developer" %}</a>.
-                </li>
-                <li>{% translate "Set the Redirect URI to" %} <code class="text-[var(--color-link)] break-all">{{ simkl_redirect_uri }}</code>.</li>
-                <li>
-                  {% translate "Add its Client ID and Client secret in" %}
-                  <a href="{% url 'metadata_settings' %}"
-                     class="text-[var(--color-link)] underline hover:text-indigo-200">{% translate "Settings > Metadata" %}</a>.
-                </li>
-              </ol>
-            </div>
-          {% endif %}
+          <div class="mb-3 rounded-md border border-indigo-500/30 bg-indigo-500/10 p-3 text-xs text-[var(--color-text-secondary)] space-y-2">
+            <p class="text-[var(--color-link)] font-medium">{% translate "SIMKL needs your own API app" %}</p>
+            <ol class="list-decimal list-inside space-y-1">
+              <li>
+                {% translate "Create a Server app at" %}
+                <a href="https://simkl.com/settings/developer/"
+                   target="_blank"
+                   class="text-[var(--color-link)] underline hover:text-indigo-200">{% translate "SIMKL Developer" %}</a>.
+                {% translate "Choose “Server apps & services” so SIMKL issues a Client secret." %}
+              </li>
+              <li>
+                {% translate "Set its Redirect URI to this exact value:" %}
+                {# djlint:off #}
+                <div class="mt-2 flex items-center gap-2">
+                  <input type="text"
+                         id="simkl-redirect-uri"
+                         value="{{ simkl_redirect_uri }}"
+                         readonly
+                         class="flex-1 text-xs text-[var(--color-link)] font-mono bg-[var(--color-surface-dim)] p-2 rounded border-0 focus:ring-0 focus:outline-none cursor-text">
+                  <button type="button"
+                          class="flex items-center justify-center w-8 h-8 shrink-0 text-[var(--color-text-secondary)] hover:text-[var(--color-text)] bg-[var(--color-surface-hover)] rounded transition-colors cursor-pointer"
+                          data-copy-target="#simkl-redirect-uri"
+                          title="{% translate "Copy redirect URI" %}">
+                    {% include "app/icons/copy.svg" with classes="w-4 h-4" %}
+                  </button>
+                </div>
+                {# djlint:on #}
+                <span class="block mt-1 text-[var(--color-text-muted)]">{% translate "It must match character for character. On localhost or 127.0.0.1 the port is ignored, so you can register it without the port." %}</span>
+              </li>
+              <li>
+                {% translate "Add the app's Client ID and Client secret in" %}
+                <a href="{% url 'metadata_settings' %}"
+                   class="text-[var(--color-link)] underline hover:text-indigo-200">{% translate "Settings > Metadata" %}</a>.
+              </li>
+            </ol>
+            <p class="text-[var(--color-text-muted)]">
+              {% translate "Seeing “redirect_uri must match a registered URI”? The Redirect URI saved on the SIMKL app differs from the value above. Check the scheme, host, port, path and trailing slash." %}
+            </p>
+          </div>
           <form method="post" action="{% url 'simkl_oauth' %}">
             {% csrf_token %}
             <input type="hidden" name="frequency" x-model="importFrequency">
@@ -2641,6 +2602,21 @@
               </button>
             </div>
           </form>
+
+          <div class="mt-4 pt-4 border-t border-[var(--color-surface-border)] space-y-3">
+            <div class="flex items-center justify-between">
+              <p class="text-sm text-[var(--color-text-muted)]">{% translate "Sync watch status back to MyAnimeList" %}</p>
+              {% if mal_account and mal_account.is_connected %}
+                <span class="px-2 py-1 text-xs rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">{% translate "Connected" %}</span>
+              {% else %}
+                <span class="px-2 py-1 text-xs rounded bg-gray-500/20 text-[var(--color-text-secondary)] border border-gray-600/50">{% translate "Disconnected" %}</span>
+              {% endif %}
+            </div>
+            <p class="text-xs text-[var(--color-text-muted)]">
+              {% translate "Connecting, syncing, and scheduling exports back to MyAnimeList now live on their own page." %}
+              <a href="{% url 'mal_export' %}" class="text-[var(--color-link)] hover:underline">{% translate "Manage syncing to trackers" %}</a>
+            </p>
+          </div>
         </div>
           </div>
         </div>
@@ -2906,6 +2882,29 @@
                     </select>
                     {% include "app/icons/chevron-down.svg" with classes="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)] pointer-events-none" %}
                   </div>
+                </div>
+                <div class="mb-3">
+                  <label for="clz_wishlist_status"
+                         class="block text-sm text-[var(--color-text-secondary)] mb-2">{% translate "Wishlist items" %}</label>
+                  <div class="relative">
+                    <select id="clz_wishlist_status"
+                            name="clz_wishlist_status"
+                            class="w-full py-2 px-3 bg-[var(--color-surface)] rounded-md text-[var(--color-text)] text-sm border border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring focus:ring-indigo-200 focus:ring-opacity-50 appearance-none">
+                      <option value="">{% translate "Add to the CLZ Wishlist list only" %}</option>
+                      <option value="Planning">{% translate "Also track as Planning" %}</option>
+                      <option value="In progress">{% translate "Also track as In Progress" %}</option>
+                      <option value="Paused">{% translate "Also track as Paused" %}</option>
+                      <option value="Dropped">{% translate "Also track as Dropped" %}</option>
+                      <option value="Completed">{% translate "Also track as Completed" %}</option>
+                    </select>
+                    {% include "app/icons/chevron-down.svg" with classes="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)] pointer-events-none" %}
+                  </div>
+                  <input name="clz_wishlist_tag"
+                         type="text"
+                         maxlength="50"
+                         placeholder="{% translate "Tag for wishlist items (optional)" %}"
+                         aria-label="{% translate "Tag for wishlist items" %}"
+                         class="mt-2 w-full py-2 px-3 bg-[var(--color-surface)] rounded-md text-[var(--color-text)] text-sm border border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
                 </div>
                 <label class="flex items-center justify-center w-full px-4 py-2 text-sm rounded-md transition-colors"
                        :class="!standardImportsDisabled() ? 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer' : 'bg-gray-600 text-gray-400 cursor-not-allowed'"
@@ -3518,6 +3517,44 @@
           </div>
         </div>
 
+        {# YouTube #}
+        <div x-show="activeModal === 'youtube'"
+             x-cloak
+             @keydown.escape.window="closeModal()"
+             x-transition.opacity.duration.150ms
+             class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             @mousedown.self="closeModal()">
+          <div class="modal-max-height overflow-y-auto w-full"
+               style="width: min(96vw, 32rem);">
+            <button type="button"
+                    @click="closeModal()"
+                    class="block w-fit ml-auto mb-2 text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer p-1 rounded-md hover:bg-[var(--color-surface-hover)] bg-[var(--color-surface)]">
+              {% include "app/icons/x.svg" with classes="w-4 h-4" %}
+            </button>
+        <div class="bg-[var(--color-surface-strong)] p-4 rounded-lg">
+          <div class="flex items-center mb-3">{% source_display "youtube" %}{% include "users/components/import_upload_badge.html" %}</div>
+          <p class="text-sm text-[var(--color-text-muted)] mb-3">{% translate "Export YouTube history from Google Takeout. Upload watch-history.json, watch-history.html, or the zip." %}</p>
+          <form method="post"
+                action="{% url 'import_youtube_takeout' %}"
+                enctype="multipart/form-data">
+            {% csrf_token %}
+            <input type="hidden" name="mode" x-model="importMode">
+            <label class="flex items-center justify-center w-full px-4 py-2 text-sm rounded-md transition-colors"
+                   :class="!standardImportsDisabled() ? 'bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer' : 'bg-gray-600 text-gray-400 cursor-not-allowed'"
+                   :disabled="standardImportsDisabled()">
+              <input name="youtube_takeout"
+                     accept=".json,.html,.zip"
+                     class="hidden"
+                     type="file"
+                     :disabled="standardImportsDisabled()"
+                     @change="!standardImportsDisabled() && $el.form.submit()">
+              {% translate "Select File" %}
+            </label>
+          </form>
+        </div>
+          </div>
+        </div>
+
         {# WeTrakr #}
         <div x-show="activeModal === 'wetrakr'"
              x-cloak
@@ -3620,8 +3657,9 @@
     <div id="import-activity-panel"
          class="space-y-6"
          hx-get="{% url 'import_data_activity' %}"
-         hx-trigger="load, every 5s"
+         hx-trigger="load, every 5s [!document.querySelector('#import-activity-panel [data-keep-open=true]')]"
          hx-sync="this:replace"
+         hx-on::before-swap="if (document.querySelector('#import-activity-panel [data-keep-open=true]')) { event.detail.shouldSwap = false; }"
          hx-swap="innerHTML">
       <div class="bg-[var(--color-surface)] rounded-lg p-6">
         <div class="flex items-center mb-4">

@@ -239,6 +239,18 @@ class Item(CalendarTriggerMixin, models.Model):
         default="",
         help_text="Provider collection/franchise name",
     )
+    provider_franchise_id = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Provider franchise id",
+    )
+    provider_franchise_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Provider franchise name",
+    )
     # When provider metadata was last written to this row. Null means it has
     # not been refreshed since this field existed, which is a different claim
     # from "refreshed long ago" and is reported as such.
@@ -432,6 +444,21 @@ class Item(CalendarTriggerMixin, models.Model):
             models.Index(
                 fields=["media_id", "media_type", "source"],
                 name="app_item_media_lookup_idx",
+            ),
+            # Library, search and released-episode queries filter by
+            # media_type first. Without a media_type-leading index they scan
+            # the whole (~2 KB/row) table; the trailing columns also cover the
+            # per-show released-episode aggregate without reading item rows.
+            models.Index(
+                fields=[
+                    "media_type",
+                    "media_id",
+                    "source",
+                    "season_number",
+                    "episode_number",
+                    "release_datetime",
+                ],
+                name="app_item_type_lookup_idx",
             ),
         ]
         ordering = ["media_id"]

@@ -65,9 +65,18 @@ class BaseWebhookProcessor:
     # (Jellyfin, Emby). See `_find_tv_media_id(episode_ids=...)`.
     TV_IDS_ARE_EPISODE_LEVEL = False
 
+    # Structured result of this run, logged by the worker so a delayed event
+    # can be followed from receipt to persisted row. Subclasses overwrite it
+    # at each decision point; see docs/architecture/webhook-delivery.md.
+    outcome = "skipped"
+
     def process_payload(self, payload, user):
         """Process webhook payload."""
         raise NotImplementedError
+
+    def _set_outcome(self, outcome):
+        """Record this run's structured outcome for the worker's log line."""
+        self.outcome = outcome
 
     def _get_played_at(self, payload):
         """Extract played-at timestamp if provided by the payload."""
@@ -110,7 +119,14 @@ class BaseWebhookProcessor:
         """Return the server's own item key, as stored in Now Playing state."""
         return
 
-    def _should_record(self, event, *, played, position_seconds):
+    def _should_record(
+        self,
+        event,
+        *,
+        played,
+        position_seconds,
+        duration_seconds=None,
+    ):
         """Check this integration's write policy before touching tracking rows.
 
         See integrations/webhooks/write_policy.py.
@@ -120,6 +136,7 @@ class BaseWebhookProcessor:
             event,
             played=played,
             position_seconds=position_seconds,
+            duration_seconds=duration_seconds,
         )
 
     def _extract_external_ids(self, payload):
@@ -141,6 +158,13 @@ class BaseWebhookProcessor:
         Returns (season_number, episode_number) or (None, None) if not found.
         """
         return None, None
+
+    def _payload_numbering_is_tvdb(self):
+        """Return whether payload season/episode numbers follow TVDB, not TMDB.
+
+        Override in subclasses whose clients number episodes the TVDB way.
+        """
+        return False
 
     def _extract_series_title(self, payload):
         """Extract TV series title from payload for title-based TMDB search.
@@ -280,6 +304,8 @@ class BaseWebhookProcessor:
             allow_title_fallback=True,
             season_number=payload_season,
             episode_ids=self.TV_IDS_ARE_EPISODE_LEVEL,
+            user=user,
+            raise_transient=True,
         )
         if not media_id:
             logger.warning("No matching TMDB ID found for TV show")
@@ -336,6 +362,8 @@ class BaseWebhookProcessor:
                 fallback_media_id, alt_season, alt_episode = self._find_tv_media_id(
                     alt_ids,
                     episode_ids=self.TV_IDS_ARE_EPISODE_LEVEL,
+                    user=user,
+                    raise_transient=True,
                 )
 
                 if fallback_media_id:
@@ -399,6 +427,8 @@ class BaseWebhookProcessor:
                 allow_title_fallback=True,
                 season_number=season_number,
                 episode_ids=self.TV_IDS_ARE_EPISODE_LEVEL,
+                user=user,
+                raise_transient=True,
             )
             if fallback_media_id:
                 media_id = fallback_media_id
@@ -445,11 +475,57 @@ class BaseWebhookProcessor:
                 )
 
         tvdb_id = tv_metadata.get("tvdb_id") if tv_metadata else None
+        # Existing tracking wins over the current provider preference. A user
+        # who switches Anime Provider still expects later episodes of a show
+        # they already track to land on that show, not to open a second home
+        # under the new provider. This is the same rule the importers apply
+        # through `AnimeRouteResolver`.
+        existing_anime_home = (
+            self._find_existing_anime_home(user, media_id, tvdb_id)
+            if user.anime_enabled
+            else None
+        )
+
+        # A TVDB-numbered payload can name a season TMDB also has but fills
+        # differently (TVDB Medabots S2E1 is TMDB S1E27), which the
+        # missing-season remap never sees. Lookups keyed by TVDB keep the
+        # payload's numbers; everything filed under the TMDB show uses these.
+        tmdb_season, tmdb_episode = season_number, episode_number
+        if self._payload_numbering_is_tvdb():
+            try:
+                translated = episode_remap.remap_via_anibridge(
+                    anime_mappings.fetch_mapping_data(),
+                    media_id,
+                    season_number,
+                    episode_number,
+                    {"tvdb_id": tvdb_id},
+                    lambda season: self._load_tmdb_season(media_id, season),
+                )
+            except Exception as exc:  # pragma: no cover - defensive network guard
+                logger.warning(
+                    "Failed to fetch anime mappings for TVDB numbering: %s",
+                    exception_summary(exc),
+                )
+                translated = None
+            if translated is not None:
+                tmdb_season, tmdb_episode, _ = translated
+                logger.info(
+                    "Translated TVDB-numbered episode %s S%sE%s to TMDB S%sE%s",
+                    media_id,
+                    season_number,
+                    episode_number,
+                    tmdb_season,
+                    tmdb_episode,
+                )
 
         prefers_grouped_anime = _metadata_resolution.prefers_grouped_anime(user)
 
         grouped_anime_match = None
-        if user.anime_enabled and prefers_grouped_anime:
+        if (
+            user.anime_enabled
+            and prefers_grouped_anime
+            and not (existing_anime_home and existing_anime_home[0] == "flat")
+        ):
             grouped_anime_match = self._classify_grouped_anime(tv_metadata)
             if grouped_anime_match is not None and grouped_anime_match.is_grouped_anime:
                 logger.info(
@@ -458,8 +534,8 @@ class BaseWebhookProcessor:
                 )
                 return self._handle_tv_episode(
                     media_id,
-                    season_number,
-                    episode_number,
+                    tmdb_season,
+                    tmdb_episode,
                     payload,
                     user,
                     library_media_type=MediaTypes.ANIME.value,
@@ -474,6 +550,17 @@ class BaseWebhookProcessor:
                 media_id,
                 preferred_library_media_type=MediaTypes.ANIME.value,
             )
+            # A stray TV-bucket row (e.g. one a Plex show rating created) must
+            # not take episodes from a show the user tracks as flat MAL anime.
+            # A row with its own episode history is real tracking and keeps them.
+            if (
+                existing_tv_item
+                and existing_tv_item.library_media_type != MediaTypes.ANIME.value
+                and not self._tv_row_has_history(user, existing_tv_item)
+                and existing_anime_home
+                and existing_anime_home[0] == "flat"
+            ):
+                existing_tv_item = None
             if existing_tv_item:
                 logger.info(
                     "Routing episode to existing TV tracking item instead of flat "
@@ -483,8 +570,8 @@ class BaseWebhookProcessor:
                 )
                 return self._handle_tv_episode(
                     media_id,
-                    season_number,
-                    episode_number,
+                    tmdb_season,
+                    tmdb_episode,
                     payload,
                     user,
                     library_media_type=existing_tv_item.library_media_type or None,
@@ -496,8 +583,8 @@ class BaseWebhookProcessor:
                     *self._get_mal_id_from_provider_links(
                         Sources.TMDB.value,
                         media_id,
-                        season_number,
-                        episode_number,
+                        tmdb_season,
+                        tmdb_episode,
                     ),
                 ),
                 (
@@ -615,7 +702,7 @@ class BaseWebhookProcessor:
             ):
                 return None
 
-            anime_home = self._find_existing_anime_home(user, media_id, tvdb_id)
+            anime_home = existing_anime_home
             if anime_home is not None:
                 home_kind, home_item = anime_home
                 if home_kind == "grouped":
@@ -625,8 +712,8 @@ class BaseWebhookProcessor:
                     )
                     return self._handle_tv_episode(
                         media_id,
-                        season_number,
-                        episode_number,
+                        tmdb_season,
+                        tmdb_episode,
                         payload,
                         user,
                         library_media_type=MediaTypes.ANIME.value,
@@ -661,8 +748,8 @@ class BaseWebhookProcessor:
                     )
                     return self._handle_tv_episode(
                         media_id,
-                        season_number,
-                        episode_number,
+                        tmdb_season,
+                        tmdb_episode,
                         payload,
                         user,
                         library_media_type=MediaTypes.ANIME.value,
@@ -696,8 +783,8 @@ class BaseWebhookProcessor:
         )
         return self._handle_tv_episode(
             media_id,
-            season_number,
-            episode_number,
+            tmdb_season,
+            tmdb_episode,
             payload,
             user,
             library_media_type=MediaTypes.TV.value if classified_not_anime else None,
@@ -801,6 +888,21 @@ class BaseWebhookProcessor:
         if getattr(self, "_grouped_anime_mapping_loaded", False):
             snapshot = self._grouped_anime_snapshot
         return grouped_anime.classify(tv_metadata, snapshot=snapshot)
+
+    def _tmdb_season_available(self, tmdb_id, season_number):
+        """Return whether TMDB can describe this season right now."""
+        try:
+            metadata = app.providers.tmdb.tv_with_seasons(str(tmdb_id), [season_number])
+        except ProviderAPIError:
+            return False
+        return bool(metadata.get(f"season/{season_number}"))
+
+    def _tv_row_has_history(self, user, tv_item):
+        """Return whether the user's TV row for this show has any episode logged."""
+        return app.models.Episode.objects.filter(
+            related_season__related_tv__user=user,
+            related_season__related_tv__item=tv_item,
+        ).exists()
 
     def _find_existing_anime_home(self, user, tmdb_media_id, tvdb_id=None):
         """Return the user's existing Anime-library home for this show.
@@ -1132,6 +1234,68 @@ class BaseWebhookProcessor:
         logger.warning("No TMDB or IMDB ID found for movie, skipping processing")
         return None
 
+    def _find_local_tv_media_id(self, user, ids):
+        """Return a tracked show's TMDB id from its stored external IDs.
+
+        A webhook can know the show by TVDB/IMDb while TMDB is unreachable or
+        simply did not return it from ``find``. If the user already tracks the
+        show, its provider link is the answer and no provider request is needed.
+        """
+        tvdb_id = ids.get("tvdb_id")
+        imdb_id = ids.get("imdb_id")
+        if not tvdb_id and not imdb_id:
+            return None
+
+        filters = Q()
+        if tvdb_id:
+            filters |= Q(
+                provider=Sources.TVDB.value,
+                provider_media_id=str(tvdb_id),
+            )
+        if imdb_id:
+            filters |= Q(
+                provider=Sources.IMDB.value,
+                provider_media_id=str(imdb_id),
+            )
+
+        linked_item_ids = app.models.ItemProviderLink.objects.filter(
+            filters,
+            provider_media_type=MediaTypes.TV.value,
+            item__media_type=MediaTypes.TV.value,
+            item__tv__user=user,
+        ).values("item_id")
+
+        direct_filter = Q()
+        if imdb_id:
+            direct_filter = Q(provider_external_ids__imdb_id=str(imdb_id))
+
+        tmdb_item = (
+            app.models.Item.objects.filter(
+                Q(id__in=linked_item_ids) | direct_filter,
+                source=Sources.TMDB.value,
+                media_type=MediaTypes.TV.value,
+                tv__user=user,
+            )
+            .order_by("id")
+            .first()
+        )
+        if tmdb_item:
+            return str(tmdb_item.media_id)
+
+        # A manually-tracked TVDB row can still carry the show's TMDB link.
+        tmdb_link = (
+            app.models.ItemProviderLink.objects.filter(
+                provider=Sources.TMDB.value,
+                provider_media_type=MediaTypes.TV.value,
+                item_id__in=linked_item_ids,
+                item__media_type=MediaTypes.TV.value,
+                item__tv__user=user,
+            )
+            .order_by("item_id")
+            .first()
+        )
+        return str(tmdb_link.provider_media_id) if tmdb_link else None
+
     def _find_tv_media_id(
         self,
         ids,
@@ -1140,6 +1304,8 @@ class BaseWebhookProcessor:
         year=None,
         season_number=None,
         episode_ids=False,
+        user=None,
+        raise_transient=False,
     ):
         """Find TV media ID from external IDs, with optional title search fallback.
 
@@ -1155,6 +1321,12 @@ class BaseWebhookProcessor:
                 equal an unrelated series' TVDB id (#876, #1312), so that hit
                 is ignored and lookup moves on to the TVDB episode / title
                 fallbacks.
+            user: User whose existing library can satisfy a TVDB/IMDb lookup
+                without a provider request.
+            raise_transient: Re-raise a provider outage from the title search
+                so a tracking caller retries instead of dropping the event.
+                Live-playback helpers leave this off so a UI lookup cannot
+                block the scrobble itself.
 
         Returns:
             tuple: (media_id, season_number, episode_number)
@@ -1175,6 +1347,18 @@ class BaseWebhookProcessor:
             if resolved:
                 ids["tvdb_id"] = resolved.get("tvdb_id")
                 ids["imdb_id"] = resolved.get("imdb_id")
+
+        # A show already in this user's library is known by its stored TVDB/IMDb
+        # link. Prefer that over a provider request, which may be unavailable or
+        # may not return a result even though the show is tracked (#1703).
+        if user is not None and not episode_ids and not ids.get("tmdb_id"):
+            local_media_id = self._find_local_tv_media_id(user, ids)
+            if local_media_id:
+                logger.info(
+                    "Resolved TV show %s from the user's existing library link",
+                    local_media_id,
+                )
+                return local_media_id, None, None
 
         # Prioritize TVDB/IMDB — TMDB find API resolves episode-level IDs to show IDs
         for ext_id, ext_type in [
@@ -1246,6 +1430,10 @@ class BaseWebhookProcessor:
                 season_number=season_number,
             )
         except Exception as exc:
+            if raise_transient and _is_transient_provider_error(exc):
+                # Let the webhook task retry instead of recording a successful
+                # run that silently dropped the scrobble.
+                raise
             logger.warning(
                 "Title search failed during TV resolution: %s",
                 exception_summary(exc),
@@ -1697,6 +1885,20 @@ class BaseWebhookProcessor:
         """
         return
 
+    def _load_tmdb_season(self, media_id, season_number):
+        """Return TMDB's payload for one season of a show, or None."""
+        try:
+            metadata = app.providers.tmdb.tv_with_seasons(media_id, [season_number])
+        except Exception as exc:  # pragma: no cover - defensive network guard
+            logger.warning(
+                "Season lookup failed during webhook remap of %s season %s: %s",
+                media_id,
+                season_number,
+                exception_summary(exc),
+            )
+            return None
+        return metadata.get(f"season/{season_number}")
+
     def _remap_episode_numbering(
         self,
         media_id,
@@ -1705,6 +1907,7 @@ class BaseWebhookProcessor:
         tv_metadata,
         external_ids,
         anime_mapping_data=None,
+        anibridge_only=False,
     ):
         """Recover TMDB's real (season, episode) for a Plex/TVDB-numbered event.
 
@@ -1716,20 +1919,7 @@ class BaseWebhookProcessor:
         """
 
         def load_season(candidate_season):
-            try:
-                candidate_metadata = app.providers.tmdb.tv_with_seasons(
-                    media_id,
-                    [candidate_season],
-                )
-            except Exception as exc:  # pragma: no cover - defensive network guard
-                logger.warning(
-                    "Season lookup failed during webhook remap of %s season %s: %s",
-                    media_id,
-                    candidate_season,
-                    exception_summary(exc),
-                )
-                return None
-            return candidate_metadata.get(f"season/{candidate_season}")
+            return self._load_tmdb_season(media_id, candidate_season)
 
         if anime_mapping_data:
             remapped = episode_remap.remap_via_anibridge(
@@ -1742,6 +1932,9 @@ class BaseWebhookProcessor:
             )
             if remapped is not None:
                 return remapped
+
+        if anibridge_only:
+            return None
 
         return episode_remap.remap_via_tmdb_find(
             external_ids,
@@ -1916,7 +2109,17 @@ class BaseWebhookProcessor:
         # Try remapping before show recovery: the payload's episode-level GUID
         # is authoritative, while recovery's title search only guesses at a
         # different show that happens to have a season with this number.
-        if not season_metadata and int(season_number) != 0:
+        # A season TMDB has but that lacks the episode is a TVDB/TMDB split
+        # (TVDB Demon Slayer S2E10 is TMDB S3E3), where only AniBridge may speak.
+        season_lacks_episode = (
+            season_metadata_authoritative
+            and bool(season_metadata)
+            and not episode_remap.episode_in_season(
+                int(episode_number),
+                season_metadata,
+            )
+        )
+        if int(season_number) != 0 and (not season_metadata or season_lacks_episode):
             anime_mapping_data = None
             if user.anime_enabled:
                 try:
@@ -1933,6 +2136,7 @@ class BaseWebhookProcessor:
                 tv_metadata,
                 external_ids,
                 anime_mapping_data,
+                anibridge_only=season_lacks_episode,
             )
             if remapped is not None:
                 remapped_season, remapped_episode, season_metadata = remapped
@@ -2197,7 +2401,10 @@ class BaseWebhookProcessor:
                 tv_instance.status,
                 item_tv_metadata["title"],
             )
-        elif tv_instance.status != Status.IN_PROGRESS.value:
+        elif not played and tv_instance.status != Status.IN_PROGRESS.value:
+            # A completed show is only reopened by a play that is actually
+            # recorded; reopening it here would strand it in progress when the
+            # scrobble below turns out to be a duplicate.
             tv_instance.status = Status.IN_PROGRESS.value
             tv_instance._change_reason = self._status_change_reason()
             tv_instance.save()
@@ -2320,7 +2527,11 @@ class BaseWebhookProcessor:
             )
         elif not played and season_instance.status in start_keeps:
             pass
-        elif season_instance.status != Status.IN_PROGRESS.value:
+        elif not played and season_instance.status != Status.IN_PROGRESS.value:
+            # Played events leave the status alone until the duplicate check
+            # below decides whether a play is really being added. The episode
+            # save derives the correct season status from the resulting
+            # history; a duplicate scrobble must not reopen a completed season.
             season_instance.status = Status.IN_PROGRESS.value
             season_instance._change_reason = self._status_change_reason()
             season_instance.save()
@@ -2367,6 +2578,23 @@ class BaseWebhookProcessor:
                 )
 
             if should_create:
+                # A real new play starts a planning show/season and reopens one
+                # the user had dropped or paused. Completed statuses are left
+                # for the episode save to derive, so a replay of an
+                # already-watched episode does not reopen them.
+                resumable_statuses = {
+                    Status.PLANNING.value,
+                    *app.models.USER_HELD_STATUSES,
+                }
+                if tv_instance.status in resumable_statuses:
+                    tv_instance.status = Status.IN_PROGRESS.value
+                    tv_instance._change_reason = self._status_change_reason()
+                    tv_instance.save()
+                if season_instance.status in resumable_statuses:
+                    season_instance.status = Status.IN_PROGRESS.value
+                    season_instance._change_reason = self._status_change_reason()
+                    season_instance.save()
+
                 # A manual check-in leaves an open play for this episode; the
                 # real play completes it rather than adding a second row.
                 open_play = app.models.Episode.objects.filter(
@@ -2449,9 +2677,10 @@ class BaseWebhookProcessor:
         )
 
         anibridge_data = anime_mappings.fetch_mapping_data()
-        for mapping_entry in anime_mappings.find_entries_for_mal_id(
+        mapping_entries = anime_mappings.find_entries_for_mal_id(
             anibridge_data, media_id
-        ):
+        )
+        for mapping_entry in mapping_entries:
             tmdb_id = mapping_entry.get("tmdb_id")
             tvdb_id = mapping_entry.get("tvdb_id")
             season_number = mapping_entry.get("season_number")
@@ -2489,8 +2718,24 @@ class BaseWebhookProcessor:
                     episode_offset=episode_offset,
                 )
 
+        if (
+            user.group_scrobbled_anime
+            and self._is_played(payload)
+            and self._scrobble_to_grouped_anime(
+                anime_item, episode_number, anibridge_data, payload, user
+            )
+        ):
+            return True
+
         anime_instances = app.models.Anime.objects.filter(item=anime_item, user=user)
         current_instance = select_preferred_activity_entry(anime_instances)
+
+        if self._is_manual_mark(payload) and current_instance is not None:
+            # A tap on something already watched is agreement: it adds no
+            # rewatch row, and it never winds the saved progress back.
+            if current_instance.status == Status.COMPLETED.value:
+                return True
+            episode_number = max(episode_number, current_instance.progress or 0)
 
         now = timezone.now().replace(second=0, microsecond=0)
         is_completed = episode_number == anime_metadata["max_progress"]
@@ -2532,6 +2777,77 @@ class BaseWebhookProcessor:
                 "Created new anime instance with status: %s and progress %d",
                 status,
                 episode_number,
+            )
+        return True
+
+    def _scrobble_to_grouped_anime(
+        self, anime_item, mal_episode_number, mapping_data, payload, user
+    ):
+        """Log a MAL-mapped episode as grouped anime, converting a flat entry first.
+
+        Returns False when no single TMDB season covers the MAL episode or the
+        conversion is refused, so the caller keeps the flat entry.
+        """
+        from app.services import anime_migration
+
+        target = anime_mappings.get_series_episode_from_mal(
+            mapping_data, anime_item.media_id, mal_episode_number,
+        )
+        if target is None:
+            return False
+        tmdb_id, season_number, tmdb_episode = target
+
+        if app.models.Anime.objects.filter(
+            user=user,
+            item=anime_item,
+            migrated_to_item__isnull=True,
+        ).exists():
+            # The episode must be loggable before the flat entry goes: after
+            # the conversion there's no flat entry to fall back to.
+            if not self._tmdb_season_available(tmdb_id, season_number):
+                logger.warning(
+                    "Keeping MAL %s flat; TMDB %s season %s is unavailable",
+                    anime_item.media_id,
+                    tmdb_id,
+                    season_number,
+                )
+                return False
+            try:
+                anime_migration.migrate_flat_anime_to_grouped(
+                    user,
+                    anime_item,
+                    Sources.TMDB.value,
+                )
+            # A refused conversion, or TMDB being unreachable for its
+            # preflight, keeps the flat entry so the play is still recorded.
+            except (anime_migration.AnimeMigrationError, ProviderAPIError) as exc:
+                logger.warning(
+                    "Keeping MAL %s flat; per-episode conversion refused: %s",
+                    anime_item.media_id,
+                    exc,
+                )
+                return False
+            logger.info(
+                "Converted MAL %s to per-episode tracking on scrobble",
+                anime_item.media_id,
+            )
+
+        logged = self._handle_tv_episode(
+            str(tmdb_id),
+            season_number,
+            tmdb_episode,
+            payload,
+            user,
+            library_media_type=MediaTypes.ANIME.value,
+        )
+        if logged is None:
+            # Past the conversion a flat fallback would start a second entry.
+            logger.error(
+                "Per-episode scrobble for MAL %s was not logged at TMDB %s S%sE%s",
+                anime_item.media_id,
+                tmdb_id,
+                season_number,
+                tmdb_episode,
             )
         return True
 

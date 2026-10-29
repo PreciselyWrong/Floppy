@@ -573,23 +573,23 @@ class HomeScreenViewTests(TestCase):
             self.user,
             MediaTypes.TV.value,
             {
-                "row_type": HomeScreenRowTypeChoices.UP_NEXT,
+                "row_type": HomeScreenRowTypeChoices.PINNED_UP_NEXT,
                 "enabled": True,
             },
             0,
         )
-        self.assertEqual(row.row_type, HomeScreenRowTypeChoices.UP_NEXT)
+        self.assertEqual(row.row_type, HomeScreenRowTypeChoices.PINNED_UP_NEXT)
         self.assertEqual(row.sort_by, HomeSortChoices.RECENT)
 
         duplicate_payload = json.dumps(
             [
                 {
                     "media_type": MediaTypes.TV.value,
-                    "rows": [{"row_type": HomeScreenRowTypeChoices.UP_NEXT}],
+                    "rows": [{"row_type": HomeScreenRowTypeChoices.PINNED_UP_NEXT}],
                 },
                 {
                     "media_type": MediaTypes.ANIME.value,
-                    "rows": [{"row_type": HomeScreenRowTypeChoices.UP_NEXT}],
+                    "rows": [{"row_type": HomeScreenRowTypeChoices.PINNED_UP_NEXT}],
                 },
             ]
         )
@@ -1521,6 +1521,7 @@ class HomeScreenViewTests(TestCase):
             [entry.item.title for entry in groups[0]["rows"][0]["items"]],
             ["Home Video"],
         )
+        self.assertTrue(groups[0]["rows"][0]["video_landscape"])
 
     def test_empty_library_query_rows_build_quickly_on_cold_cache(self):
         """Regression test for #621: empty rows must not stall the home page.
@@ -2173,6 +2174,24 @@ class HomeScreenViewTests(TestCase):
                 row_type=HomeScreenRowTypeChoices.LIBRARY_QUERY,
             ).exists(),
         )
+
+    def test_video_rows_round_trip_when_saving_home_settings(self):
+        self._set_enabled_media_types(MediaTypes.VIDEO.value, MediaTypes.TV.value)
+        response = self.client.get(reverse("home_screen"))
+        sections = json.loads(response.context["home_screen_sections_json"])
+        video_section = next(section for section in sections if section["media_type"] == "video")
+        self.assertTrue(video_section["rows"])
+        self.assertIn("status", video_section["rows"][0]["filters"])
+        all_section = next(section for section in sections if section["media_type"] == "all")
+        all_section["rows"].append({"row_type": "up_next"})
+        response = self.client.post(reverse("home_screen"), {"home_screen_sections": json.dumps(sections)})
+        self.assertRedirects(response, reverse("home_screen"))
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("updated successfully" in str(message) for message in messages), messages)
+        self.assertTrue(HomeScreenRow.objects.filter(user=self.user, media_type="video", row_type="library_query").exists())
+        fields = home_screen.serialize_settings_filter_fields(self.user, MediaTypes.VIDEO.value)
+        self.assertIn("status", {field["key"] for field in fields})
+        self.assertNotIn("provider", {field["key"] for field in fields})
 
     def test_home_screen_get_upgrades_legacy_seeded_defaults(self):
         self._set_enabled_media_types(

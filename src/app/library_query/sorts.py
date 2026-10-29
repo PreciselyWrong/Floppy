@@ -91,6 +91,9 @@ def _tracker_aggregate(sort_key: str):
     field_name = {
         "start_date": "start_date",
         "end_date": "end_date",
+        # Last watched is derived from the same rows, but falls back to
+        # progressed_at for entries that are still in progress.
+        "last_watched": "end_date",
         "progress": "progress",
     }[sort_key]
 
@@ -281,13 +284,8 @@ def _next_episode_air_date_values(user, candidates, direction):
     from app.models import BasicMedia
 
     medias = [c.media for c in candidates if c.media is not None]
-    BasicMedia.objects.attach_show_season_events(medias)
-    return [
-        None
-        if candidate.media is None
-        else BasicMedia.objects._next_episode_air_date_value(candidate.media)
-        for candidate in candidates
-    ]
+    values = iter(BasicMedia.objects.next_episode_air_date_values(medias))
+    return [None if candidate.media is None else next(values) for candidate in candidates]
 
 
 def _media_list_value(sort_key: str):
@@ -322,6 +320,7 @@ SORTS: tuple[SortDef, ...] = (
     SortDef(("date_added", "added", "created_at"), sql=_latest_created, tracker=True),
     SortDef(("start_date", "started"), sql=_tracker_aggregate("start_date"), tracker=True),
     SortDef(("end_date", "ended"), sql=_tracker_aggregate("end_date"), tracker=True),
+    SortDef(("last_watched",), sql=_tracker_aggregate("last_watched"), tracker=True),
     SortDef(("score",), sql=_latest_score, tracker=True),
     SortDef(("progress", "plays"), sql=_tracker_aggregate("progress"), tracker=True),
     SortDef(("random",), sql=_random_sql),

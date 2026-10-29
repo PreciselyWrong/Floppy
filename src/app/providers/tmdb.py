@@ -795,7 +795,7 @@ def cache_fallback_season_metadata(media_id, season_number, tv_data, season_data
         if episode.get("episode_number") is not None
     ]
     max_progress = season_data.get("max_progress") or (
-        max(episode_numbers) if episode_numbers else None
+        len(set(episode_numbers)) if episode_numbers else None
     )
 
     runtimes = [
@@ -1056,6 +1056,11 @@ def fetch_and_cache_seasons(media_id, season_numbers, tv_data, language=None, *,
             handle_error(error)
 
         if is_first_batch:
+            # tv() records the backdrop it already fetched; do the same here so
+            # a season/episode page doesn't pay a second /tv request for it.
+            backdrops.remember_tmdb_backdrop(
+                MediaTypes.TV.value, media_id, response.get("backdrop_path")
+            )
             # Always refresh the root TV payload from the same TMDB response
             # so season fetches can pick up updated external_ids (including
             # tvdb_id) even when the show cache already existed before this
@@ -1481,7 +1486,10 @@ def process_season(response, providers_response, credits_response=None):
         "source": Sources.TMDB.value,
         "media_type": MediaTypes.SEASON.value,
         "season_title": response["name"],
-        "max_progress": episodes[-1]["episode_number"] if episodes else 0,
+        # Count, not the last number: anime seasons continue the numbering
+        # (51-100), so the last number is not how many episodes the season has.
+        "max_progress": len(episodes),
+        "last_episode_number": episodes[-1]["episode_number"] if episodes else 0,
         "image": get_image_url(response["poster_path"]),
         "season_number": response["season_number"],
         "synopsis": get_synopsis(response["overview"]),
@@ -2649,6 +2657,7 @@ def episode(media_id, season_number, episode_number, language=None):
             "season_title": season_metadata.get("season_title")
             or f"Season {season_number}",
             "episode_title": response.get("name") or f"Episode {episode_number}",
+            "synopsis": get_synopsis(response.get("overview")),
             "score": round(vote_average, 1) if vote_average else None,
             "score_count": vote_count or None,
             "cast": [

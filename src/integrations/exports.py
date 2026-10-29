@@ -3,6 +3,7 @@ import json
 import logging
 from collections import defaultdict
 from io import StringIO
+from pathlib import Path
 
 from django.apps import apps
 from django.conf import settings
@@ -132,7 +133,13 @@ def generate_rows(user, media_types=None, include_lists=True, include_collection
         # episode load for large libraries and causing exports to time out
         # partway through (issue #618).
         manager = model.all_objects if media_type == MediaTypes.EPISODE.value else model.objects
-        queryset = manager.filter(**filter_kwargs).select_related("item")
+        # watch_providers is ~146 KiB a title and never exported (excluded from
+        # the item fields above), so keep it out of the streamed rows.
+        queryset = (
+            manager.filter(**filter_kwargs)
+            .select_related("item", "item__episode_order__show")
+            .defer("item__watch_providers")
+        )
 
         logger.debug("Streaming %ss to CSV", media_type)
 
@@ -186,6 +193,19 @@ def generate_rows(user, media_types=None, include_lists=True, include_collection
                 progress_index = fields["track"].index("progress")
                 row[progress_index + 1 + len(fields["item"])] = helpers.minutes_to_hhmm(
                     media.progress,
+                )
+
+            if media_type in (
+                MediaTypes.BOOK.value,
+                MediaTypes.COMIC.value,
+                MediaTypes.MANGA.value,
+            ):
+                # The importer reads a bare number as hours, so write hh:mm.
+                reading_index = fields["track"].index("reading_time")
+                row[reading_index + 1 + len(fields["item"])] = (
+                    helpers.minutes_to_hhmm(media.reading_time)
+                    if media.reading_time
+                    else ""
                 )
 
             yield writer.writerow(row)
@@ -577,18 +597,25 @@ def _collection_identity_map(user):
     return identity
 
 
+def backup_directory(user):
+    """Keep user-controlled names within the configured backup directory."""
+    username = str(user.username)
+    # Django permits dot-only usernames. Legacy/admin-created usernames may
+    # also contain separators; none may become filesystem paths. A colon is
+    # forbidden in normal usernames, avoiding collisions with this fallback.
+    if username in {"", ".", ".."} or Path(username).name != username:
+        username = f"user:{user.pk}"
+    directory = Path(settings.BACKUP_DIR) / username
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory
+
+
 def write_backup(user, media_types=None, include_lists=True, include_collection=True):
     """Write a CSV backup to the configured backup directory.
 
     Returns the path to the created file.
     """
-    from pathlib import Path
-
-    from django.conf import settings
-    from django.utils import timezone
-
-    backup_dir = Path(settings.BACKUP_DIR) / str(user.username)
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = backup_directory(user)
 
     now = timezone.localtime()
     filename = f"floppy_{now.strftime('%Y-%m-%d_%H%M%S')}.csv"

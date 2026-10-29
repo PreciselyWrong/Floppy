@@ -19,6 +19,7 @@ VERIFIED_OPERATIONS = frozenset(
     | {
         ("/api/v1/info/", "GET"),
         ("/apis/listenbrainz/1/submit-listens/", "POST"),
+        ("/apis/listenbrainz/1/user/{username}/listens/", "GET"),
         ("/apis/listenbrainz/1/validate-token/", "GET"),
     }
 )
@@ -431,7 +432,6 @@ EXPECTED_SCHEMA_ERRORS: frozenset[SchemaFinding] = frozenset(
             "api.fork_views_statistics.StatisticsRefreshView",
             "serializer-unresolved",
         ),
-        ("api.fork_views_video.VideoPlayView", "serializer-unresolved"),
         (
             "api.fork_views_watched_state.SyncConflictResolveView",
             "serializer-unresolved",

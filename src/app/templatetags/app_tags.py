@@ -1,18 +1,20 @@
 import calendar
 import re
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
 from django import template
 from django.conf import settings
-from django.urls import reverse
+from django.urls import reverse as _django_reverse
 from django.utils import formats, timezone
 from django.utils.dateparse import parse_date
 from django.utils.html import format_html
 from django.utils.translation import (
     get_language,
     get_language_info,
+    ngettext,
     npgettext,
     pgettext,
 )
@@ -27,6 +29,22 @@ from app.stats_music import COUNTRY_NAME_MAP
 from users.media_type_chips import media_type_chip_preferences
 from users.models import ALL_SEARCH_TYPE, HISTORY_VIEW_TYPE, TimeFormatChoices
 from users.templatetags.user_tags import user_date_format, user_time_format
+
+
+@lru_cache(maxsize=8192)
+def _reverse_cached(viewname, kwargs_items):
+    return _django_reverse(viewname, kwargs=dict(kwargs_items))
+
+
+def reverse(viewname, kwargs=None, **rest):
+    """Resolve URLs; a card grid repeats the same few thousand names."""
+    if kwargs and not rest:
+        try:
+            return _reverse_cached(viewname, tuple(sorted(kwargs.items())))
+        except TypeError:  # unhashable kwarg value
+            pass
+    return _django_reverse(viewname, kwargs=kwargs, **rest)
+
 
 register = template.Library()
 COUNTRY_CODE_LENGTH = 2
@@ -101,9 +119,7 @@ def detail_promoted_facts(media_type, details):
                 and key == "status"
                 and details.get("format")
             ):
-                label = _("%(format)s series status") % {
-                    "format": _(details["format"])
-                }
+                label = _("%(format)s series status") % {"format": _(details["format"])}
         fields.append({"key": key, "label": label, "value": value})
     return {"fields": fields, "suppressed_keys": suppressed_keys}
 
@@ -348,6 +364,51 @@ def image_url(value):
     return image_cache.rewrite_image_url(value)
 
 
+@register.simple_tag
+def episode_queue_url(item, media):
+    """Return the episode page the Up Next chip opens."""
+    queue = media.next_episode_queue
+    if queue.get("season_number") is None:
+        return ""
+    is_anime = item.media_type == MediaTypes.ANIME.value
+    return reverse(
+        "anime_episode_details" if is_anime else "episode_details",
+        kwargs={
+            "source": queue["source"],
+            "media_id": queue["media_id"],
+            "title": slug(item.title) or slug(str(queue["media_id"])) or "item",
+            "season_number": queue["season_number"],
+            "episode_number": queue["episode_number"],
+        },
+    )
+
+
+@register.simple_tag
+def episode_queue_label(media):
+    """Localize the Up Next chip when rendering, after the Home row cache."""
+    queue = media.next_episode_queue
+    if queue["released"]:
+        return f"{media.episodes_left} {_('Behind')}"
+    days = queue.get("days_until")
+    if days is None:
+        return _("Upcoming")
+    if days == 0:
+        return _("Today")
+    return f"{days} {ngettext('day', 'days', days)}"
+
+
+@register.filter
+def youtube_landscape_thumbnail(value):
+    """Prefer YouTube's high-resolution thumbnail for standard artwork."""
+    if not isinstance(value, str):
+        return value
+    return re.sub(
+        r"^(https://(?:i\.ytimg\.com|img\.youtube\.com)/vi/[A-Za-z0-9_-]{11}/)(?:hqdefault|mqdefault|sddefault)\.jpg$",
+        r"\1maxresdefault.jpg",
+        value,
+    )
+
+
 @register.filter
 def user_tag_names(item_tags, user):
     """Return tag names from a prefetched ItemTag queryset, scoped to one user."""
@@ -453,6 +514,12 @@ def slug(arg1):
         cleaned = cleaned.replace(".", "2e")
 
     return cleaned
+
+
+@register.filter
+def minutes_hhmm(total_minutes):
+    """Format minutes as "1h 05min", or "45min" under an hour."""
+    return helpers.minutes_to_hhmm(total_minutes or 0)
 
 
 @register.filter
@@ -1367,7 +1434,7 @@ def _untracked_season_next_episode_url(item, seasons, actual_media_type):
     season without a Season row. Untracked seasons are only visible through
     their calendar events (same source as _next_episode_air_date_value).
     """
-    from events.models import Event
+    from events.models import Event, released_q
 
     is_dict = isinstance(item, dict)
     media_id = item["media_id"] if is_dict else getattr(item, "media_id", None)
@@ -1390,7 +1457,7 @@ def _untracked_season_next_episode_url(item, seasons, actual_media_type):
         )
         .exclude(item__season_number__in=tracked_season_numbers)
         .exclude(datetime__year__lt=1900)
-        .filter(datetime__lte=timezone.now())
+        .filter(released_q("datetime", timezone.now()))
         .order_by("item__season_number", "content_number")
         .select_related("item")
         .first()
@@ -1428,7 +1495,7 @@ def _next_episode_number_for_season_item(item, media):
     if not media_id or not source or season_number is None:
         return None
 
-    from events.models import Event
+    from events.models import Event, released_q
 
     event_numbers = (
         Event.objects.filter(
@@ -1437,9 +1504,9 @@ def _next_episode_number_for_season_item(item, media):
             item__media_type=MediaTypes.SEASON.value,
             item__season_number=season_number,
             content_number__isnull=False,
-            datetime__lte=timezone.now(),
         )
         .exclude(datetime__year__lt=1900)
+        .filter(released_q("datetime", timezone.now()))
         .values_list("content_number", flat=True)
     )
     episode_numbers = sorted({int(number) for number in event_numbers})
@@ -1601,6 +1668,35 @@ def media_view_url(view_name, media):
         kwargs.pop("season_number", None)
 
     return reverse(view_name, kwargs=kwargs)
+
+
+@register.simple_tag
+def item_slot_id(prefix, item):
+    """Return an id for a card slot that a save or score response swaps in place.
+
+    Built from the item's own identity (source, type, ids), so it is the same
+    on a card for something not tracked yet and in the response after saving.
+    Unlike component_id it ignores route_media_type, which is only set on
+    some cards (e.g. grouped anime in search), and it includes the source,
+    since two providers can share a media id.
+    """
+    is_dict = isinstance(item, dict)
+    if not is_dict and not hasattr(item, "media_type"):
+        return ""
+
+    def get(name):
+        return item.get(name) if is_dict else getattr(item, name, None)
+
+    parts = [
+        prefix,
+        get("source"),
+        get("media_type"),
+        get("media_id"),
+        get("season_number"),
+        get("episode_number"),
+    ]
+    slot_id = "-".join(str(part) for part in parts if part not in (None, ""))
+    return re.sub(r"[^A-Za-z0-9_-]", "-", slot_id)
 
 
 @register.simple_tag

@@ -6,13 +6,15 @@ never block a web worker.
 """
 
 import json
-from unittest.mock import call, patch
+from datetime import timedelta
+from unittest.mock import ANY, call, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
+from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
 from integrations import tasks
@@ -89,7 +91,13 @@ class WebhookViewEnqueueTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
-        mock_delay.assert_called_once_with("jellyfin", payload, self.user.id)
+        mock_delay.assert_called_once_with(
+            "jellyfin",
+            payload,
+            self.user.id,
+            received_at=ANY,
+            event_id=ANY,
+        )
 
     @patch("integrations.tasks.process_webhook.delay")
     def test_plex_enqueues_task(self, mock_delay):
@@ -98,7 +106,13 @@ class WebhookViewEnqueueTests(TestCase):
         payload = {"event": "media.scrobble"}
         response = self.client.post(url, data={"payload": json.dumps(payload)})
         self.assertEqual(response.status_code, 200)
-        mock_delay.assert_called_once_with("plex", payload, self.user.id)
+        mock_delay.assert_called_once_with(
+            "plex",
+            payload,
+            self.user.id,
+            received_at=ANY,
+            event_id=ANY,
+        )
 
     @patch("integrations.tasks.process_webhook.delay")
     def test_plex_enqueues_enabled_shared_recipient(self, mock_delay):
@@ -128,8 +142,21 @@ class WebhookViewEnqueueTests(TestCase):
         self.assertEqual(
             mock_delay.call_args_list,
             [
-                call("plex", payload, self.user.id),
-                call("plex", payload, recipient.id, share_id=share.id),
+                call(
+                    "plex",
+                    payload,
+                    self.user.id,
+                    received_at=ANY,
+                    event_id=ANY,
+                ),
+                call(
+                    "plex",
+                    payload,
+                    recipient.id,
+                    share_id=share.id,
+                    received_at=ANY,
+                    event_id=ANY,
+                ),
             ],
         )
 
@@ -161,7 +188,13 @@ class WebhookViewEnqueueTests(TestCase):
         response = self.client.post(url, data={"payload": json.dumps(payload)})
 
         self.assertEqual(response.status_code, 200)
-        mock_delay.assert_called_once_with("plex", payload, self.user.id)
+        mock_delay.assert_called_once_with(
+            "plex",
+            payload,
+            self.user.id,
+            received_at=ANY,
+            event_id=ANY,
+        )
 
     @patch("integrations.tasks.process_webhook.delay")
     def test_emby_enqueues_task(self, mock_delay):
@@ -170,7 +203,13 @@ class WebhookViewEnqueueTests(TestCase):
         payload = {"Event": "playback.stop"}
         response = self.client.post(url, data={"data": json.dumps(payload)})
         self.assertEqual(response.status_code, 200)
-        mock_delay.assert_called_once_with("emby", payload, self.user.id)
+        mock_delay.assert_called_once_with(
+            "emby",
+            payload,
+            self.user.id,
+            received_at=ANY,
+            event_id=ANY,
+        )
 
     @patch("integrations.tasks.process_webhook.delay")
     def test_seerr_enqueues_task(self, mock_delay):
@@ -232,8 +271,49 @@ class ProcessWebhookTaskTests(TestCase):
         self.assertIsNotNone(self.user.plex_webhook_last_received_at)
 
     @patch("integrations.webhooks.plex.PlexWebhookProcessor.process_payload")
-    def test_plex_payload_log_redacts_identity_fields(self, _mock_process):
-        """The logged payload censors the user, server and device, not the media."""
+    def test_webhook_logs_queue_delay_and_structured_outcome(self, mock_process):
+        """Receipt, worker start and finish share one event id and outcome."""
+        mock_process.return_value = None
+        received_at = (timezone.now() - timedelta(seconds=2)).isoformat()
+
+        with self.assertLogs("integrations.tasks", level="INFO") as logs:
+            tasks.process_webhook(
+                "plex",
+                {"event": "media.scrobble", "Metadata": {"ratingKey": "42"}},
+                self.user.id,
+                received_at=received_at,
+                event_id="abc123",
+            )
+
+        output = "\n".join(logs.output)
+        self.assertIn("webhook_started event_id=abc123 provider=plex", output)
+        self.assertIn("rating_key=42", output)
+        self.assertIn("queue_delay_ms=", output)
+        self.assertIn("queue_delay_bucket=", output)
+        self.assertIn("webhook_finished event_id=abc123", output)
+        self.assertIn("outcome=skipped", output)
+        self.assertIn("elapsed_ms=", output)
+
+    @patch("integrations.webhooks.plex.PlexWebhookProcessor.process_payload")
+    def test_slow_queue_wait_logs_a_warning(self, mock_process):
+        """A queue wait past the threshold is called out, not just recorded."""
+        mock_process.return_value = None
+        received_at = (timezone.now() - timedelta(seconds=30)).isoformat()
+
+        with self.assertLogs("integrations.tasks", level="WARNING") as logs:
+            tasks.process_webhook(
+                "plex",
+                {"event": "media.scrobble"},
+                self.user.id,
+                received_at=received_at,
+                event_id="slow1",
+            )
+
+        self.assertIn("webhook_slow_queue event_id=slow1", "\n".join(logs.output))
+
+    @patch("integrations.webhooks.plex.PlexWebhookProcessor.process_payload")
+    def test_plex_payload_log_omits_identity_and_activity_values(self, _mock_process):
+        """Worker diagnostics retain structure without copying private values."""
         payload = {
             "event": "media.play",
             "Account": {"id": 1234, "thumb": "https://plex.tv/a", "title": "alice"},
@@ -246,10 +326,11 @@ class ProcessWebhookTaskTests(TestCase):
             tasks.process_webhook("plex", payload, self.user.id)
 
         output = "\n".join(logs.output)
-        for value in ("alice", "203.0.113.9", "server-abc", "Movies"):
+        for value in ("alice", "203.0.113.9", "server-abc", "Movies", "Jumanji"):
             with self.subTest(value=value):
                 self.assertNotIn(value, output)
-        self.assertIn("Jumanji", output)
+        self.assertIn("Metadata", output)
+        self.assertIn("provider=plex", output)
 
     @patch("integrations.webhooks.plex.PlexWebhookProcessor.process_payload")
     def test_shared_plex_task_uses_owner_account_and_recipient(self, mock_process):
@@ -302,7 +383,9 @@ class ProcessWebhookTaskTests(TestCase):
             recipient_enabled=False,
         )
 
-        tasks.process_webhook("plex", {"event": "media.scrobble"}, recipient.id, share_id=share.id)
+        tasks.process_webhook(
+            "plex", {"event": "media.scrobble"}, recipient.id, share_id=share.id
+        )
 
         mock_process.assert_not_called()
 

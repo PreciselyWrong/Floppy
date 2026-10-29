@@ -31,6 +31,7 @@ from app.providers import (
     comicvine,
     gcd,
     googlebooks,
+    gpodder,
     hardcover,
     igdb,
     mal,
@@ -70,6 +71,15 @@ RATE_LIMIT_DEFAULT_WAIT_SECONDS = 5
 RATE_LIMIT_MAX_COOLDOWN_SECONDS = 60 * 60
 RATE_LIMIT_MAX_RETRIES_INTERACTIVE = 1
 RATE_LIMIT_MAX_WAIT_SECONDS_INTERACTIVE = 5
+# A user is waiting, so a flaky 5xx gets one quick retry rather than two sleeps.
+TRANSIENT_HTTP_MAX_RETRIES_INTERACTIVE = 1
+# After an interactive call times out, cannot connect, or gets a 5xx, later
+# interactive calls to that provider fail fast for this long instead of each
+# holding a web thread for REQUEST_TIMEOUT_INTERACTIVE (typing in search fires
+# a request per keystroke; a media list fires one per item).
+PROVIDER_DOWN_SECONDS = 30
+# A bare 500 can be one bad record, so only gateway-level failures trip it.
+PROVIDER_DOWN_STATUS_CODES = frozenset({502, 503, 504})
 # A provider that accepts the connection but never answers would hold a web
 # thread for the full REQUEST_TIMEOUT, longer than nginx waits for the page.
 # An interactive caller has a stored-metadata fallback, so it gives up sooner.
@@ -80,6 +90,19 @@ REQUEST_TIMEOUT_INTERACTIVE = 10
 COMICVINE_REQUEST_TIMEOUT = 20
 
 _interactive_request = contextvars.ContextVar("_interactive_request", default=False)
+
+
+def request_timeout(default=None):
+    """Return the provider read timeout for direct (non-api_request) callers.
+
+    Capped inside interactive_request_scope() like api_request() does, so an
+    aiohttp or requests call outside api_request cannot hold a web thread for
+    the 120 s background budget.
+    """
+    default = settings.REQUEST_TIMEOUT if default is None else default
+    if _interactive_request.get():
+        return min(default, REQUEST_TIMEOUT_INTERACTIVE)
+    return default
 
 
 @contextmanager
@@ -466,7 +489,7 @@ session.mount(
 
 @request_timing.timed_provider_call
 def resilient_request(method, url, **kwargs):
-    """GET/POST through the shared rate-limited session.
+    """Send a request through the shared rate-limited session.
 
     Falls back to a per-process limited session if Redis breaks the shared
     bucket mid-run, instead of raising RedisError. Construction-time Redis
@@ -481,7 +504,12 @@ def resilient_request(method, url, **kwargs):
     provider response without api_request()'s retry/cooldown handling
     (e.g. Trakt device-code polling, HowLongToBeat scraping).
     """
-    request_func = session.get if method == "GET" else session.post
+    request_func = {
+        "GET": session.get,
+        "POST": session.post,
+        "PUT": session.put,
+        "PATCH": session.patch,
+    }[method]
     try:
         return request_func(url=url, **kwargs)
     except RedisError as error:
@@ -492,9 +520,12 @@ def resilient_request(method, url, **kwargs):
             url,
             error,
         )
-        fallback_func = (
-            _fallback_session.get if method == "GET" else _fallback_session.post
-        )
+        fallback_func = {
+            "GET": _fallback_session.get,
+            "POST": _fallback_session.post,
+            "PUT": _fallback_session.put,
+            "PATCH": _fallback_session.patch,
+        }[method]
         return fallback_func(url=url, **kwargs)
 
 
@@ -682,6 +713,11 @@ def _rate_limit_cooldown_key(provider, headers=None) -> str:
     return f"provider_cooldown:{provider}:{digest[:16]}"
 
 
+def _provider_down_key(provider) -> str:
+    """Return the short-lived circuit-breaker key for a provider."""
+    return f"provider_down:{provider}"
+
+
 def _rate_limit_headers(response) -> dict[str, str]:
     """Return the provider's rate-limit headers for logging."""
     headers = getattr(response, "headers", None)
@@ -736,10 +772,10 @@ def api_request(
 
     Args:
         provider: Provider identifier for error messages
-        method: HTTP method ("GET" or "POST")
+        method: HTTP method ("GET", "POST", "PUT" or "PATCH")
         url: Request URL
         params: Query params for GET, JSON body for POST
-        data: Raw data for POST
+        data: Raw data for POST/PUT/PATCH (e.g. form-encoded body)
         headers: Request headers
         response_format: "json" (default) or "xml" for XML parsing
 
@@ -752,6 +788,13 @@ def api_request(
             provider,
             requests.exceptions.RequestException("rate-limit cooldown"),
             "rate limit exceeded, still cooling down",
+        )
+
+    if _interactive_request.get() and cache.get(_provider_down_key(provider)):
+        raise ProviderAPIError(
+            provider,
+            requests.exceptions.RequestException("provider recently unavailable"),
+            "temporarily unavailable, skipping the request",
         )
 
     try:
@@ -780,6 +823,8 @@ def api_request(
         elif method == "POST":
             request_kwargs["data"] = data
             request_kwargs["json"] = params
+        elif method in {"PUT", "PATCH"}:
+            request_kwargs["data"] = data
 
         response = resilient_request(method, **request_kwargs)
         response.raise_for_status()
@@ -831,9 +876,14 @@ def api_request(
                     _retry_attempt=_retry_attempt + 1,
                 )
 
+        max_transient = (
+            TRANSIENT_HTTP_MAX_RETRIES_INTERACTIVE
+            if interactive
+            else TRANSIENT_HTTP_MAX_RETRIES
+        )
         if (
             status_code in TRANSIENT_HTTP_STATUS_CODES
-            and _retry_attempt < TRANSIENT_HTTP_MAX_RETRIES
+            and _retry_attempt < max_transient
         ):
             seconds_to_wait = _retry_attempt + 1
             logger.warning(
@@ -845,7 +895,7 @@ def api_request(
                 status_code,
                 seconds_to_wait,
                 _retry_attempt + 1,
-                TRANSIENT_HTTP_MAX_RETRIES,
+                max_transient,
             )
             time.sleep(seconds_to_wait)
             return api_request(
@@ -859,8 +909,15 @@ def api_request(
                 _retry_attempt=_retry_attempt + 1,
             )
 
+        if interactive and status_code in PROVIDER_DOWN_STATUS_CODES:
+            cache.set(_provider_down_key(provider), True, PROVIDER_DOWN_SECONDS)
         raise error from None
     except requests.exceptions.RequestException as error:
+        if _interactive_request.get() and isinstance(
+            error,
+            requests.exceptions.Timeout | requests.exceptions.ConnectionError,
+        ):
+            cache.set(_provider_down_key(provider), True, PROVIDER_DOWN_SECONDS)
         raise ProviderAPIError(provider, error) from None
 
 
@@ -1068,6 +1125,19 @@ def _resolve_podcast_metadata(media_id, source, user=None):
     ).first()
     if show is not None:
         return _podcast_show_metadata(show)
+
+    if source in {Sources.POCKETCASTS.value, Sources.GPODDER.value}:
+        from app.services.podcast_import import (
+            PodcastImportError,
+            resolve_show_for_media_id,
+        )
+
+        try:
+            show = resolve_show_for_media_id(media_id, source=source)
+        except PodcastImportError:
+            show = None
+        if show is not None:
+            return _podcast_show_metadata(show)
 
     raise_not_found_error(source, media_id, "podcast episode")
     return None  # unreachable: raise_not_found_error always raises
@@ -1453,6 +1523,41 @@ def _extract_isbns(metadata):
     return normalized
 
 
+# "Death Note, Vol. 1: Boredom" -> "Death Note", "Spider-Man #5" -> "Spider-Man".
+_VOLUME_SUFFIX_RE = re.compile(
+    r"[\s,:(\-]*(?:\b(?:vol(?:ume)?|book|omnibus|part)\b\.?\s*#?|#)\s*\d+.*$",
+    re.IGNORECASE,
+)
+# These types have no ISBN lookup of their own: a scanned book barcode is
+# turned into the series title and searched like typed text.
+_SERIES_BARCODE_TYPES = frozenset(
+    {
+        MediaTypes.MANGA.value,
+        MediaTypes.COMIC.value,
+        MediaTypes.COMIC_ISSUE.value,
+    },
+)
+
+
+def _isbn_series_title(isbn):
+    """Return the series title a volume's ISBN belongs to, or an empty string."""
+    lookups = [lambda: openlibrary.search(isbn, 1)]
+    if googlebooks.enabled():
+        lookups.append(lambda: googlebooks.search(f"isbn:{isbn}", 1))
+
+    title = ""
+    for lookup in lookups:
+        try:
+            results = lookup().get("results", [])
+        except Exception as error:  # best-effort provider lookup
+            logger.debug("ISBN title lookup failed: %s", exception_summary(error))
+            continue
+        title = str(results[0].get("title") or "") if results else ""
+        if title:
+            break
+    return _VOLUME_SUFFIX_RE.sub("", title).strip(" ,:-")
+
+
 def _resolve_hardcover_isbn_search(query, page, user=None):
     """Resolve ISBN queries against Hardcover using Open Library metadata."""
     from app import helpers
@@ -1652,6 +1757,10 @@ def search(
 
     source = _resolve_search_source(media_type, source)
 
+    if media_type in _SERIES_BARCODE_TYPES:
+        isbn = _normalize_isbn_candidate(query)
+        query = (isbn and _isbn_series_title(isbn)) or query
+
     # Attempt direct ID lookup on page 1 only. The result is merged with the
     # normal text-search results below rather than returned immediately, so a
     # numeric title (e.g. "1883") isn't hidden behind an unrelated provider ID
@@ -1724,6 +1833,8 @@ def search(
         MediaTypes.PODCAST.value: lambda: (
             pocketcasts.search(query, page)
             if source == Sources.POCKETCASTS.value
+            else gpodder.search(query, page)
+            if source == Sources.GPODDER.value
             else None
         ),
         # Videos arrive from clients, so there is no provider to search.

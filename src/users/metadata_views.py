@@ -13,6 +13,7 @@ from app import config, preflight
 from app.models import MediaTypes, Sources
 from app.providers import credentials
 from app.services import metadata_resolution
+from users.media_tags import media_tag_for_type
 from users.models import AnimeLibraryModeChoices
 
 MASK_VISIBLE_CHARS = 4
@@ -47,6 +48,26 @@ def _settable_media_types(slug):
     return types
 
 
+def _existing_library_count(user, media_type, current_provider):
+    """Return how many tracked entries are not on the current default.
+
+    These are deliberately left alone when the provider changes. The count is
+    what makes the settings page describe the real state instead of relying on
+    a dismissible one-time prompt.
+    """
+    if media_type == MediaTypes.TV.value:
+        from app.services import library_migration
+
+        return library_migration.tv_items_to_move(user, current_provider).count()
+
+    if media_type == MediaTypes.ANIME.value:
+        from app.tasks_anime_library_repair import anime_rows_needing_conversion
+
+        return len(anime_rows_needing_conversion(user))
+
+    return 0
+
+
 def _provider_summary(user):
     """Return one entry per enabled media type, showing its resolved provider.
 
@@ -54,6 +75,10 @@ def _provider_summary(user):
     one is currently configured, so the modal can point at what's missing
     instead of just hiding it. A media type is only editable (has a working
     dropdown + Save) when it has a stored per-user default field.
+
+    ``existing_count`` is the number of tracked entries still on the other
+    provider or in the other Anime shape. The page offers moving them as a
+    separate, optional action; changing the default never does it implicitly.
     """
     summary = []
     for media_type in user.get_sidebar_media_types():
@@ -64,6 +89,8 @@ def _provider_summary(user):
         summary.append(
             {
                 "media_type": media_type,
+                "media_tag": media_tag_for_type(media_type),
+                "media_tag_keys": [t for t in [media_tag_for_type(media_type)] if t],
                 "current_provider": current,
                 "current_label": metadata_resolution.metadata_provider_label(current),
                 "choices": [
@@ -72,11 +99,17 @@ def _provider_summary(user):
                         "label": source.label,
                         "configured": metadata_resolution.provider_is_enabled(
                             source.value,
+                            user,
                         ),
                     }
                     for source in all_sources
                 ],
                 "configurable": media_type in PROVIDER_DEFAULT_MEDIA_TYPES,
+                "existing_count": (
+                    _existing_library_count(user, media_type, current)
+                    if media_type in PROVIDER_DEFAULT_MEDIA_TYPES
+                    else 0
+                ),
             },
         )
     return summary
@@ -140,6 +173,7 @@ def _provider_view(spec, user):
         "locked": all(field["locked"] for field in fields),
         "has_instance_value": any(field["has_instance_value"] for field in fields),
         "settable_media_types": _settable_media_types(spec.slug),
+        "media_tags": list(spec.media_tags),
     }
 
 
@@ -180,19 +214,31 @@ def metadata_settings(request):
                     "label": gettext(credentials.GROUP_LABELS[group]),
                     "description": gettext(credentials.GROUP_DESCRIPTIONS[group]),
                     "providers": providers,
+                    "media_tags": sorted(
+                        {tag for provider in providers for tag in provider["media_tags"]},
+                    ),
                 },
             )
 
+    duplicate_anime_count = 0
+    if user.anime_enabled:
+        from app.tasks_anime_library_repair import duplicate_pair_count
+
+        duplicate_anime_count = duplicate_pair_count(user_id=user.id)
+
+    provider_summary = _provider_summary(user)
+    present_tags = {entry["media_tag"] for entry in provider_summary}
+    for group in groups:
+        for provider in group["providers"]:
+            present_tags.update(provider["media_tags"])
+
     context = {
         "credential_groups": groups,
+        "media_tag_keys": " ".join(sorted(present_tags - {""})),
         "can_edit_instance": can_edit_instance,
-        "provider_summary": _provider_summary(user),
+        "provider_summary": provider_summary,
         "anime_library_mode_choices": AnimeLibraryModeChoices.choices,
-        "tv_provider_prompt": request.session.pop("tv_provider_prompt", None),
-        "anime_shape_prompt_count": request.session.pop(
-            "anime_shape_prompt_count",
-            None,
-        ),
+        "duplicate_anime_count": duplicate_anime_count,
     }
     if not can_edit_instance:
         # Floppy's setup never flags anyone, so the owner of a fresh install is
@@ -225,33 +271,10 @@ def set_media_type_provider(request, media_type):
 
     field = _provider_default_field(media_type)
     if getattr(request.user, field) != source:
+        # The default only decides where new titles come from. Existing homes
+        # are left alone; moving them is an explicit action on this page.
         setattr(request.user, field, source)
         request.user.save(update_fields=[field])
-
-        if media_type == MediaTypes.TV.value:
-            # Shows already tracked on the other provider are left alone until
-            # the user asks to move them, so the nightly job must not move
-            # them either.
-            from app.services import library_migration
-
-            movable = library_migration.tv_items_to_move(request.user, source).count()
-            if movable:
-                request.user.tv_auto_move_to_default_provider = False
-                request.user.save(update_fields=["tv_auto_move_to_default_provider"])
-                request.session["tv_provider_prompt"] = {
-                    "count": movable,
-                    "label": metadata_resolution.metadata_provider_label(source),
-                }
-
-        if media_type == MediaTypes.ANIME.value:
-            # Switching provider only decides the shape of newly added shows.
-            # Existing ones are left alone unless the user asks, because the
-            # MAL-to-series mapping is N:1 and cannot be re-derived in bulk.
-            from app.tasks_anime_library_repair import anime_rows_needing_conversion
-
-            convertible = anime_rows_needing_conversion(request.user)
-            if convertible:
-                request.session["anime_shape_prompt_count"] = len(convertible)
 
     if media_type == MediaTypes.ANIME.value:
         anime_library_mode = request.POST.get("anime_library_mode")
@@ -269,6 +292,14 @@ def set_media_type_provider(request, media_type):
 def _spec_or_none(slug):
     """Return the registry entry for a slug, or None."""
     return credentials.get_spec(slug)
+
+
+def _reopen_game_groups_if_igdb(slug, user=None):
+    """Retry franchise backfill that failed while IGDB had no key."""
+    if slug == "igdb":
+        from app.tasks_game_groups import reopen_unconfigured_game_groups
+
+        reopen_unconfigured_game_groups(user)
 
 
 @require_POST
@@ -296,6 +327,7 @@ def save_provider_credential(request, slug):
             return redirect("metadata_settings")
 
     credentials.set_instance(slug, values, actor=request.user)
+    _reopen_game_groups_if_igdb(slug)
     messages.success(request, f"{spec.label} credentials saved.")
     return redirect("metadata_settings")
 
@@ -333,6 +365,7 @@ def save_personal_credential(request, slug):
             return redirect("metadata_settings")
 
     credentials.set_user(slug, request.user, values)
+    _reopen_game_groups_if_igdb(slug, request.user)
     if any(values.values()):
         messages.success(request, f"Your {spec.label} key was saved.")
     else:

@@ -12,6 +12,7 @@ from django.conf import settings
 from requests import RequestException
 
 from app.log_safety import exception_summary
+from integrations.safe_fetch import send_to_self_hosted
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +342,8 @@ def fetch_history(
         params["librarySectionID"] = section_id
 
     try:
-        response = requests.get(
+        response = send_to_self_hosted(
+            requests.get,
             f"{uri}/status/sessions/history/all",
             headers=_headers(token),
             params=params,
@@ -413,7 +415,8 @@ def fetch_section_all_items(
     last_exc = None
     for attempt in range(max_retries):
         try:
-            response = requests.get(
+            response = send_to_self_hosted(
+                requests.get,
                 f"{uri}{section_key}/all",
                 headers=_headers(token),
                 params=params,
@@ -476,7 +479,8 @@ def fetch_metadata(
         timeout: Request timeout in seconds (default: 20)
     """
     try:
-        response = requests.get(
+        response = send_to_self_hosted(
+            requests.get,
             f"{uri}/library/metadata/{rating_key}",
             headers=_headers(token),
             params={"X-Plex-Token": token},
@@ -562,7 +566,8 @@ def fetch_children(
         timeout: Request timeout in seconds
     """
     try:
-        response = requests.get(
+        response = send_to_self_hosted(
+            requests.get,
             f"{uri}/library/metadata/{rating_key}/children",
             headers=_headers(token),
             params={"X-Plex-Token": token},
@@ -600,7 +605,8 @@ def _fetch_sections_from_connection(
         raise PlexClientError(msg)
 
     try:
-        response = requests.get(
+        response = send_to_self_hosted(
+            requests.get,
             f"{uri}/library/sections",
             headers=_headers(token),
             params={"X-Plex-Token": token},

@@ -38,6 +38,7 @@ from app.services import grouped_anime
 from integrations import (
     anime_mapping,
     connection_health,
+    episode_remap,
     import_progress,
     stremio_events,
 )
@@ -150,8 +151,16 @@ def get_user(auth_key):
     return _api_call("getUser", auth_key=auth_key)
 
 
-def get_library_items(auth_key):
-    """Return every library item with watch state."""
+def get_library_items(auth_key, ids=None):
+    """Return library items with watch state: only `ids` when given, else all."""
+    if ids is not None:
+        return _api_call(
+            "datastoreGet",
+            auth_key=auth_key,
+            collection="libraryItem",
+            ids=list(ids),
+            all=False,
+        )
     return _api_call(
         "datastoreGet",
         auth_key=auth_key,
@@ -713,7 +722,7 @@ class StremioImporter:
                 if (
                     tv_instance is not None
                     and grouped_anime_match is not None
-                    and not grouped_anime.promote_grouped_anime(
+                    and not self._promote_grouped(
                         tv_instance.item,
                         grouped_anime_match,
                     )
@@ -750,10 +759,7 @@ class StremioImporter:
             if (
                 library_media_type == MediaTypes.ANIME.value
                 and grouped_anime_match is not None
-                and not grouped_anime.promote_grouped_anime(
-                    tv_item,
-                    grouped_anime_match,
-                )
+                and not self._promote_grouped(tv_item, grouped_anime_match)
             ):
                 self.warnings.append(
                     f"{name}: exact anime match had a target-bucket collision; "
@@ -767,6 +773,11 @@ class StremioImporter:
                 status=tv_status,
             )
             tv_instance._history_date = self._get_history_date(entry)
+            # A show imported as Completed fans out episodes through
+            # `TV._completed`, which reads `_pending_end_date` off the TV. Without
+            # it those episodes take the user's preference (default "now"), so
+            # history imported from years back reads as watched today.
+            tv_instance._pending_end_date = tv_instance._history_date
             self.bulk_media[MediaTypes.TV.value].append(tv_instance)
 
         if (
@@ -824,7 +835,7 @@ class StremioImporter:
         metadata_ids = metadata.get("provider_external_ids") or {}
         tvdb_id = metadata.get("tvdb_id") or metadata_ids.get("tvdb_id")
 
-        canonical_episodes = []
+        mapped_pairs = []
         for season_number, episode_number in watched_episodes:
             mapped = anime_mappings.get_tmdb_episode_mapping(
                 mapping_data,
@@ -833,14 +844,19 @@ class StremioImporter:
                 episode_number,
                 tvdb_id=tvdb_id,
             )
-            canonical_episodes.append(mapped or (season_number, episode_number))
+            mapped_pairs.append(((season_number, episode_number), mapped))
 
-        canonical_episodes = sorted(set(canonical_episodes))
-        if canonical_episodes == watched_episodes:
+        if all(mapped in (None, original) for original, mapped in mapped_pairs):
             return watched_episodes, metadata
 
+        # Load the mapped seasons plus the source seasons, so a mapping TMDB
+        # does not confirm can fall back to the episode as Stremio reported it.
         target_seasons = sorted(
-            {season_number for season_number, _ in canonical_episodes},
+            {
+                season_number
+                for original, mapped in mapped_pairs
+                for season_number, _ in (original, mapped or original)
+            },
         )
         try:
             canonical_metadata = app.providers.tmdb.tv_with_seasons(
@@ -853,6 +869,23 @@ class StremioImporter:
                 tmdb_id,
                 exception_summary(error),
             )
+            return watched_episodes, metadata
+
+        canonical_episodes = []
+        for original, mapped in mapped_pairs:
+            season_metadata = (
+                canonical_metadata.get(f"season/{mapped[0]}") if mapped else None
+            )
+            if mapped and season_metadata and episode_remap.episode_in_season(
+                mapped[1],
+                season_metadata,
+            ):
+                canonical_episodes.append(mapped)
+            else:
+                canonical_episodes.append(original)
+
+        canonical_episodes = sorted(set(canonical_episodes))
+        if canonical_episodes == watched_episodes:
             return watched_episodes, metadata
 
         logger.info(
@@ -965,6 +998,7 @@ class StremioImporter:
                 )
 
             max_progress = int(season_metadata.get("max_progress") or 0)
+            season_episode_numbers = helpers.season_episode_numbers(season_metadata)
             watched_episode_numbers = {
                 int(number)
                 for number in episode_numbers
@@ -972,7 +1006,7 @@ class StremioImporter:
             }
             season_complete = (
                 max_progress > 0
-                and set(range(1, max_progress + 1)).issubset(
+                and season_episode_numbers.issubset(
                     watched_episode_numbers,
                 )
             )
@@ -1007,6 +1041,7 @@ class StremioImporter:
                         ["status"],
                         default_change_reason=STREMIO_IMPORT_REASON,
                     )
+                    helpers.note_bulk_rows([existing_season])
                 season_instance = existing_season
             elif season_item.id in self.bulk_season_by_item_id:
                 # Grouped-anime promotion can unify two Stremio entries onto
@@ -1037,6 +1072,11 @@ class StremioImporter:
                     ),
                 )
                 season_instance._history_date = history_date
+                # A season imported as Completed may still fan out episodes
+                # the bitfield did not credit. They belong to this entry's
+                # viewing, so they must carry its date rather than the import
+                # time (`_backfill_completed_season_episodes` reads this).
+                season_instance._pending_end_date = history_date
                 self.bulk_media[MediaTypes.SEASON.value].append(season_instance)
                 self.bulk_season_by_item_id[season_item.id] = season_instance
 
@@ -1304,6 +1344,14 @@ class StremioImporter:
         if date_str:
             return parse_datetime(date_str)
         return None
+
+    def _promote_grouped(self, tv_item, match):
+        """Promote a show to the anime bucket, noting a move no day list covers."""
+        already_grouped = tv_item.library_media_type == grouped_anime.GROUPED_BUCKET
+        promoted = grouped_anime.promote_grouped_anime(tv_item, match)
+        if promoted and not already_grouped:
+            helpers.note_full_refresh()
+        return promoted
 
     def _get_history_date(self, entry):
         """Get the history date for an entry."""

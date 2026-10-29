@@ -113,6 +113,8 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         )
         self.page.get_by_role("button", name="Sign in").click()
         expect(self.page.locator("#global-search")).to_be_visible()
+        # htmx is a deferred script, so the page can be visible before it runs.
+        self.page.wait_for_function("() => window.htmx")
 
     def search_and_submit(self, query):
         """Run a global search via the submit button.
@@ -374,7 +376,46 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
                     card.get_by_title(action, exact=True).click()
                     self._assert_visible_overlay_fills_viewport()
                     self.page.keyboard.press("Escape")
-                    expect(self.page.locator("div.fixed.inset-0:visible")).to_have_count(0)
+                    expect(
+                        self.page.locator("div.fixed.inset-0:visible")
+                    ).to_have_count(0)
+
+    def test_episode_track_modal_fills_viewport_in_card_and_list_layouts(self):
+        """Episode surface blur must not confine the tracker to its row."""
+        self.page.set_viewport_size({"width": 1600, "height": 1000})
+        for theme in ("glass", "custom"):
+            with self.subTest(theme=theme):
+                self.user.theme = theme
+                self.user.save(update_fields=["theme"])
+                self.page.goto(
+                    self.live_server_url
+                    + reverse(
+                        "season_details",
+                        kwargs={
+                            "source": Sources.TMDB.value,
+                            "media_id": "1396",
+                            "title": "breaking-bad",
+                            "season_number": 1,
+                        },
+                    ),
+                )
+                for layout in ("Card view", "List view"):
+                    self.page.get_by_role("button", name=layout, exact=True).click()
+                    suffix = "-list" if layout == "List view" else ""
+                    track_button = self.page.locator(
+                        f'button[hx-target="#track-episode-1396-1-1{suffix}"]',
+                    )
+                    expect(track_button).to_be_visible()
+                    track_button.click()
+                    modal = self.page.locator("[data-track-modal-root]:visible")
+                    expect(modal).to_be_visible()
+                    self._assert_visible_overlay_fills_viewport()
+                    modal.get_by_role("button", name="Close", exact=True).click()
+                    expect(modal).to_have_count(0)
+                    track_button.click()
+                    expect(modal).to_be_visible()
+                    self.page.keyboard.press("Escape")
+                    expect(modal).to_have_count(0)
 
     def set_date_input(self, locator, value):
         """Set a hidden date-picker input and dispatch its change events."""
@@ -752,6 +793,8 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
 
         expect(self.page.get_by_role("main")).to_contain_text("Test Movie")
 
+        # A completed movie leads with Check-in; Add new entry is in the menu.
+        self.page.get_by_role("button", name="More tracking actions").click()
         expect(self.page.get_by_role("button", name="Add new entry")).to_be_visible()
         self.page.get_by_role("button", name="Add new entry").click()
 
@@ -761,6 +804,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         create_modal.locator("button[type='button']").first.click()
         expect(self.page.locator("[data-track-modal-root]:visible")).to_have_count(0)
 
+        self.page.get_by_role("button", name="More tracking actions").click()
         self.page.get_by_role("button", name="Add new entry").click()
         # A reopened native portal shows its old content until HTMX replaces it.
         expect(self.page.locator(f"#{previous_form_id}")).to_have_count(0)
@@ -1053,6 +1097,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         expect(self.page.get_by_role("main")).to_contain_text("Test Movie")
         self._stretch_content_container()
 
+        self.page.get_by_role("button", name="More tracking actions").click()
         self.page.get_by_role("button", name="Add new entry").click()
         expect(self.page.locator("[data-track-modal-root]:visible")).to_be_visible()
 
@@ -1175,7 +1220,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             )
         expect(self.page.get_by_role("main")).to_contain_text("Test Movie")
 
-        self.page.get_by_role("button", name="View session history").first.click()
+        self.page.get_by_role("button", name="View play history").first.click()
         session_modal = self.page.locator(
             '[role="dialog"][aria-label="Activity history"]:visible',
         )
@@ -1220,6 +1265,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
             name="Close activity history",
         ).click()
 
+        self.page.get_by_role("button", name="More tracking actions").click()
         self.page.get_by_role("button", name="Add new entry").click()
         track_modal = self.page.locator("[data-track-modal-root]:visible").first
         track_modal.get_by_role("button", name="Open End date picker").click()
@@ -1294,7 +1340,7 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         )
 
         expect(self.page.get_by_role("main")).to_contain_text("Wordle")
-        # A game offers Add new entry, Check-in and Edit, so Edit is in the menu.
+        # A game offers Check-in, Add new entry and Edit, so Edit is in the menu.
         self.page.get_by_role("button", name="More tracking actions").click()
         self.page.get_by_role("button", name="Edit", exact=True).click()
 
@@ -1575,7 +1621,9 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
                 progress=1 if status == Status.COMPLETED.value else 0,
             )
 
-        self.page.set_viewport_size({"width": 1024, "height": 774})
+        # Wider layouts give the legend the card's full width; a phone keeps it
+        # beside the chart, where five statuses still need to scroll.
+        self.page.set_viewport_size({"width": 390, "height": 844})
         self.page.goto(
             self.live_server_url
             + reverse("statistics")
@@ -1596,7 +1644,6 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         )
         self.assertEqual(layout["overflowX"], "auto")
         self.assertEqual(layout["overflowY"], "hidden")
-        self.assertGreater(layout["scrollWidth"], layout["clientWidth"])
 
         page_layout = self.page.evaluate(
             """() => ({
@@ -1626,9 +1673,13 @@ class IntegrationTest(SerialStaticLiveServerTestCase):
         )
         self.assertEqual(filtered_layout["overflowX"], "auto")
         self.assertEqual(filtered_layout["overflowY"], "hidden")
-        self.assertGreater(
-            filtered_layout["scrollWidth"], filtered_layout["clientWidth"]
+        # A wider card may fit every row. Constrain the legend to exercise
+        # horizontal scrolling without depending on sidebar/card breakpoints.
+        legend.evaluate("element => element.style.maxWidth = '180px'")
+        self.assertTrue(
+            legend.evaluate("element => element.scrollWidth > element.clientWidth")
         )
+        legend.evaluate("element => element.style.removeProperty('max-width')")
 
         self.page.set_viewport_size({"width": 390, "height": 774})
         mobile_layout = self.page.evaluate(

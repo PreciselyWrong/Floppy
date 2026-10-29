@@ -1,3 +1,4 @@
+import json
 import logging
 from contextlib import suppress
 from datetime import UTC, date
@@ -15,7 +16,7 @@ from django.utils.translation import gettext_noop
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
-from app import custom_metadata, helpers, history_processor
+from app import cover_views, custom_metadata, helpers, history_processor
 from app import statistics as stats
 from app.collection_views import build_collection_modal_context
 from app.discover_views import _build_track_modal_discover_tab_context
@@ -149,7 +150,14 @@ def _track_modal_field_groups(form, *, hidden_field_names, metadata_field_names=
     metadata_field_names = metadata_field_names or set()
     ordered_general_field_names = [
         field_name
-        for field_name in ("score", "status", "progress", "start_date", "end_date")
+        for field_name in (
+            "score",
+            "status",
+            "progress",
+            "reading_time",
+            "start_date",
+            "end_date",
+        )
         if field_name in form.fields
     ]
     remaining_general_field_names = [
@@ -292,6 +300,25 @@ def _track_modal_other_release_dates(media_type, item, user):
         }
         for event in events
     ]
+
+
+def _tags_tab_context(item, user):
+    """Return the shared tag editor context for an item-backed track modal."""
+    if item is None:
+        return {"tags_tab_available": False}
+
+    from app.tag_views import _user_tags_for_item
+
+    return {
+        "tags_tab_available": True,
+        "tags_item": item,
+        "user_tags": _user_tags_for_item(user, item),
+        "preview_genres_json": json.dumps(list(item.genres or [])),
+        "preview_implied_genres_json": json.dumps(
+            list(getattr(item, "implied_genres", None) or []),
+        ),
+        "tag_surface": "track",
+    }
 
 
 def _rewatch_action(media, media_type):
@@ -449,14 +476,46 @@ def _render_standard_track_modal(
                 percentage = round((media.progress / max_progress) * 100, 1)
                 initial_data["progress"] = percentage
     else:
-        with services.interactive_request_scope():
-            metadata = services.get_media_metadata(
-                media_type,
+        language = metadata_resolution.metadata_language_default(request.user)
+        try:
+            with services.interactive_request_scope():
+                metadata = services.get_media_metadata(
+                    media_type,
+                    media_id,
+                    source,
+                    [season_number],
+                    episode_number=episode_number,
+                    language=language,
+                )
+        except services.ProviderAPIError:
+            if media_type != MediaTypes.EPISODE.value:
+                raise
+            # The provider can list an episode in its season yet 404 the
+            # episode itself; the season payload still names it.
+            logger.warning(
+                "Falling back to season metadata for media_id=%s S%sE%s",
                 media_id,
-                source,
-                [season_number],
-                episode_number=episode_number,
-                language=metadata_resolution.metadata_language_default(request.user),
+                season_number,
+                episode_number,
+            )
+            with services.interactive_request_scope():
+                metadata = dict(
+                    services.get_media_metadata(
+                        MediaTypes.SEASON.value,
+                        media_id,
+                        source,
+                        [season_number],
+                        language=language,
+                    ),
+                )
+            metadata["episode_title"] = next(
+                (
+                    episode.get("name") or episode.get("title")
+                    for episode in metadata.get("episodes") or []
+                    if isinstance(episode, dict)
+                    and str(episode.get("episode_number")) == str(episode_number)
+                ),
+                None,
             )
         base_metadata = metadata
         title = metadata["title"]
@@ -762,8 +821,15 @@ def _render_standard_track_modal(
             prefix="metadata",
         )
 
+    can_change_cover = bool(
+        metadata_item is not None
+        and request.user.is_authenticated
+        and cover_views.user_has_item(request.user, metadata_item)
+    )
+
     metadata_tab_available = bool(
-        metadata_fields
+        can_change_cover
+        or metadata_fields
         or can_update_metadata_provider
         or can_update_metadata_language
         or can_migrate_grouped_anime
@@ -919,6 +985,7 @@ def _render_standard_track_modal(
         ),
         "metadata_fields": metadata_fields,
         "image_field": image_field,
+        "can_change_cover": can_change_cover,
         "image_save_item_id": (
             metadata_item.id
             if media and metadata_item and not can_edit_custom_metadata
@@ -950,6 +1017,7 @@ def _render_standard_track_modal(
         "collection_tab_available": False,
         "collection_context": None,
     }
+    context.update(_tags_tab_context(metadata_item, request.user))
     context["status_history_tab_available"] = bool(
         media is not None
         and media_type in (MediaTypes.TV.value, MediaTypes.SEASON.value),
@@ -1154,7 +1222,7 @@ def track_modal(
         from app.music_album_views import album_track_modal
         from app.services.music import album_for_media_id
 
-        album = album_for_media_id(media_id)
+        album = album_for_media_id(media_id, user=request.user)
         if album:
             return album_track_modal(request, album.id)
 
@@ -1167,12 +1235,15 @@ def track_modal(
             Sources.POCKETCASTS.value,
             Sources.GPODDER.value,
             Sources.AUDIOBOOKSHELF.value,
+            Sources.MANUAL.value,
         }
     ):
-        from app.models import PodcastEpisode, PodcastShow
+        from app.models import PodcastEpisode
+        from app.services.podcast_import import resolve_show_for_media_id
 
-        # Check if this is a show (podcast_uuid) or an episode (episode_uuid)
-        show = PodcastShow.objects.filter(podcast_uuid=media_id).first()
+        # Check if this is a show (podcast_uuid or an iTunes search id) or an
+        # episode (episode_uuid).
+        show = resolve_show_for_media_id(media_id, source=source)
         if show:
             return _render_podcast_show_track_modal(request, show)
 

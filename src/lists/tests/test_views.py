@@ -14,6 +14,7 @@ from django.utils import timezone
 from app.models import (
     TV,
     Album,
+    AlbumTracker,
     Anime,
     Artist,
     Episode,
@@ -21,11 +22,13 @@ from app.models import (
     Item,
     MediaTypes,
     Movie,
+    PodcastShow,
     Season,
     Sources,
     Status,
     Video,
 )
+from app.templatetags.app_tags import item_slot_id
 from lists import smart_rules
 from lists.feeds import FloppyRssFeed
 from lists.models import CustomList, CustomListItem, ListActivity, ListRecommendation
@@ -2814,7 +2817,7 @@ class ListDetailViewTests(TestCase):
 
         response = self.client.get(reverse("list_detail", args=[episode_list.id]))
 
-        self.assertContains(response, f'id="media-card-rating-{episode.id}"')
+        self.assertContains(response, f'id="{item_slot_id("media-card-rating", episode_item)}"')
         self.assertContains(response, ">7.5</span>")
 
     @patch("lists.views.services.get_media_metadata")
@@ -3387,6 +3390,39 @@ class ListsModalViewTests(TestCase):
         self.assertIn("custom_lists", response.context)
         self.assertIn("list_tags", response.context)
 
+    @patch("app.services.podcast_import.import_show_from_itunes_id")
+    def test_lists_modal_resolves_podcast_itunes_search_result(self, mock_import):
+        """A podcast search result's iTunes id adds the show under its uuid."""
+        show = PodcastShow.objects.create(
+            podcast_uuid="itunes:1532744254",
+            title="Sternstunde Philosophie",
+            image="http://example.com/podcast.jpg",
+            rss_feed_url="",
+        )
+        mock_import.return_value = show
+
+        response = self.client.get(
+            reverse(
+                "lists_modal",
+                args=[
+                    Sources.POCKETCASTS.value,
+                    MediaTypes.PODCAST.value,
+                    "1532744254",
+                ],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "lists/components/fill_lists.html")
+        item = Item.objects.get(
+            media_id=show.podcast_uuid,
+            source=Sources.POCKETCASTS.value,
+            media_type=MediaTypes.PODCAST.value,
+        )
+        self.assertEqual(response.context["item"], item)
+        self.assertEqual(item.title, "Sternstunde Philosophie")
+        mock_import.assert_called_once_with("1532744254")
+
     @patch("app.providers.services.get_media_metadata")
     @patch("lists.models.CustomList.objects.get_user_lists_with_item")
     def test_lists_modal_view_with_existing_item(
@@ -3708,6 +3744,117 @@ class ListsModalViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, reverse("album_save"))
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_album_id_routes_resolve_to_users_canonical_duplicate(
+        self,
+        mock_get_metadata,
+    ):
+        """Duplicate rows for one release open the one the user already tracks."""
+        release_id = "123e4567-e89b-12d3-a456-426614174003"
+        untracked = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe"),
+            musicbrainz_release_id=release_id,
+        )
+        tracked = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe & Fred Falke"),
+            musicbrainz_release_id=release_id,
+        )
+        AlbumTracker.objects.create(
+            user=self.user,
+            album=tracked,
+            status=Status.COMPLETED.value,
+        )
+        self.assertLess(untracked.id, tracked.id)
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                args=[Sources.MUSICBRAINZ.value, MediaTypes.MUSIC.value, release_id],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'value="{tracked.id}"')
+        self.assertNotContains(response, f'value="{untracked.id}"')
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_album_release_id_considers_duplicate_without_release_group(
+        self,
+        mock_get_metadata,
+    ):
+        """A tracked duplicate that lacks the group id still wins for its release id."""
+        release_id = "123e4567-e89b-12d3-a456-426614174005"
+        with_group = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe"),
+            musicbrainz_release_id=release_id,
+            musicbrainz_release_group_id="123e4567-e89b-12d3-a456-426614174006",
+        )
+        tracked = Album.objects.create(
+            title="Running",
+            artist=Artist.objects.create(name="Alan Braxe & Fred Falke"),
+            musicbrainz_release_id=release_id,
+        )
+        AlbumTracker.objects.create(
+            user=self.user,
+            album=tracked,
+            status=Status.COMPLETED.value,
+        )
+        self.assertLess(with_group.id, tracked.id)
+
+        response = self.client.get(
+            reverse(
+                "track_modal",
+                args=[Sources.MUSICBRAINZ.value, MediaTypes.MUSIC.value, release_id],
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'value="{tracked.id}"')
+        self.assertNotContains(response, f'value="{with_group.id}"')
+        mock_get_metadata.assert_not_called()
+
+    @patch("app.providers.services.get_media_metadata")
+    def test_anonymous_album_link_goes_to_album_page(self, mock_get_metadata):
+        """A public list's album card reaches the album route, not the provider."""
+        artist = Artist.objects.create(name="Alan Braxe")
+        album = Album.objects.create(
+            title="Running",
+            artist=artist,
+            musicbrainz_release_id="123e4567-e89b-12d3-a456-426614174004",
+        )
+        self.client.logout()
+
+        response = self.client.get(
+            reverse(
+                "media_details",
+                kwargs={
+                    "source": Sources.MUSICBRAINZ.value,
+                    "media_type": MediaTypes.MUSIC.value,
+                    "media_id": album.musicbrainz_release_id,
+                    "title": "running",
+                },
+            ),
+        )
+
+        self.assertRedirects(
+            response,
+            reverse(
+                "music_album_details",
+                kwargs={
+                    "artist_id": artist.id,
+                    "artist_slug": "alan-braxe",
+                    "album_id": album.id,
+                    "album_slug": "running",
+                },
+            ),
+            fetch_redirect_response=False,
+        )
         mock_get_metadata.assert_not_called()
 
     def test_lists_modal_view_filters_lists_by_tag(self):
@@ -4954,6 +5101,6 @@ class ListRecommendationsViewTests(TestCase):
 
         content = response.content.decode()
         self.assertIn("Untracked Recommendation", content)
-        self.assertIn(f'id="media-card-rating-{movie.id}"', content)
-        self.assertIn(f'id="media-status-chip-{movie.id}"', content)
+        self.assertIn(f'id="{item_slot_id("media-card-rating", movie.item)}"', content)
+        self.assertIn(f'id="{item_slot_id("media-status-chip", movie.item)}"', content)
         self.assertEqual(content.count('class="media-status-chip '), 1)

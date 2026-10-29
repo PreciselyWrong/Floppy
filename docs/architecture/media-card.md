@@ -35,6 +35,22 @@ lookup, which aggregates repeat viewings. It costs one query per media type on t
 #1271 was a surface that passed `media=None` for items the user tracks. Collection and
 the list recommendations queue now use the shared lookup.
 
+## Video artwork
+
+Video-only library grids and video Home shelves use 16:9 cards. Mixed Home
+shelves and other mixed card surfaces retain the poster-sized card, containing
+rather than cropping video artwork. History groups video plays in a separate
+16:9 row after its poster and square rows. These dedicated video rows use wider
+cards than posters and the comfortable phone card size even in compact mode.
+All three use the existing card interactions and lazy artwork loading.
+
+For standard YouTube `hqdefault.jpg`, `mqdefault.jpg`, or `sddefault.jpg`
+artwork, these cards display YouTube's
+high-resolution `maxresdefault.jpg` variant and fall back to the stored image
+if the high-resolution thumbnail is missing. The
+stored image is unchanged, including client-supplied or user-selected artwork.
+Thumbnail dimensions do not classify a video as a Short.
+
 ## Rating from the card
 
 A tracked card's rating is a button (`media_card_rate_button.html`): the filled star and score,
@@ -50,9 +66,11 @@ and untracked items keep the plain read-only rating. `update_media_score` return
 |---|---|---|
 | `library`, `collection`, `related`, `seasons`, `list_recommendations` | Nothing | |
 | `home` | Next-event chip and subtitle | Upcoming shelves lead with the next release |
+| `up_next` | Queue chip and always-visible subtitle | Next episode and backlog/countdown must be readable without hover, including on touch screens |
 | `list` | S01E02 subtitle on episodes | A list can hold single episodes |
 | `credit` | Role line and watched-runtime chip from the `credit` value | A person's or studio's titles show what that person did on each one |
 | `tier` | No status chip, no hover actions, no release-year placeholder | A tile on a list's tier board: the board owns clicks and drags |
+| `group` | No status chip, no hover actions, no release-year placeholder | A game franchise/series tile shows a group, not one tracked game |
 | `search` | No release-year placeholder | Provider results are not saved items |
 | `search_modal` | Click previews, no hover actions, darker surface | Picking an item inside a modal |
 | `discover` | No status chip, Discover hover actions | Candidates are untracked by definition |
@@ -132,7 +150,11 @@ The first eight resolved index covers are eager even on a full document load.
 
 Subtitle lines come from `User.card_metadata`, one profile per media type plus `person`.
 `src/users/card_metadata.py` is the registry. `card_context` resolves the profile for the
-shared card. Hand-rolled cards call `{% card_lines %}`. `display` is `hover` or `always`.
+shared card. The picker's properties are generated per type: a card-only field declares
+its types, and a field that reads item metadata is offered for every type whose
+`app.custom_metadata.MEDIA_TYPE_FIELD_ORDER` entry contains that metadata field. Platform
+is therefore a game card property without a second per-type list to maintain.
+Hand-rolled cards call `{% card_lines %}`. `display` is `hover` or `always`.
 Rows (episode rows, calendar rows) have no hover state, so their hover lines are always
 visible. Hand-rolled poster cards add the saved title treatment with `{% card_title_classes %}`,
 and only once the user has changed a title option, so unchanged cards keep their own clamps.

@@ -27,9 +27,11 @@ from app import (
     history_cache,
     metadata_utils,
 )
+from app.cover_views import user_has_item
 from app.db_retry import is_retryable_error, run_retryable_db_operation
 from app.log_safety import exception_summary, safe_url
 from app.models import (
+    Anime,
     CollectionEntry,
     Episode,
     HardcoverEditionPreference,
@@ -123,13 +125,10 @@ def update_metadata_provider_preference(request, source, media_type, media_id):
         )
         messages.success(request, gettext("Metadata provider updated."))
 
-    if return_url and (
-        return_url.startswith("/")
-        or url_has_allowed_host_and_scheme(
-            return_url,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        )
+    if return_url and url_has_allowed_host_and_scheme(
+        return_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
     ):
         return redirect(return_url)
 
@@ -171,13 +170,10 @@ def update_metadata_language_preference(request, source, media_type, media_id):
             reset_metadata_language_repair(request.user.pk)
         messages.success(request, gettext("Metadata language updated."))
 
-    if return_url and (
-        return_url.startswith("/")
-        or url_has_allowed_host_and_scheme(
-            return_url,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        )
+    if return_url and url_has_allowed_host_and_scheme(
+        return_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
     ):
         return redirect(return_url)
 
@@ -455,13 +451,10 @@ def remap_metadata_provider(request, source, media_type, media_id):
         )
         messages.success(request, gettext("Remapped to the selected match."))
 
-    if return_url and (
-        return_url.startswith("/")
-        or url_has_allowed_host_and_scheme(
-            return_url,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        )
+    if return_url and url_has_allowed_host_and_scheme(
+        return_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
     ):
         return redirect(return_url)
 
@@ -546,13 +539,10 @@ def set_hardcover_edition(request, item_id):
         )
         messages.success(request, gettext("Edition updated."))
 
-    if return_url and (
-        return_url.startswith("/")
-        or url_has_allowed_host_and_scheme(
-            return_url,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        )
+    if return_url and url_has_allowed_host_and_scheme(
+        return_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
     ):
         return redirect(return_url)
 
@@ -568,13 +558,12 @@ def set_hardcover_edition(request, item_id):
 @login_required
 @require_POST
 def update_item_image(request, item_id):
-    """Persist an image URL override for an item the user already tracks."""
+    """Persist an image URL override for an item the user tracks or has collected."""
     return_url = helpers.normalize_navigation_url(request.POST.get("return_url"))
     image_url = (request.POST.get("image_url") or "").strip()
 
     item = get_object_or_404(Item, id=item_id)
-    media_model = apps.get_model("app", item.media_type)
-    if not media_model.objects.filter(user=request.user, item=item).exists():
+    if not user_has_item(request.user, item):
         messages.error(
             request, gettext("You can only update images for items in your library.")
         )
@@ -591,13 +580,10 @@ def update_item_image(request, item_id):
     else:
         messages.success(request, gettext("Image URL already matches this item."))
 
-    if return_url and (
-        return_url.startswith("/")
-        or url_has_allowed_host_and_scheme(
-            return_url,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        )
+    if return_url and url_has_allowed_host_and_scheme(
+        return_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
     ):
         return redirect(return_url)
 
@@ -617,7 +603,7 @@ def update_manual_item_metadata(request, item_id):
         owned = media_model.objects.filter(related_season__user=request.user, item=item)
     else:
         owned = media_model.objects.filter(user=request.user, item=item)
-    if not owned.exists():
+    if not owned.exists() and not user_has_item(request.user, item):
         messages.error(
             request, gettext("You can only update metadata for items in your library.")
         )
@@ -646,13 +632,10 @@ def update_manual_item_metadata(request, item_id):
         logger.error(form.errors.as_json())
         helpers.form_error_messages(form, request)
 
-    if return_url and (
-        return_url.startswith("/")
-        or url_has_allowed_host_and_scheme(
-            return_url,
-            allowed_hosts={request.get_host()},
-            require_https=request.is_secure(),
-        )
+    if return_url and url_has_allowed_host_and_scheme(
+        return_url,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
     ):
         return redirect(return_url)
 
@@ -860,7 +843,7 @@ def _build_missing_season_metadata(
             },
         )
 
-    max_episode_number = max(episode_numbers) if episode_numbers else None
+    max_episode_number = len(set(episode_numbers)) if episode_numbers else None
     details = {}
     if max_episode_number:
         details["episodes"] = max_episode_number
@@ -1426,8 +1409,19 @@ def _build_flat_anime_episode_preview(
         (row["season_number"], row["provider_episode_number"]) for row in preview_rows
     }
     preview_season_numbers = sorted({row["season_number"] for row in preview_rows})
+    # A flat entry records progress, not episodes, so the rows it covers show
+    # as watched without converting the entry to grouped tracking.
+    flat_progress = 0
 
     if request.user.is_authenticated:
+        if detail_item is not None:
+            flat_progress = (
+                Anime.objects.filter(user=request.user, item=detail_item).aggregate(
+                    progress=Max("progress"),
+                )["progress"]
+                or 0
+            )
+
         tracked_episodes = list(
             Episode.objects.filter(
                 related_season__related_tv__user=request.user,
@@ -1550,6 +1544,7 @@ def _build_flat_anime_episode_preview(
                 "overview": raw_episode.get("overview") or "",
                 "runtime": runtime,
                 "history": history_by_episode_key.get(episode_key, []),
+                "watched_by_progress": episode_number <= flat_progress,
                 "item": item_by_episode_key.get(episode_key),
                 "collection_entry": collection_entry_by_episode_key.get(
                     episode_key,
@@ -1573,7 +1568,9 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
             return HttpResponse(
                 status=204,
                 headers={
-                    "HX-Redirect": request.POST["next"],
+                    "HX-Redirect": helpers.safe_return_url(
+                        request, request.POST.get("next", "/")
+                    ),
                 },
             )
         return helpers.redirect_back(request)
@@ -1595,7 +1592,11 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
         return HttpResponse(
             msg,
             status=400,
-            headers={"HX-Redirect": request.POST.get("next", "/")},
+            headers={
+                "HX-Redirect": helpers.safe_return_url(
+                    request, request.POST.get("next", "/")
+                )
+            },
         )
 
     if media_type == MediaTypes.PODCAST.value:
@@ -1811,7 +1812,24 @@ def sync_metadata(request, source, media_type, media_id, season_number=None):
                             hasattr(air_date, "year")
                             and air_date.year > MIN_PLAUSIBLE_AIR_YEAR
                         ):
-                            episode_item.release_datetime = air_date
+                            local_air_date = timezone.localtime(air_date)
+                            if (
+                                local_air_date.hour,
+                                local_air_date.minute,
+                                local_air_date.second,
+                                local_air_date.microsecond,
+                            ) == (0, 0, 0, 0):
+                                # process_episodes anchors a date-only value at
+                                # local midnight. Store the unknown-time
+                                # sentinel so release state treats it as an
+                                # all-day date, not as released at midnight.
+                                from events.calendar.helpers import date_parser
+
+                                episode_item.release_datetime = date_parser(
+                                    local_air_date.date(),
+                                )
+                            else:
+                                episode_item.release_datetime = air_date
                         else:
                             episode_item.release_datetime = None
                     # If air_date is None, don't update release_datetime (keep existing or None)

@@ -57,6 +57,7 @@ from lists.views_helpers import (
     _build_list_url_template,
     _list_item_title_fields_from_metadata,
     _maybe_backfill_episode_title,
+    list_metadata_language,
 )
 from users.models import ListDetailSortChoices, MediaSortChoices
 
@@ -387,6 +388,12 @@ def lists_modal(
         media_type,
         source=source,
     )
+    if tracking_media_type == MediaTypes.PODCAST.value:
+        from app.services.podcast_import import resolve_show_for_media_id
+
+        show = resolve_show_for_media_id(media_id, source=source)
+        if show is not None:
+            media_id = show.podcast_uuid
     lookup = {
         "media_id": media_id,
         "source": source,
@@ -399,14 +406,19 @@ def lists_modal(
 
     try:
         item = Item.objects.get(**lookup)
-        _maybe_backfill_episode_title(item, force=True)
+        with services.interactive_request_scope():
+            _maybe_backfill_episode_title(
+                item,
+                force=True,
+                language=list_metadata_language(request.user),
+            )
     except Item.MultipleObjectsReturned:
         item = Item.objects.filter(**lookup).first()
     except Item.DoesNotExist:
         # An album page's id is not a MusicBrainz recording, so the provider
         # cannot describe it; the album row we already hold can.
         album = (
-            music_services.album_for_media_id(media_id)
+            music_services.album_for_media_id(media_id, user=request.user)
             if tracking_media_type == MediaTypes.MUSIC.value
             and source == Sources.MUSICBRAINZ.value
             else None
@@ -417,13 +429,15 @@ def lists_modal(
                 "image": album.image or settings.IMG_NONE,
             }
         else:
-            metadata = services.get_media_metadata(
-                media_type,
-                media_id,
-                source,
-                [season_number],
-                episode_number,
-            )
+            with services.interactive_request_scope():
+                metadata = services.get_media_metadata(
+                    media_type,
+                    media_id,
+                    source,
+                    [season_number],
+                    episode_number,
+                    language=list_metadata_language(request.user),
+                )
         item = Item.objects.create(
             media_id=media_id,
             source=source,
