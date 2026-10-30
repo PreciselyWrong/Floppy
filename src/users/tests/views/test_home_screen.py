@@ -35,6 +35,7 @@ from events.models import Event
 from lists import smart_rules
 from lists.models import CustomList
 from users import home_screen
+from users.home_screen import build_home_page_groups
 from users.models import (
     HOME_ALL_MEDIA_TYPE,
     DirectionChoices,
@@ -86,6 +87,7 @@ class HomeScreenViewTests(TestCase):
             filters={"progress": "all"},
             open_last_episode=False,
         )
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
         self.assertEqual(response.status_code, 200)
         rendered = next(
@@ -301,6 +303,7 @@ class HomeScreenViewTests(TestCase):
         self.assertEqual(
             [entry.item.title for entry in mixed["rows"][0]["items"]], ["Current Movie"]
         )
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-media-type-chip="movie"')
@@ -487,6 +490,7 @@ class HomeScreenViewTests(TestCase):
             filters={"status": [Status.IN_PROGRESS.value]},
         )
 
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
 
         self.assertContains(response, 'data-media-type-chip="anime"')
@@ -611,21 +615,15 @@ class HomeScreenViewTests(TestCase):
     def test_all_media_filter_fields_follow_enabled_media_types(self):
         self._set_enabled_media_types(MediaTypes.MOVIE.value)
 
-        with patch.object(
-            smart_rules,
-            "build_rule_filter_data",
-            wraps=smart_rules.build_rule_filter_data,
-        ) as build_filter_data:
-            home_screen.build_filter_field_data(self.user, "all", [])
-            self._set_enabled_media_types(
-                MediaTypes.MOVIE.value,
-                MediaTypes.GAME.value,
-            )
-            home_screen.build_filter_field_data(self.user, "all", [])
+        def media_type_options():
+            fields = home_screen.build_filter_field_data(self.user, "all", [])
+            field = next(field for field in fields if field["key"] == "media_types")
+            return [option["value"] for option in field["options"]]
 
-        self.assertEqual(build_filter_data.call_count, 2)
+        self.assertEqual(media_type_options(), [MediaTypes.MOVIE.value])
+        self._set_enabled_media_types(MediaTypes.MOVIE.value, MediaTypes.GAME.value)
         self.assertEqual(
-            build_filter_data.call_args.args[1],
+            media_type_options(),
             [MediaTypes.MOVIE.value, MediaTypes.GAME.value],
         )
 
@@ -1929,6 +1927,24 @@ class HomeScreenViewTests(TestCase):
             if section["media_type"] == MediaTypes.MOVIE.value
         )
         self.assertEqual(movie_section["filter_fields"], [])
+
+    def test_all_media_filter_choices_only_query_tags_not_library_facets(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        Tag.objects.create(user=self.user, name="Favorite")
+        with (
+            patch.object(smart_rules, "build_rule_filter_data", side_effect=AssertionError("All Media scanned library facets")),
+            self.assertNumQueries(1),
+        ):
+            fields = home_screen.serialize_settings_filter_fields(self.user, HOME_ALL_MEDIA_TYPE)
+        fields = {field["key"]: field for field in fields}
+        self.assertEqual(
+            set(fields),
+            {"media_types", "status", "progress", "rating", "collection", "release", "tag", "stale_days"},
+        )
+        self.assertEqual(fields["tag"]["options"], [{"value": "Favorite", "label": "Favorite"}])
+        tv = next(option for option in fields["media_types"]["options"] if option["value"] == "tv")
+        self.assertEqual([choice["value"] for choice in tv["subviews"]], ["shows", "seasons", "episodes"])
 
     def test_home_filter_fields_include_collected_only_untracked_authors(self):
         self._set_enabled_media_types(MediaTypes.BOOK.value)
@@ -3789,6 +3805,7 @@ class HomeScreenCompanionParityTests(TestCase):
             filters={"binge_grouping": True},
         )
 
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
 
         self.assertEqual(response.status_code, 200)
@@ -3843,6 +3860,7 @@ class HomeScreenCompanionParityTests(TestCase):
             filters={"binge_grouping": True},
         )
 
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
 
         self.assertEqual(response.status_code, 200)
@@ -4015,6 +4033,7 @@ class HomeScreenCompanionParityTests(TestCase):
             direction=DirectionChoices.DESC,
         )
 
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
 
         self.assertContains(response, 'data-media-type-chip="movie"')
@@ -4071,6 +4090,7 @@ class HomeScreenCompanionParityTests(TestCase):
             direction=DirectionChoices.DESC,
         )
 
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
 
         self.assertContains(response, 'data-media-type-chip-style="outline"')

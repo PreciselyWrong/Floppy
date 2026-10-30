@@ -126,6 +126,17 @@ SUBVIEWS_BY_MEDIA_TYPE = {
     ),
 }
 
+# All Media keeps its historical defaults, independently of dedicated shelves.
+ALL_MEDIA_SUBVIEWS = {
+    MediaTypes.TV.value: (
+        ("shows", "seasons", "episodes"),
+        {"shows": "Shows", "seasons": "Seasons", "episodes": "Episodes"},
+        "shows",
+    ),
+    MediaTypes.MUSIC.value: SUBVIEWS_BY_MEDIA_TYPE[MediaTypes.MUSIC.value],
+    MediaTypes.PODCAST.value: (PODCAST_SUBVIEW_VALUES, PODCAST_SUBVIEW_LABELS, "episodes"),
+}
+
 
 def _canonical_subview(value, media_type: str) -> str:
     """Normalize a row's subview value to a known choice for its media type."""
@@ -218,7 +229,7 @@ HOME_QUERY_DEFAULT_FILTERS = {
     "tag_mode": "or",
 }
 HOME_SCREEN_FILTER_KEYS = tuple(
-    dict.fromkeys((*HOME_QUERY_DEFAULT_FILTERS, "subview", "media_types"))
+    dict.fromkeys((*HOME_QUERY_DEFAULT_FILTERS, "subview", "media_types", "media_subviews"))
 )
 SUPPORTED_FILTERS_BY_MEDIA_TYPE = {
     MediaTypes.VIDEO.value: {
@@ -380,6 +391,7 @@ SUPPORTED_FILTERS_BY_MEDIA_TYPE[MediaTypes.VIDEO.value] = (
 )
 SUPPORTED_FILTERS_BY_MEDIA_TYPE[HOME_ALL_MEDIA_TYPE] = {
     "media_types",
+    "media_subviews",
     "status",
     "progress",
     "rating",
@@ -501,11 +513,12 @@ def get_allowed_sort_choices(media_type: str, row_type: str) -> list[dict]:
         ]
     if media_type == HOME_ALL_MEDIA_TYPE:
         return [
-            {"value": HomeSortChoices.RECENT, "label": "Recent"},
-            {"value": MediaSortChoices.TITLE, "label": "Title"},
-            {"value": MediaSortChoices.SCORE, "label": "Rating"},
-            {"value": MediaSortChoices.DATE_ADDED, "label": "Date Added"},
-            {"value": HomeSortChoices.RANDOM, "label": "Random"},
+            {"value": HomeSortChoices.RECENT, "label": gettext("Recent")},
+            {"value": MediaSortChoices.END_DATE, "label": gettext("Last Watched")},
+            {"value": MediaSortChoices.TITLE, "label": gettext("Title")},
+            {"value": MediaSortChoices.SCORE, "label": gettext("Rating")},
+            {"value": MediaSortChoices.DATE_ADDED, "label": gettext("Date Added")},
+            {"value": HomeSortChoices.RANDOM, "label": gettext("Random")},
         ]
     sort_choices: list[tuple[str, str]] = [
         (MediaSortChoices.SCORE, gettext("Rating")),
@@ -888,6 +901,7 @@ def build_filter_field_data(
     type to aggregate facet options (~1.5s each on large libraries), and
     the Home Screen settings page needs one per enabled media type — so
     the payload is cached and registered for invalidation on media save.
+    All Media only needs fixed choices and tags, so it skips that aggregation.
     """
     from django.core.cache import cache
 
@@ -903,21 +917,29 @@ def build_filter_field_data(
     )
     media_types_fingerprint = "-".join(filter_media_types)
     cache_key = (
-        f"home_filter_fields_v4_{user.id}_{media_type}_"
+        f"home_filter_fields_v5_{user.id}_{media_type}_"
         f"{media_types_fingerprint}_{tags_fingerprint}"
     )
     cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
-    filter_data = smart_rules.build_rule_filter_data(
-        user,
-        filter_media_types,
-        "all",
-        "",
-        include_collection_only_untracked=True,
-        precomputed_tags=precomputed_tags,
-    )
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        # Mixed rows expose fixed choices and tags, not library-wide facets.
+        # Building genres/authors/etc. here scans every enabled library.
+        tags = precomputed_tags
+        if tags is None:
+            tags = list(Tag.objects.filter(user=user).order_by("name").values_list("name", flat=True))
+        filter_data = {"tags": tags}
+    else:
+        filter_data = smart_rules.build_rule_filter_data(
+            user,
+            filter_media_types,
+            "all",
+            "",
+            include_collection_only_untracked=True,
+            precomputed_tags=precomputed_tags,
+        )
     filter_data["show_authors"] = media_type in AUTHOR_MEDIA_TYPES
 
     field_definitions = [
@@ -928,6 +950,12 @@ def build_filter_field_data(
                 {
                     "value": value,
                     "label": _media_type_group_label(value),
+                    "subviews": [
+                        {"value": choice, "label": gettext(ALL_MEDIA_SUBVIEWS[value][1][choice])}
+                        for choice in ALL_MEDIA_SUBVIEWS[value][0]
+                    ] if value in ALL_MEDIA_SUBVIEWS else [],
+                    "default_subview": ALL_MEDIA_SUBVIEWS[value][2]
+                    if value in ALL_MEDIA_SUBVIEWS else "",
                 }
                 for value in get_enabled_home_media_types(user)
             ],
@@ -1195,6 +1223,12 @@ def describe_library_query(filters: dict, user, media_type: str) -> str:
             parts[0] = subview_label
         else:
             parts.insert(1, subview_label)
+
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        for family in _all_media_type_selection(user, filters):
+            if family in ALL_MEDIA_SUBVIEWS:
+                level = normalized["media_subviews"][family]
+                parts.append(f"{_media_type_group_label(family)}: {gettext(ALL_MEDIA_SUBVIEWS[family][1][level])}")
 
     for key in (
         "progress",
@@ -1502,6 +1536,7 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     # subview is a music-only dimension, not a smart-rule filter. handling separately
     raw_subview = raw_filters.pop("subview", None)
     raw_stale_days = str(raw_filters.pop("stale_days", "") or "").strip()
+    raw_media_subviews = raw_filters.pop("media_subviews", {})
     raw_filters.pop("media_types", None)
     if "status" in raw_filters:
         raw_filters["status"] = _normalize_status_list(raw_filters.get("status"), [])
@@ -1532,12 +1567,17 @@ def _normalized_filter_payload(filters: dict | None, media_type: str) -> dict:
     payload = {
         key: normalized.get(key, HOME_QUERY_DEFAULT_FILTERS.get(key, ""))
         for key in HOME_SCREEN_FILTER_KEYS
-        if key not in {"media_types", "subview"}
+        if key not in {"subview", "media_types", "media_subviews"}
     }
     if media_type in SUBVIEWS_BY_MEDIA_TYPE:
         payload["subview"] = _canonical_subview(raw_subview, media_type)
     elif raw_stale_days.isdigit() and 1 <= int(raw_stale_days) <= MAX_STALE_DAYS:
         payload["stale_days"] = raw_stale_days
+    if media_type == HOME_ALL_MEDIA_TYPE:
+        payload["media_subviews"] = {
+            family: raw_media_subviews.get(family, definition[2])
+            for family, definition in ALL_MEDIA_SUBVIEWS.items()
+        } if isinstance(raw_media_subviews, dict) else {}
     return payload
 
 
@@ -1668,6 +1708,14 @@ def validate_library_row_filters(
             raise HomeScreenValidationError(msg)
 
     normalized = _normalized_filter_payload(raw_filters, media_type)
+    if "media_subviews" in raw_filters:
+        choices = raw_filters["media_subviews"]
+        if not isinstance(choices, dict) or any(
+            family not in ALL_MEDIA_SUBVIEWS or value not in ALL_MEDIA_SUBVIEWS[family][0]
+            for family, value in choices.items()
+        ):
+            msg = "Unsupported All media display level."
+            raise HomeScreenValidationError(msg)
     if media_type == HOME_ALL_MEDIA_TYPE and "media_types" in raw_filters:
         raw_media_types = raw_filters["media_types"]
         if not isinstance(raw_media_types, list):
@@ -2599,15 +2647,15 @@ def _media_lookup_for_items(
         model = apps.get_model("app", actual_media_type)
         item_ids = [item.id for item in type_items]
         if actual_media_type == MediaTypes.EPISODE.value:
-            queryset = model.objects.filter(
-                related_season__user=user,
-                item_id__in=item_ids,
-            ).select_related("item")
-        else:
-            queryset = model.objects.filter(
-                user=user,
-                item_id__in=item_ids,
-            ).select_related("item")
+            from app.library_query.trackers import episode_media_for_items
+
+            lookup.update(episode_media_for_items(user, item_ids))
+            continue
+        queryset = (
+            model.objects.filter(user=user, item_id__in=item_ids)
+            .select_related("item")
+            .defer(*(f"item__{field}" for field in HOME_CARD_UNREAD_ITEM_FIELDS))
+        )
         if actual_media_type == MediaTypes.PODCAST.value:
             queryset = queryset.select_related("show", "episode")
         if actual_media_type == MediaTypes.MUSIC.value:
@@ -2797,7 +2845,9 @@ def _entry_date_added_timestamp(entry: HomeRowEntry):
     media = _entry_media(entry)
     if not media:
         return None
-    dt_value = _coerce_datetime(getattr(media, "created_at", None))
+    dt_value = _coerce_datetime(
+        getattr(media, "aggregated_created_at", None) or getattr(media, "created_at", None)
+    )
     return dt_value.timestamp() if dt_value else None
 
 
@@ -3454,23 +3504,36 @@ def _row_items(user, row, executor, offset, limit, *, seed):
     return [by_id[item_id] for item_id in window if item_id in by_id], len(ranked_ids)
 
 
-def _row_entries(user, items, *, planning_subtitle: bool = False) -> list[HomeRowEntry]:
+def _row_entries(
+    user, items, *, planning_subtitle: bool = False, podcast_episodes: bool = False,
+) -> list[HomeRowEntry]:
     """Decorate one window of a shelf as Home cards."""
     with boundary("home_cards"):
         media_lookup = _media_lookup_for_items(user, items)
-    return [
-        HomeRowEntry(
-            item=item,
-            media=media_lookup.get(item.id),
-            use_podcast_show=bool(
-                getattr(media_lookup.get(item.id), "use_podcast_show", False)
-            ),
-            podcast_show=getattr(media_lookup.get(item.id), "show", None),
-            show_progress_controls=media_lookup.get(item.id) is not None,
-            subtitle_override=_entry_release_date(item) if planning_subtitle else None,
-        )
-        for item in items
-    ]
+    from app.media_list_filters import attach_card_collection_platforms
+
+    attach_card_collection_platforms(user, items)
+    entries = []
+    for item in items:
+        media = media_lookup.get(item.pk)
+        episode = item.media_type == MediaTypes.EPISODE.value
+        subtitle = _entry_release_date(item) if planning_subtitle else None
+        if episode and media:
+            season = media.related_season
+            show_item = getattr(season.related_tv, "item", None)
+            show_title = getattr(show_item, "title", "")
+            identity = f"S{item.season_number:02d}E{item.episode_number:02d}"
+            subtitle = f"{show_title} • {identity}" if show_title else identity
+            if not item.image or item.image == settings.IMG_NONE:
+                item.image = season.item.image or getattr(show_item, "image", "") or settings.IMG_NONE
+        entries.append(HomeRowEntry(
+            item=item, media=media,
+            use_podcast_show=bool(getattr(media, "use_podcast_show", False)) and not podcast_episodes,
+            podcast_show=getattr(media, "show", None),
+            show_progress_controls=media is not None and not episode,
+            subtitle_override=subtitle,
+        ))
+    return entries
 
 
 def _custom_list_row_executor(user, row, *, seed: int):
@@ -3526,6 +3589,14 @@ def _library_row_window(user, row, offset, limit, *, seed):
     if normalized.get("stale_days"):
         entries = _library_query_entries(user, row)
         return entries[offset : offset + limit], len(entries)
+    if row.media_type == HOME_ALL_MEDIA_TYPE and any(
+        normalized["media_subviews"].get(family) != ALL_MEDIA_SUBVIEWS[family][2]
+        for family in _all_media_type_selection(user, row.filters)
+        if family in ALL_MEDIA_SUBVIEWS
+    ):
+        from users.home_mixed_rows import mixed_row_window
+
+        return mixed_row_window(user, row, normalized, offset, limit, seed=seed)
     if row.media_type == MediaTypes.MUSIC.value:
         subview = _canonical_subview(normalized.get("subview"), row.media_type)
         if subview == MUSIC_SUBVIEW_ALBUMS:
@@ -3610,7 +3681,7 @@ def _library_query_entries(
         **{
             key: value
             for key, value in normalized_filters.items()
-            if key != "stale_days"
+            if key not in {"stale_days", "media_subviews"}
         },
     }
     item_ids = smart_rules.collect_matching_item_ids(
@@ -3649,9 +3720,30 @@ def _library_entries_for_items(
 ) -> list[HomeRowEntry]:
     """Hydrate standard Home card entries for an already ordered item subset."""
     media_lookup = _media_lookup_for_items(user, items, status_filter=status_filter)
+    from app.media_list_filters import attach_card_collection_platforms
+
+    attach_card_collection_platforms(user, items)
     entries = []
     for item in items:
         media = media_lookup.get(item.id)
+        episode = item.media_type == MediaTypes.EPISODE.value
+        subtitle = (
+            _entry_release_date(item)
+            if status_filter == [Status.PLANNING.value]
+            else None
+        )
+        if episode and media:
+            season = media.related_season
+            show_item = getattr(season.related_tv, "item", None)
+            show_title = getattr(show_item, "title", "")
+            identity = f"S{item.season_number:02d}E{item.episode_number:02d}"
+            subtitle = f"{show_title} • {identity}" if show_title else identity
+            if not item.image or item.image == settings.IMG_NONE:
+                item.image = (
+                    season.item.image
+                    or getattr(show_item, "image", "")
+                    or settings.IMG_NONE
+                )
         resume_navigation, title_item_override = _resume_navigation_metadata(
             item,
             media,
@@ -3663,6 +3755,7 @@ def _library_entries_for_items(
                 item=item,
                 media=media,
                 use_podcast_show=bool(getattr(media, "use_podcast_show", False))
+                and row.media_type != HOME_ALL_MEDIA_TYPE
                 and not (
                     row.media_type == MediaTypes.PODCAST.value
                     and _canonical_subview(
@@ -3671,10 +3764,8 @@ def _library_entries_for_items(
                     == PODCAST_SUBVIEW_EPISODES
                 ),
                 podcast_show=getattr(media, "show", None),
-                show_progress_controls=media is not None,
-                subtitle_override=_entry_release_date(item)
-                if status_filter == [Status.PLANNING.value]
-                else None,
+                show_progress_controls=media is not None and not episode,
+                subtitle_override=subtitle,
                 resume_navigation=resume_navigation,
                 title_item_override=title_item_override,
             )
@@ -4359,6 +4450,7 @@ def _build_row_section(
         "show_played_chip": row.row_type == HomeScreenRowTypeChoices.RECENTLY_UNRATED,
         "show_media_type_chip": _show_media_type_chip(user, row, media_type),
         "card_width_class": "w-44",
+        "mixed_media": media_type == HOME_ALL_MEDIA_TYPE,
         "video_landscape": media_type == "video",
         "grid_class": "media-grid media-grid-square"
         if media_type in SQUARE_HOME_MEDIA_TYPES
@@ -4508,6 +4600,33 @@ def build_home_page_manifest(
             },
         )
     return groups
+
+
+def warm_first_group_split(user, manifest: list[dict], items_limit: int):
+    """Split the manifest into an inline first group and the groups to defer.
+
+    Returns ``(inline_index, defer_from)``. A group renders inline only when
+    every row it needs is already cached, so the shell never computes a
+    shelf; the first group with a cold row, and everything after it, loads as
+    row fragments. ``inline_index`` is ``None`` when nothing is warm.
+    """
+    from django.core.cache import cache
+
+    from app import cache_utils
+
+    keys = {
+        row.id: cache_utils.build_home_row_cache_key(user.id, row.id, items_limit)
+        for group in manifest
+        for row in group["rows"]
+    }
+    cached = cache.get_many(list(keys.values()))
+    for index, group in enumerate(manifest):
+        values = [cached.get(keys[row.id]) for row in group["rows"]]
+        if any(value is None for value in values):
+            return None, index
+        if any(value != _HOME_ROW_EMPTY_SENTINEL for value in values):
+            return index, index + 1
+    return None, len(manifest)
 
 
 def build_home_row(

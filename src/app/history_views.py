@@ -52,6 +52,7 @@ _MONTH_CACHE_UNSUPPORTED_FILTER_KEYS = frozenset(
         "person_source",
         "season",
         "season_number",
+        "episode_number",
         "tv",
     },
 )
@@ -990,6 +991,7 @@ def _parse_history_filters(request):
         "tv",
         "season",
         "season_number",
+        "episode_number",
         "podcast_show",
     )
     str_params = (

@@ -31,6 +31,7 @@ from app.models import (
 from app.templatetags import app_tags
 from events.models import Event
 from users import home_screen
+from users.home_screen import build_home_page_groups
 from users.models import (
     DateFormatChoices,
     DirectionChoices,
@@ -354,6 +355,7 @@ class HomeViewTests(TestCase):
 
     def test_home_groups_include_label_and_icon(self):
         """Each home group exposes a media-type label and icon for headers."""
+        build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
         response = self.client.get(reverse("home"))
         groups = response.context["home_groups"]
         self.assertTrue(groups)
@@ -908,6 +910,7 @@ class HomeViewTests(TestCase):
         with patch(
             "users.home_screen._library_entries_for_items", wraps=_library_entries_for_items
         ) as hydrate:
+            build_home_page_groups(self.user, 14)  # the shell only inlines warm shelves
             initial_response = self.client.get(reverse("home"))
             season_row = self._get_first_row(initial_response, MediaTypes.SEASON.value)
         self.assertEqual(season_row["total"], 29)
@@ -1146,6 +1149,7 @@ class HomeRowCacheTests(TestCase):
     def test_second_home_request_serves_rows_from_cache(self):
         from unittest.mock import patch
 
+        build_home_page_groups(self.user, 14)
         first = self.client.get(reverse("home"))
         self.assertEqual(first.status_code, 200)
         self.assertTrue(first.context["home_groups"])
@@ -1158,10 +1162,25 @@ class HomeRowCacheTests(TestCase):
         mock_entries.assert_not_called()
         self.assertTrue(second.context["home_groups"])
 
+    def test_cold_shell_defers_every_shelf_and_warm_shell_inlines_first_group(self):
+        """The shell never computes a shelf: cold rows load as fragments."""
+        cache.clear()
+        from unittest.mock import patch
+
+        with patch("users.home_screen._library_row_window") as mock_entries:
+            cold = self.client.get(reverse("home"))
+        mock_entries.assert_not_called()
+        self.assertFalse(cold.context["home_groups"])
+        self.assertTrue(cold.context["deferred_groups"])
+
+        build_home_page_groups(self.user, 14)
+        warm = self.client.get(reverse("home"))
+        self.assertTrue(warm.context["home_groups"])
+
     def test_media_save_invalidates_row_cache(self):
         from unittest.mock import patch
 
-        self.client.get(reverse("home"))  # warm cache
+        build_home_page_groups(self.user, 14)  # warm cache
 
         season = Season.objects.filter(user=self.user).first()
         episode_item, _ = Item.objects.get_or_create(
@@ -1186,7 +1205,7 @@ class HomeRowCacheTests(TestCase):
             "users.home_screen._library_row_window",
             return_value=([], 0),
         ) as mock_entries:
-            self.client.get(reverse("home"))
+            build_home_page_groups(self.user, 14)
         mock_entries.assert_called()
 
 
